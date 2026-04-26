@@ -22,17 +22,45 @@ This is an initial implementation, not the full specification yet. The current a
 
 See [PLAN.md](PLAN.md) for the full roadmap and what is/isn't done yet.
 
-## Quick Start
+## Quickstart
+
+Build the CLI and scan your current `kubectl` context:
 
 ```bash
-make setup
-make test
-make lint
 make build
-make e2e
+./bin/kubesplaining scan
+open kubesplaining-report/report.html      # macOS; xdg-open on Linux
 ```
 
-`make setup` downloads Go module dependencies. `make lint` runs `gofmt` checks and `go vet`. `make e2e` requires a reachable Docker daemon because `kind` depends on it.
+Or capture a snapshot first and analyze it offline (good for jumphosts, audits, diffs):
+
+```bash
+./bin/kubesplaining download --output-file snapshot.json
+./bin/kubesplaining scan --input-file snapshot.json
+```
+
+Useful flags:
+
+- `--threshold high` — hide everything below HIGH.
+- `--only-modules privesc` / `--skip-modules network` — scope to specific analyzers.
+- `--output-format html,json,csv,sarif` — pick output formats (default: `html,json`).
+- `--ci-mode --ci-max-critical 0 --ci-max-high 0` — non-zero exit when over budget, for CI.
+- `--max-privesc-depth 7` — deeper BFS on the escalation graph (default 5).
+
+For one-off manifest checks without cluster access:
+
+```bash
+./bin/kubesplaining scan-resource --input-file deployment.yaml
+```
+
+### Developer setup
+
+```bash
+make setup    # download Go module deps
+make test     # go test ./...
+make lint     # gofmt -l + go vet
+make e2e      # spin up kind, apply risky manifests, assert findings (needs Docker)
+```
 
 ## Why It Is Useful
 
