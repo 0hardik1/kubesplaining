@@ -98,7 +98,7 @@ score = base × exploitability × blast_radius + chain_modifier
 
 ### Findings
 
-Every analyzer emits `models.Finding` with a stable `RuleID` (`KUBE-<MODULE>-<NUMBER>`). Rule IDs are referenced from the "Findings Library — Implemented" section of `README.md`, the e2e assertions in `scripts/kind-e2e.sh`, and likely downstream consumers — treat them as a public surface. New rule IDs should follow the existing prefix scheme (`KUBE-PRIVESC-`, `KUBE-ESCAPE-`, `KUBE-PODSEC-`, `KUBE-NETPOL-`, `KUBE-ADMISSION-`, `KUBE-SECRETS-`, `KUBE-CONFIGMAP-`, `KUBE-SA-`, `KUBE-RBAC-OVERBROAD-`, `KUBE-PRIVESC-PATH-`).
+Every analyzer emits `models.Finding` with a stable `RuleID` (`KUBE-<MODULE>-<NUMBER>`). Rule IDs are referenced from [`docs/findings.md`](docs/findings.md), the e2e assertions in `scripts/kind-e2e.sh`, and likely downstream consumers — treat them as a public surface. New rule IDs should follow the existing prefix scheme (`KUBE-PRIVESC-`, `KUBE-ESCAPE-`, `KUBE-PODSEC-`, `KUBE-NETPOL-`, `KUBE-ADMISSION-`, `KUBE-SECRETS-`, `KUBE-CONFIGMAP-`, `KUBE-SA-`, `KUBE-RBAC-OVERBROAD-`, `KUBE-PRIVESC-PATH-`).
 
 `Finding.ID` is the deterministic per-instance key (`RULE:ns:name`); `RuleID` is shared across instances of the same rule. Exclusions never delete findings — they set `Excluded=true` + `ExclusionReason` so the report can still display them.
 
