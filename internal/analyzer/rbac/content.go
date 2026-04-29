@@ -167,7 +167,7 @@ func contentPrivesc017(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s wildcard RBAC permissions on %s", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s wildcard RBAC permissions on `%s`", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("RBAC rule binding `%s` → role `%s` grants `*` verbs on `*` resources in `*` apiGroups to %s. %s.\n\n"+
 			"Wildcards are dangerous beyond their current expansion: any resource type added later (CRDs, new core subresources, future verbs) is automatically granted to this subject without anyone reviewing the change. The Kubernetes project explicitly flags this in `RBAC Good Practices` as an anti-pattern.\n\n"+
@@ -204,7 +204,7 @@ func contentPrivesc005(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s read access to Secrets — %s", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s read access to Secrets — `%s`", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s can `get`, `list`, or `watch` core `secrets` via binding `%s` → role `%s`. %s.\n\n"+
 			"The Kubernetes documentation is explicit that `list` and `watch` reveal Secret contents in the response body — they are not metadata-only verbs — so all three verbs leak the same data.\n\n"+
@@ -242,7 +242,7 @@ func contentPrivesc001(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s pod creation — token-theft and node-takeover path (%s)", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s pod creation — token-theft and node-takeover path (`%s`)", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s can `create` pods via binding `%s` → role `%s`. %s.\n\n"+
 			"Under Kubernetes' RBAC model, pod creation is one of the most powerful permissions because the API server does not police the privileges of the pod being created — only the create verb itself. A pod is a request to run code as a ServiceAccount; by choosing `spec.serviceAccountName` the attacker borrows the identity (and RBAC permissions) of any ServiceAccount in the target namespace, with the token mounted automatically at `/var/run/secrets/kubernetes.io/serviceaccount/token`.\n\n"+
@@ -279,7 +279,7 @@ func contentPrivesc003(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s workload-controller mutation can spawn privileged pods — %s", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s workload-controller mutation can spawn privileged pods — `%s`", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s can `create/update/patch` workload controllers (`deployments`, `daemonsets`, `statefulsets`, `jobs`, `cronjobs`) via `%s` → `%s`. %s.\n\n"+
 			"Anyone who can write a workload template inherits the same implicit permissions as `pods/create`: choice of ServiceAccount, choice of Pod Security context, and choice of host-level features. The specific danger of controller mutation (vs. pod create) is durability and stealth: a `kubectl edit deployment` adding a `privileged: true` sidecar produces pods continuously — restart-loop the pod and you get a fresh shell every time.\n\n"+
@@ -316,7 +316,7 @@ func contentPrivesc008(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s `impersonate` permission — %s", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s `impersonate` permission — `%s`", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s has the `impersonate` verb on `users/groups/serviceaccounts` via `%s` → `%s`. %s.\n\n"+
 			"Kubernetes' impersonation lets a request set `Impersonate-User/Impersonate-Group` headers (or `kubectl --as`) so the API server processes the request as a different identity. The Kubernetes project flags this in `RBAC Good Practices` as one of three verbs (alongside `bind` and `escalate`) that override normal RBAC limits.\n\n"+
@@ -353,7 +353,7 @@ func contentPrivesc009(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s `bind/escalate` on roles — RBAC bypass (%s)", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s `bind/escalate` on roles — RBAC bypass (`%s`)", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s has the `bind` or `escalate` verb on `roles/clusterroles` via `%s` → `%s`. %s.\n\n"+
 			"Kubernetes' RBAC normally enforces a privilege-escalation guard: you cannot create a Role/RoleBinding granting permissions you do not already hold. The `escalate` and `bind` verbs are explicit, documented exceptions to that guard.\n\n"+
@@ -391,7 +391,7 @@ func contentPrivesc010(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s write access to (Cluster)RoleBindings — self-grant path (%s)", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s write access to (Cluster)RoleBindings — self-grant path (`%s`)", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s can `create/update/patch` `rolebindings/clusterrolebindings` via `%s` → `%s`. %s.\n\n"+
 			"RoleBinding write is the most direct self-grant path in Kubernetes. Even with the API-level escalation guard active (binding only to roles whose permissions you already have), this permission is dangerous: if the subject already holds any powerful permission (often inherited from a default ClusterRole like `view/edit`), they can re-bind it to backup identities for persistence.\n\n"+
@@ -432,7 +432,7 @@ func contentPrivesc012(ruleNamespace string, subject models.SubjectRef, sourceBi
 		Detail: "Cluster-wide kubelet API on every node (nodes is cluster-scoped)",
 	}
 	return ruleContent{
-		Title: fmt.Sprintf("`get nodes/proxy` — kubelet exec via API server (%s)", subjectKey(subject)),
+		Title: fmt.Sprintf("`get nodes/proxy` — kubelet exec via API server (`%s`)", subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s can `get` `nodes/proxy` via `%s` → `%s`. Despite the read-only-sounding `get` verb, this permission lets the holder execute arbitrary commands inside any pod on any node by tunneling through the API server to the kubelet's internal HTTP API — `/exec`, `/run`, `/attach`, `/portforward`.\n\n"+
 			"The technical root cause: pod exec uses an HTTP-to-WebSocket upgrade. The API server authorizes the upgrade based on the initial GET against the proxy subresource — not against `pods/exec`. So a subject with `get nodes/proxy` can issue `kubectl get --raw '/api/v1/nodes/<node>/proxy/exec/...'` and end up with an interactive shell in any container, even with no `pods/exec` permission anywhere.\n\n"+
@@ -469,7 +469,7 @@ func contentPrivesc014(ruleNamespace string, subject models.SubjectRef, sourceBi
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s `create serviceaccounts/token` — token minting (%s)", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s `create serviceaccounts/token` — token minting (`%s`)", phrase, subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s can `create` on the `serviceaccounts/token` subresource via `%s` → `%s`. %s.\n\n"+
 			"The TokenRequest API (Kubernetes 1.22+) is the canonical way to mint a JWT ServiceAccount token, and its `create` verb is gated by RBAC on the `serviceaccounts/token` subresource. Anyone holding this verb on a ServiceAccount can mint a token authenticated as that ServiceAccount.\n\n"+
@@ -509,7 +509,7 @@ func contentRBACOverbroad001(subject models.SubjectRef, bindingName string) rule
 		Detail: "Cluster-wide cluster-admin (full read/write to every resource in every namespace)",
 	}
 	return ruleContent{
-		Title: fmt.Sprintf("Non-system subject %s directly bound to `cluster-admin`", subjectKey(subject)),
+		Title: fmt.Sprintf("Non-system subject `%s` directly bound to `cluster-admin`", subjectKey(subject)),
 		Scope: scope,
 		Description: fmt.Sprintf("Subject %s is directly bound to the built-in `cluster-admin` ClusterRole via the ClusterRoleBinding `%s`. The `cluster-admin` ClusterRole grants `*` on `*` resources in `*` apiGroups — full read/write to every Kubernetes object including Secrets, RBAC, Nodes, Pods, and CRDs cluster-wide.\n\n"+
 			"Microsoft's Threat Matrix for Kubernetes lists `Cluster-admin binding` as a top-tier privilege-escalation technique, and CIS Kubernetes Benchmark control 5.1.1 ('Ensure that the cluster-admin role is only used where required') is one of the foundational RBAC hardening checks. Common anti-patterns that produce this finding: `kubectl create clusterrolebinding admin-binding --clusterrole=cluster-admin --user=alice@example.com` for a developer; Helm charts that ship a default ClusterRoleBinding to `cluster-admin`; SaaS/operator installers that take the lazy path.\n\n"+
