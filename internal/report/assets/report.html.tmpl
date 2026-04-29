@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kubesplaining Report{{ if .Snapshot.Metadata.ClusterName }} — {{ .Snapshot.Metadata.ClusterName }}{{ end }}</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  <style>
+    :root {
+      --bg-0: #0a0d16; --bg-1: #0f1422;
+      --surface: #151c2c; --surface-2: #1a2338; --surface-hover: #1f2942;
+      --border: #253049; --border-soft: #1d2538; --border-strong: #36456a;
+      --text: #e6eaf3; --text-mut: #8d99b1; --text-dim: #5e6a83;
+      --accent: #6ab7ff; --accent-2: #b788ff;
+      --critical: #ff5568; --critical-soft: rgba(255,85,104,0.13); --critical-edge: rgba(255,85,104,0.42);
+      --high: #ff9a3c; --high-soft: rgba(255,154,60,0.12); --high-edge: rgba(255,154,60,0.38);
+      --medium: #ffd24c; --medium-soft: rgba(255,210,76,0.11); --medium-edge: rgba(255,210,76,0.38);
+      --low: #52e3a4; --low-soft: rgba(82,227,164,0.11); --low-edge: rgba(82,227,164,0.38);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background:
+        radial-gradient(1100px 520px at 6% -8%, rgba(106,183,255,0.08) 0%, transparent 55%),
+        radial-gradient(900px 520px at 96% -4%, rgba(255,85,104,0.07) 0%, transparent 55%),
+        linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 100%);
+      background-attachment: fixed;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI Variable", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-feature-settings: "tnum" 1, "ss01" 1;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      line-height: 1.46;
+    }
+    a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(106,183,255,0.25); }
+    a:hover { border-bottom-color: var(--accent); }
+    code, pre, .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+    pre { margin: 0; background: #0b1120; color: #c1cde3; border: 1px solid var(--border-soft);
+          border-radius: 10px; padding: 12px 14px; overflow-x: auto; line-height: 1.6; }
+    h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+    h1 { font-size: 30px; letter-spacing: -0.025em; line-height: 1.15; }
+    h2 { font-size: 19px; }
+    h3 { font-size: 15.5px; }
+
+    .topbar { border-bottom: 1px solid var(--border-soft); background: rgba(10,13,22,0.72); position: sticky; top: 0; z-index: 5; }
+    .topbar-inner { max-width: 1280px; margin: 0 auto; padding: 14px 28px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark { width: 30px; height: 30px; border-radius: 8px;
+      background: linear-gradient(135deg, #6ab7ff 0%, #b788ff 100%);
+      display: grid; place-items: center; color: #0a0d16; font-weight: 800; font-size: 14px;
+      letter-spacing: -0.03em; box-shadow: 0 0 24px rgba(106,183,255,0.35); }
+    .brand-title { font-weight: 600; letter-spacing: -0.01em; font-size: 15px; }
+    .brand-title span { color: var(--text-mut); font-weight: 400; margin-left: 6px; }
+    .topbar-meta { display: flex; gap: 6px 14px; color: var(--text-mut); font-size: 13px; margin-left: auto; flex-wrap: wrap; align-items: center; }
+    .topbar-meta strong { color: var(--text); font-weight: 500; }
+    .topbar-meta .sep { width: 4px; height: 4px; border-radius: 999px; background: var(--text-dim); display: inline-block; margin: 0 4px; }
+
+    .tabs { max-width: 1280px; margin: 0 auto; padding: 0 28px; display: flex; gap: 6px; align-items: center; }
+    .tab { font: inherit; font-size: 13px; font-weight: 600; color: var(--text-mut); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: color 0.15s ease, border-color 0.15s ease; letter-spacing: 0.01em; }
+    .tab:hover { color: var(--text); }
+    .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-count { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,0.05); color: var(--text-mut); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0; }
+    .tab[aria-selected="true"] .tab-count { background: rgba(106,183,255,0.18); color: var(--accent); }
+    body[data-active-tab="overview"] main [data-tab="attack"],
+    body[data-active-tab="overview"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="attack"] main [data-tab="overview"],
+    body[data-active-tab="attack"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="findings"] main [data-tab="overview"],
+    body[data-active-tab="findings"] main [data-tab="attack"] { display: none; }
+    .tabs-empty { color: var(--text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
+
+    main { max-width: 1280px; margin: 0 auto; padding: 24px 28px 80px; }
+    section { margin-bottom: 24px; }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; position: relative; }
+    .card.soft { background: linear-gradient(180deg, rgba(21,28,44,1) 0%, rgba(18,24,38,1) 100%); }
+    .card-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+    .card-hd h2 { font-size: 17px; }
+    .kicker { color: var(--text-mut); text-transform: uppercase; letter-spacing: 0.14em; font-size: 11px; font-weight: 600; }
+    .sub { color: var(--text-mut); font-size: 13.5px; margin: 0; }
+
+    .hero { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
+    .hero .cluster-line { color: var(--text-mut); font-size: 13.5px; margin: 10px 0 0; }
+    .hero .cluster-line strong { color: var(--text); font-weight: 500; }
+    .hero .cluster-line code { color: var(--accent); background: rgba(106,183,255,0.08); padding: 2px 6px; border-radius: 6px; }
+    .tldr { margin-top: 14px; font-size: 15.5px; line-height: 1.62; color: var(--text-mut);
+      padding: 14px 16px; border-left: 2px solid var(--critical);
+      background: linear-gradient(90deg, var(--critical-soft), transparent 80%); border-radius: 0 10px 10px 0; }
+    .tldr strong { color: var(--text); font-weight: 600; }
+    .tldr code { color: #ffdbe0; background: rgba(255,85,104,0.12); padding: 1px 6px; border-radius: 4px; }
+
+    .sev-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+    .sev-tile { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 12px 22px;
+      background: rgba(10,13,22,0.35); position: relative; overflow: hidden; }
+    .sev-tile::before { content: ''; position: absolute; top: 10px; left: 10px; bottom: 10px; width: 3px; border-radius: 2px; }
+    .sev-tile.crit::before { background: var(--critical); box-shadow: 0 0 14px var(--critical-edge); }
+    .sev-tile.high::before { background: var(--high); box-shadow: 0 0 14px var(--high-edge); }
+    .sev-tile.med::before  { background: var(--medium); box-shadow: 0 0 14px var(--medium-edge); }
+    .sev-tile.low::before  { background: var(--low); box-shadow: 0 0 14px var(--low-edge); }
+    .sev-num { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+    .sev-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.11em; color: var(--text-mut); margin-top: 2px; }
+    .sev-tile.crit .sev-num { color: #ffb4be; }
+    .sev-tile.high .sev-num { color: #ffc89a; }
+    .sev-tile.med .sev-num  { color: #ffe9a1; }
+    .sev-tile.low .sev-num  { color: #a6f2cf; }
+
+    .risk-card { display: flex; flex-direction: column; gap: 10px; }
+    .risk-row { display: flex; align-items: center; gap: 18px; }
+    .risk-digits { display: flex; flex-direction: column; min-width: 0; }
+    .risk-digits .rd-num { font-size: 26px; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; color: var(--critical); line-height: 1; }
+    .risk-digits .rd-lbl { color: var(--text-mut); font-size: 13px; margin-top: 6px; }
+    .risk-digits .rd-lbl strong { color: var(--text); font-weight: 600; }
+    .risk-factors { margin: 6px 0 0; padding: 0; list-style: none; font-size: 13px; }
+    .risk-factors li { color: var(--text-mut); margin: 6px 0; padding-left: 20px; position: relative; }
+    .risk-factors li::before { content: '▸'; position: absolute; left: 2px; color: var(--accent); font-size: 11px; top: 1px; }
+    .risk-factors li strong { color: var(--text); font-weight: 600; }
+
+    .graph-intro { color: var(--text-mut); font-size: 14px; max-width: 820px; margin: 0 0 4px; }
+    .graph-intro strong { color: var(--text); }
+    .graph-intro .kp-hint { display: inline-block; margin-left: 4px; color: var(--accent); font-size: 12.5px; }
+    .graph-truncated-notice { color: var(--text-mut); font-size: 12.5px; max-width: 820px; margin: 8px 0 6px; padding: 8px 12px; background: rgba(255,154,60,0.06); border-left: 2px solid rgba(255,154,60,0.55); border-radius: 4px; line-height: 1.5; }
+    .graph-truncated-notice strong { color: var(--text); }
+    .graph-truncated-badge { display: inline-block; font-weight: 600; color: var(--text); margin-right: 6px; padding: 1px 6px; background: rgba(255,154,60,0.18); border-radius: 3px; font-size: 11.5px; letter-spacing: 0.02em; }
+    .graph-wrap { margin-top: 10px; overflow-x: auto; }
+    .kp-graph-card { position: relative; }
+    .attack-svg { width: 100%; min-width: 1080px; height: auto; display: block; }
+    .attack-svg text { pointer-events: none; user-select: none; }
+    .attack-svg rect.lane-pill { fill: rgba(255,255,255,0.025); stroke: var(--border-soft); stroke-width: 0.6; }
+    .attack-svg text.lane-hd { font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; fill: #8d99b1; }
+    .attack-svg text.node-title { font-size: 13px; font-weight: 600; fill: #e6eaf3; }
+    .attack-svg text.node-sub { font-size: 11px; fill: #bdc9df; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .attack-svg text.node-meta { font-size: 10.5px; fill: #8d99b1; }
+    .attack-svg text.rule-id { font-size: 10px; fill: #ff9a3c; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0.03em; }
+    .attack-svg text.impact-title { font-size: 13px; font-weight: 700; fill: #ffdbe0; letter-spacing: 0.01em; }
+    .attack-svg .edge { stroke-width: 1.4; fill: none; opacity: 0.85; transition: opacity 0.18s ease, stroke-width 0.18s ease; }
+    .attack-svg .edge.crit { stroke: #ff5568; stroke-dasharray: 6 8; animation: kp-flow 1.6s linear infinite; stroke-linecap: round; }
+    .attack-svg .edge.high { stroke: #ff9a3c; stroke-dasharray: 6 8; animation: kp-flow 2.2s linear infinite; stroke-linecap: round; }
+    .attack-svg .edge.med  { stroke: #6ab7ff; stroke-dasharray: 3 3; opacity: 0.7; }
+    @keyframes kp-flow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -28; } }
+    @keyframes kp-pulse { 0%,100% { filter: drop-shadow(0 0 4px rgba(255,85,104,0.35)); } 50% { filter: drop-shadow(0 0 12px rgba(255,85,104,0.6)); } }
+
+    .attack-svg .kp-node { cursor: pointer; outline: none; transition: opacity 0.2s ease; }
+    .attack-svg .kp-node rect.kp-node-rect { transition: stroke-width 0.18s ease, stroke-opacity 0.18s ease, filter 0.18s ease; }
+    .attack-svg .kp-node:hover rect.kp-node-rect,
+    .attack-svg .kp-node:focus-visible rect.kp-node-rect { stroke-width: 1.8; stroke-opacity: 0.95; filter: drop-shadow(0 0 8px rgba(255,255,255,0.06)); }
+    .attack-svg .kp-node:focus-visible rect.kp-node-rect { stroke-dasharray: 4 3; }
+    .attack-svg .kp-sev-dot { r: 4.5; }
+    .attack-svg .kp-sev-crit { fill: #ff5568; filter: drop-shadow(0 0 4px rgba(255,85,104,0.55)); }
+    .attack-svg .kp-sev-high { fill: #ff9a3c; filter: drop-shadow(0 0 4px rgba(255,154,60,0.55)); }
+    .attack-svg .kp-sev-med  { fill: #6ab7ff; filter: drop-shadow(0 0 4px rgba(106,183,255,0.55)); }
+    .attack-svg .kp-node-impact rect.kp-node-rect { animation: kp-pulse 3.4s ease-in-out infinite; }
+
+    /* Hover/click highlight: dim non-related, hot-glow related. */
+    .attack-svg.kp-active .kp-node.kp-dim { opacity: 0.18; }
+    .attack-svg.kp-active [data-edge-id].kp-dim { opacity: 0.12; }
+    .attack-svg.kp-active .kp-node.kp-hot rect.kp-node-rect { stroke-width: 2.2; stroke-opacity: 1; filter: drop-shadow(0 0 14px rgba(255,154,60,0.45)); }
+    .attack-svg.kp-active [data-edge-id].kp-hot { opacity: 1; stroke-width: 2.4; }
+
+    /* Filter chips */
+    .kp-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 6px; }
+    .kp-filters-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-mut); padding-right: 6px; }
+    .kp-filters-sep { width: 1px; height: 16px; background: var(--border-soft); margin: 0 6px; }
+    .kp-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+    .kp-chip:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+    .kp-chip[aria-pressed="false"] { color: var(--text-dim); background: transparent; border-style: dashed; }
+    .kp-chip[aria-pressed="false"] .kp-chip-dot { opacity: 0.3; }
+    .kp-chip-dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; }
+    .kp-chip-dot.crit { background: var(--critical); }
+    .kp-chip-dot.high { background: var(--high); }
+    .kp-chip-dot.med  { background: var(--medium); }
+    .kp-chip-reset { color: var(--accent); border-color: rgba(106,183,255,0.35); }
+
+    /* Filter dim rules: pure CSS so toggling is reflow-free. */
+    .attack-svg.kp-hide-sev-crit [data-sev="crit"]   { opacity: 0.10; pointer-events: none; }
+    .attack-svg.kp-hide-sev-high [data-sev="high"]   { opacity: 0.10; pointer-events: none; }
+    .attack-svg.kp-hide-sev-med  [data-sev="med"]    { opacity: 0.10; pointer-events: none; }
+    .attack-svg.kp-hide-sev-crit .edge.crit { opacity: 0.08; }
+    .attack-svg.kp-hide-sev-high .edge.high { opacity: 0.08; }
+    .attack-svg.kp-hide-sev-med  .edge.med  { opacity: 0.08; }
+
+    /* Side detail panel */
+    .kp-detail { position: fixed; top: 80px; right: 24px; width: 580px; max-width: calc(100vw - 48px); max-height: calc(100vh - 110px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 20px 24px 24px; z-index: 50; box-shadow: 0 18px 60px rgba(0,0,0,0.55); transform: translateX(20px); opacity: 0; transition: transform 0.22s ease, opacity 0.18s ease; }
+    .kp-detail.kp-open { transform: translateX(0); opacity: 1; }
+    .kp-detail-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .kp-detail-hd h3 { font-size: 16px; line-height: 1.3; flex: 1; }
+    .kp-detail-close { background: transparent; border: 1px solid var(--border); color: var(--text-mut); width: 28px; height: 28px; border-radius: 8px; font-size: 18px; cursor: pointer; line-height: 1; padding: 0; }
+    .kp-detail-close:hover { color: var(--text); border-color: var(--border-strong); }
+    .kp-panel-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+    .kp-panel-sub { color: var(--text-mut); font-size: 12px; word-break: break-all; margin-bottom: 12px; }
+    .kp-sev-badge { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.06em; }
+    .kp-sev-badge.kp-sev-crit { background: var(--critical-soft); color: #ffb4be; border: 1px solid var(--critical-edge); }
+    .kp-sev-badge.kp-sev-high { background: var(--high-soft); color: #ffc89a; border: 1px solid var(--high-edge); }
+    .kp-sev-badge.kp-sev-med  { background: var(--medium-soft); color: #ffe9a1; border: 1px solid var(--medium-edge); }
+    .kp-kind-badge { font-size: 10.5px; padding: 3px 8px; border-radius: 999px; background: rgba(106,183,255,0.10); color: #bedbff; border: 1px solid rgba(106,183,255,0.28); letter-spacing: 0.04em; }
+    .kp-rule { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-mut); background: rgba(255,255,255,0.02); }
+    .kp-section { margin-top: 16px; }
+    .kp-section h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin-bottom: 6px; }
+    .kp-prose { color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 0; }
+    .kp-prose p { margin: 0 0 8px; }
+    .kp-prose p:last-child { margin-bottom: 0; }
+    .kp-prose code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+    .kp-prose strong { color: var(--text); }
+    .kp-prose em { color: #ffdbe0; font-style: normal; }
+    .kp-prose ul, .kp-prose ol { margin: 6px 0 0; padding-left: 20px; }
+    .kp-prose li { margin: 3px 0; }
+    .kp-doc-link { margin-top: 8px; font-size: 12.5px; }
+    .kp-tech .kp-mitre { display: inline-block; margin-top: 8px; padding: 2px 8px; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #ffc89a; background: var(--high-soft); border: 1px solid var(--high-edge); border-radius: 6px; letter-spacing: 0.02em; }
+    .kp-steps-hd { font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin: 12px 0 6px; }
+    .kp-cmd { position: relative; margin: 8px 0; }
+    .kp-cmd pre { padding: 10px 64px 10px 12px; font-size: 12px; line-height: 1.55; max-height: 240px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .kp-cmd pre code { background: transparent; padding: 0; font-size: 12px; }
+    .kp-copy { position: absolute; top: 6px; right: 6px; font: inherit; font-size: 11px; font-weight: 600; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: rgba(255,255,255,0.04); color: var(--text-mut); cursor: pointer; transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease; letter-spacing: 0.04em; }
+    .kp-copy:hover { color: var(--text); border-color: var(--border-strong); background: rgba(255,255,255,0.08); }
+    .kp-copy.kp-copied { color: #a6f2cf; border-color: rgba(82,227,164,0.45); background: rgba(82,227,164,0.10); }
+    .kp-cmd-note { color: var(--text-mut); font-size: 12px; margin: 4px 2px 0; line-height: 1.55; }
+    .kp-step-note { color: var(--text); font-size: 12.5px; margin: 8px 2px; line-height: 1.55; }
+    .kp-fix { background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; padding: 10px 12px; margin-top: 16px; }
+    .kp-fix h4 { color: var(--accent); margin-bottom: 4px; }
+    .kp-fix .kp-prose code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    .kp-refs { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-mut); }
+    .kp-refs li { margin: 3px 0; }
+    .kp-refs a { word-break: break-all; }
+    .kp-examples { margin: 6px 0 0; padding-left: 18px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
+    .kp-walk-btn { display: inline-flex; align-items: center; gap: 8px; font: inherit; font-weight: 600; font-size: 13px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--high-edge); background: var(--high-soft); color: #ffc89a; cursor: pointer; margin-top: 4px; }
+    .kp-walk-btn:hover { background: rgba(255,154,60,0.2); }
+    .kp-walk-nav { display: flex; gap: 8px; margin-bottom: 12px; }
+    .kp-walk-nav button { font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; }
+    .kp-walk-nav button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .kp-walk-exit { color: var(--text-mut) !important; border-style: dashed !important; }
+    .kp-walk-progress { color: var(--text-mut); font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; margin-bottom: 10px; }
+    .kp-walk-card { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); }
+    .kp-walk-from { border-color: rgba(106,183,255,0.3); background: rgba(106,183,255,0.06); }
+    .kp-walk-action { border-color: var(--high-edge); background: rgba(255,154,60,0.06); margin-top: 0; }
+    .kp-walk-to { border-color: var(--critical-edge); background: rgba(255,85,104,0.06); }
+    .kp-walk-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-mut); font-weight: 700; margin-bottom: 4px; }
+    .kp-walk-id { font-size: 13px; color: var(--text); word-break: break-all; }
+    .kp-walk-perm { color: var(--text-mut); font-size: 11.5px; margin-top: 4px; word-break: break-word; }
+    .kp-walk-explainer { margin-top: 8px; }
+    .kp-walk-gain { color: var(--text-mut); font-size: 12.5px; margin-top: 4px; }
+    .kp-walk-arrow { text-align: center; color: var(--high); font-size: 18px; line-height: 1; margin: 6px 0; }
+
+    /* Floating tooltip */
+    .kp-tooltip { position: absolute; transform: translate(-50%, -100%); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 12px; max-width: 320px; z-index: 60; box-shadow: 0 12px 32px rgba(0,0,0,0.5); pointer-events: none; }
+    .kp-tt-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+    .kp-tt-body { font-size: 12px; color: var(--text-mut); margin-top: 4px; line-height: 1.5; }
+    .kp-tt-prose { margin-top: 4px; }
+    .kp-tt-prose p { margin: 0 0 4px; }
+    .kp-tt-prose code { background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 4px; }
+    .kp-tt-sub { color: var(--text-dim); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; word-break: break-all; margin-bottom: 4px; }
+    .kp-tt-why { margin-top: 5px; color: var(--text-mut); }
+    .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 6px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
+    .kp-tt-hint { margin-top: 6px; color: var(--accent); font-size: 11px; opacity: 0.8; }
+
+    @media (max-width: 1180px) {
+      .kp-detail { position: relative; top: auto; right: auto; width: 100%; max-width: 100%; margin-top: 12px; transform: translateY(8px); }
+      .kp-detail.kp-open { transform: translateY(0); }
+    }
+
+    .narratives { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+    .narrative { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); position: relative; overflow: hidden; }
+    .narrative h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .badge-sev { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.06em; }
+    .badge-sev.crit { background: var(--critical-soft); color: #ffb4be; border: 1px solid var(--critical-edge); }
+    .badge-sev.high { background: var(--high-soft); color: #ffc89a; border: 1px solid var(--high-edge); }
+    .badge-sev.med  { background: var(--medium-soft); color: #ffe9a1; border: 1px solid var(--medium-edge); }
+    .badge-sev.low  { background: var(--low-soft); color: #a6f2cf; border: 1px solid var(--low-edge); }
+    .narrative ol { margin: 10px 0 0; padding-left: 18px; color: var(--text-mut); font-size: 14px; line-height: 1.58; }
+    .narrative ol li { overflow-wrap: anywhere; word-break: break-word; }
+    .narrative ol li + li { margin-top: 6px; }
+    .narrative ol .step-items { margin: 6px 0 2px; padding-left: 18px; list-style: disc; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.55; }
+    .narrative ol .step-items li { margin-top: 0; }
+    .narrative ol .step-items li + li { margin-top: 2px; }
+    .narrative ol strong { color: var(--text); font-weight: 600; }
+    .narrative .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-mut); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0.02em; }
+    .chip.crit { color: #ffb4be; border-color: var(--critical-edge); background: var(--critical-soft); }
+    .chip.high { color: #ffc89a; border-color: var(--high-edge); background: var(--high-soft); }
+    .chip.med  { color: #ffe9a1; border-color: var(--medium-edge); background: var(--medium-soft); }
+    a.chip-link { text-decoration: none; cursor: pointer; transition: filter 0.15s ease, transform 0.1s ease; border-bottom: 1px solid transparent; }
+    a.chip-link:hover { filter: brightness(1.18); border-bottom: 1px solid currentColor; }
+    a.chip-link:active { transform: translateY(1px); }
+    @keyframes findingFlash { 0% { box-shadow: 0 0 0 0 rgba(106,183,255,0.55); } 60% { box-shadow: 0 0 0 8px rgba(106,183,255,0.15); } 100% { box-shadow: 0 0 0 0 rgba(106,183,255,0); } }
+    .finding.finding-flash { animation: findingFlash 1.5s ease-out; }
+
+    .two-col { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
+    .dist-list { display: grid; gap: 12px; }
+    .dist-row { display: grid; grid-template-columns: 170px 1fr 48px; gap: 14px; align-items: center; width: 100%; padding: 0; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; }
+    .dist-row-clickable { cursor: pointer; padding: 6px 8px; border-radius: 8px; transition: background 0.15s ease; }
+    .dist-row-clickable:hover { background: rgba(255,255,255,0.03); }
+    .dist-row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .dist-label { font-size: 13.5px; color: var(--text); font-weight: 500; }
+    .dist-label .dl-sub { display: block; color: var(--text-dim); font-size: 11.5px; font-weight: 400; margin-top: 1px; letter-spacing: 0.01em; }
+    .dist-bar { height: 22px; background: rgba(255,255,255,0.02); border-radius: 7px; display: flex; overflow: hidden; border: 1px solid var(--border-soft); }
+    .dist-seg { display: flex; align-items: center; justify-content: center; color: #0a0d16; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+    .dist-seg.crit { background: linear-gradient(180deg, #ff5568 0%, #e3394b 100%); }
+    .dist-seg.high { background: linear-gradient(180deg, #ff9a3c 0%, #e07e24 100%); }
+    .dist-seg.med  { background: linear-gradient(180deg, #ffd24c 0%, #e3b223 100%); }
+    .dist-seg.low  { background: linear-gradient(180deg, #52e3a4 0%, #2fc788 100%); }
+    .dist-count { font-size: 14px; font-weight: 600; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+
+    .legend { display: flex; gap: 10px 16px; font-size: 12px; color: var(--text-mut); flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+    .legend-dot.crit { background: var(--critical); }
+    .legend-dot.high { background: var(--high); }
+    .legend-dot.med  { background: var(--medium); }
+    .legend-dot.low  { background: var(--low); }
+
+    .heat { display: grid; grid-template-columns: minmax(220px, 1.2fr) repeat(5, minmax(80px, 1fr)); gap: 6px; margin-top: 4px; }
+    .heat-hd { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-mut); padding: 8px 6px; text-align: center; border-bottom: 1px solid var(--border-soft); }
+    .heat-hd.res { text-align: left; }
+    .heat-res { font-size: 12.5px; padding: 10px 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; border-top: 1px solid var(--border-soft); display: flex; align-items: center; gap: 8px; word-break: break-all; background: transparent; border-left: 0; border-right: 0; border-bottom: 0; text-align: left; font-weight: inherit; }
+    .heat-res-clickable { cursor: pointer; transition: background 0.15s ease; }
+    .heat-res-clickable:hover { background: rgba(255,255,255,0.03); }
+    .heat-res-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .heat-cell-clickable { cursor: pointer; border-left: 0; border-right: 0; border-bottom: 0; transition: filter 0.15s ease, transform 0.1s ease; font: inherit; padding: 0; }
+    .heat-cell-clickable:hover { filter: brightness(1.25); }
+    .heat-cell-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .heat-res .heat-sev { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: 0.04em; flex-shrink: 0; }
+    .heat-sev.crit { color: #ffb4be; background: var(--critical-soft); border: 1px solid var(--critical-edge); }
+    .heat-sev.high { color: #ffc89a; background: var(--high-soft); border: 1px solid var(--high-edge); }
+    .heat-sev.med  { color: #ffe9a1; background: var(--medium-soft); border: 1px solid var(--medium-edge); }
+    .heat-sev.low  { color: #a6f2cf; background: var(--low-soft); border: 1px solid var(--low-edge); }
+    .heat-cell { border-top: 1px solid var(--border-soft); min-height: 48px; display: grid; place-items: center; font-weight: 700; font-variant-numeric: tabular-nums; font-size: 14px; border-radius: 6px; background: rgba(255,255,255,0.012); color: var(--text-dim); }
+    .heat-cell.n0 { color: var(--text-dim); background: transparent; }
+    .heat-cell.n0 > span { color: var(--text-dim); opacity: 0.4; }
+    .heat-cell.privesc.n1 { background: rgba(255,85,104,0.10);  color: #ffb4be; }
+    .heat-cell.privesc.n2 { background: rgba(255,85,104,0.18);  color: #ffc6cf; }
+    .heat-cell.privesc.n3 { background: rgba(255,85,104,0.28);  color: #ffdbe0; }
+    .heat-cell.privesc.n4 { background: rgba(255,85,104,0.42);  color: #fff0f2; }
+    .heat-cell.privesc.n5 { background: rgba(255,85,104,0.60);  color: #fff; }
+    .heat-cell.lateral.n1 { background: rgba(255,154,60,0.10);  color: #ffc89a; }
+    .heat-cell.lateral.n2 { background: rgba(255,154,60,0.20);  color: #ffd5ad; }
+    .heat-cell.lateral.n3 { background: rgba(255,154,60,0.32);  color: #ffe1c1; }
+    .heat-cell.lateral.n4 { background: rgba(255,154,60,0.44);  color: #fff0de; }
+    .heat-cell.lateral.n5 { background: rgba(255,154,60,0.60);  color: #fff; }
+    .heat-cell.exfil.n1   { background: rgba(183,136,255,0.10); color: #d9c1ff; }
+    .heat-cell.exfil.n2   { background: rgba(183,136,255,0.20); color: #e2ceff; }
+    .heat-cell.exfil.n3   { background: rgba(183,136,255,0.32); color: #ebdbff; }
+    .heat-cell.exfil.n4   { background: rgba(183,136,255,0.44); color: #f3e7ff; }
+    .heat-cell.exfil.n5   { background: rgba(183,136,255,0.60); color: #fff; }
+    .heat-cell.infra.n1   { background: rgba(106,183,255,0.10); color: #bedbff; }
+    .heat-cell.infra.n2   { background: rgba(106,183,255,0.20); color: #cae3ff; }
+    .heat-cell.infra.n3   { background: rgba(106,183,255,0.30); color: #dcecff; }
+    .heat-cell.infra.n4   { background: rgba(106,183,255,0.44); color: #e9f3ff; }
+    .heat-cell.infra.n5   { background: rgba(106,183,255,0.60); color: #fff; }
+    .heat-cell.evasion.n1 { background: rgba(82,227,164,0.14);  color: #a6f2cf; }
+    .heat-cell.evasion.n2 { background: rgba(82,227,164,0.22);  color: #bdf6dc; }
+    .heat-cell.evasion.n3 { background: rgba(82,227,164,0.32);  color: #d2f9e7; }
+    .heat-cell.evasion.n4 { background: rgba(82,227,164,0.44);  color: #e6fbf1; }
+    .heat-cell.evasion.n5 { background: rgba(82,227,164,0.60);  color: #fff; }
+    .heat-note { color: var(--text-mut); font-size: 12px; margin-top: 8px; }
+    .heat-note strong { color: var(--text); }
+
+    .modules-nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); position: sticky; top: 100px; z-index: 4; }
+    .findings-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .fl-active { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .fl-active[hidden] { display: none; }
+    .fl-chip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); cursor: pointer; }
+    .fl-chip-active { color: var(--accent); border-color: rgba(106,183,255,0.45); background: rgba(106,183,255,0.10); }
+    .fl-chip-active:hover { background: rgba(106,183,255,0.18); }
+    .fl-chip-key { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); }
+    .fl-chip-active .fl-chip-key { color: var(--accent); opacity: 0.85; }
+    .fl-chip-val { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; word-break: break-all; }
+    .fl-chip-x { color: var(--text-dim); margin-left: 2px; font-size: 14px; line-height: 1; }
+    .fl-clear { font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text-mut); cursor: pointer; }
+    .fl-clear:hover { color: var(--text); border-color: var(--border-strong); }
+    .fl-clear[hidden] { display: none; }
+    .modules-nav .mn-title { color: var(--text-mut); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; padding: 6px 8px 6px 2px; border-right: 1px solid var(--border-soft); margin-right: 6px; align-self: center; }
+    .module-link { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text); background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
+    .module-link:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+    .module-link .mn-count { font-size: 11px; color: var(--text-mut); background: rgba(255,255,255,0.03); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+
+    .module-section { margin-top: 28px; }
+    .module-section .module-hd { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); }
+    .module-hd h2 { font-size: 22px; letter-spacing: -0.02em; }
+    .module-hd .mh-count { color: var(--text-mut); font-size: 13px; }
+
+    .finding-list { display: grid; gap: 12px; }
+    .finding { border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; background: var(--surface); border-left-width: 4px; transition: border-color 0.2s ease, background 0.2s ease; }
+    .finding:hover { background: var(--surface-hover); }
+    .finding.crit { border-left-color: var(--critical); }
+    .finding.high { border-left-color: var(--high); }
+    .finding.med  { border-left-color: var(--medium); }
+    .finding.low  { border-left-color: var(--low); }
+    .finding-hd { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+    .finding-hd h3 { font-size: 16px; flex: 1 1 300px; }
+    .finding .rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); letter-spacing: 0.02em; }
+    .finding .score-lbl { font-size: 12px; color: var(--text-mut); }
+    .finding .score-lbl strong { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+    .finding .scope-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 6px; align-items: center; }
+    .finding .scope-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid; }
+    .finding .scope-chip.cluster { color: #ff9a3c; border-color: rgba(255,154,60,0.4); background: rgba(255,154,60,0.08); }
+    .finding .scope-chip.namespace { color: #6ab7ff; border-color: rgba(106,183,255,0.4); background: rgba(106,183,255,0.08); }
+    .finding .scope-chip.workload { color: #a89cf6; border-color: rgba(168,156,246,0.4); background: rgba(168,156,246,0.08); }
+    .finding .scope-chip.object { color: #88d49f; border-color: rgba(136,212,159,0.4); background: rgba(136,212,159,0.08); }
+    .finding .scope-detail { color: var(--text); font-size: 13px; font-weight: 500; }
+    .finding .scope-detail code { background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+    .finding .meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0; color: var(--text-mut); font-size: 12.5px; }
+    .finding .meta .k { color: var(--text-dim); }
+    .finding .meta code { background: rgba(255,255,255,0.03); padding: 1px 6px; border-radius: 4px; color: var(--text); }
+    .finding .desc { margin: 6px 0 12px; color: #cfd6e5; font-size: 14px; line-height: 1.58; }
+    .finding .desc p { margin-bottom: 8px; }
+    .finding .desc p:last-child { margin-bottom: 0; }
+    .finding .impact { display: grid; grid-template-columns: 90px 1fr; gap: 10px; padding: 10px 14px; background: rgba(255,107,107,0.06); border: 1px solid rgba(255,107,107,0.22); border-radius: 10px; font-size: 13.5px; line-height: 1.5; margin: 8px 0 12px; }
+    .finding .impact .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; padding-top: 2px; }
+    .finding .impact .v { color: var(--text); }
+    .finding .scenario { margin: 10px 0; padding: 12px 14px; background: rgba(255,154,60,0.04); border: 1px solid rgba(255,154,60,0.18); border-radius: 10px; }
+    .finding .scenario .k { color: #ff9a3c; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .scenario ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
+    .finding .scenario ol li { margin-bottom: 4px; }
+    .finding .scenario ol li:last-child { margin-bottom: 0; }
+    .finding .rem { padding: 12px 14px; background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; font-size: 13.5px; line-height: 1.55; }
+    .finding .rem .k { color: var(--accent); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .rem .summary { color: var(--text); margin-bottom: 8px; }
+    .finding .rem ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
+    .finding .rem ol li { margin-bottom: 4px; }
+    .finding .rem ol li:last-child { margin-bottom: 0; }
+    .finding .rem code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .finding details.refs { margin-top: 10px; font-size: 13px; color: var(--text-mut); }
+    .finding details.refs summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
+    .finding details.refs[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
+    .finding details.refs summary .ref-count { font-size: 10.5px; color: var(--text-dim); background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 999px; letter-spacing: 0; text-transform: none; font-weight: 600; }
+    .finding details.refs[open] summary .ref-count { color: var(--accent); background: rgba(106,183,255,0.12); }
+    .finding details.refs a { word-break: break-all; }
+    .finding details.refs ul { list-style: none; padding-left: 0; margin: 8px 0 0; display: grid; gap: 4px; }
+    .finding details.refs ul li { padding-left: 14px; position: relative; }
+    .finding details.refs ul li::before { content: "↗"; position: absolute; left: 0; color: var(--text-dim); }
+    .finding .mitre { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mut); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .finding .mitre .k { color: var(--text-dim); }
+    .finding .mitre a { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; text-decoration: none; background: rgba(255,255,255,0.02); }
+    .finding .mitre a:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+    .finding details { margin-top: 12px; }
+    .finding details summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-block; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
+    .finding details[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
+    .finding details pre { margin-top: 10px; }
+
+    /* Observed attack chain (privesc EscalationPath) */
+    .finding .chain { margin-top: 12px; padding: 12px 14px; background: rgba(255,90,90,0.06); border: 1px solid rgba(255,90,90,0.22); border-radius: 10px; }
+    .finding .chain .k { color: var(--critical, #ff5a5a); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .chain ol.attack-chain { list-style: none; padding-left: 0; margin: 0; display: grid; gap: 10px; counter-reset: step; }
+    .finding .chain ol.attack-chain li.attack-step { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
+    .finding .chain .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+    .finding .chain .step-num { font-weight: 700; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .finding .chain .step-action { background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .finding .chain .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
+    .finding .chain .step-edge code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
+    .finding .chain .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
+    .finding .chain .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
+    .finding .chain .step-meta code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
+
+    /* Humanized Evidence section */
+    .finding .evidence { margin-top: 12px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 10px; }
+    .finding .evidence > .k { color: var(--text-mut); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .ev-grid { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+    .finding .ev-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; row-gap: 2px; align-items: baseline; padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.04); }
+    .finding .ev-row:first-child { border-top: 0; padding-top: 0; }
+    .finding .ev-row.ev-row-block { display: block; }
+    .finding .ev-key { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; white-space: nowrap; }
+    .finding .ev-val { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
+    .finding .ev-val.ev-stack { flex-direction: column; align-items: stretch; gap: 6px; }
+    .finding .ev-val code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
+    .finding .ev-chip { display: inline-flex; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text); background: rgba(255,255,255,0.03); }
+    .finding .ev-chip.danger { border-color: rgba(255,154,60,0.5); color: #ffb060; background: rgba(255,154,60,0.08); }
+    .finding .ev-chip.wild { border-color: rgba(255,90,90,0.5); color: #ff7777; background: rgba(255,90,90,0.1); font-weight: 700; }
+    .finding .ev-hints { grid-column: 2; display: grid; gap: 1px; margin-top: 2px; }
+    .finding .ev-hint { font-size: 11.5px; color: var(--text-mut); padding-left: 0; }
+    .finding .ev-hint code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-sentence { font-size: 12.5px; color: var(--text); }
+    .finding .ev-sentence code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-rule { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); display: grid; gap: 3px; }
+    .finding .ev-rule-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12.5px; color: var(--text); }
+    .finding .ev-rule-meta { font-size: 11.5px; color: var(--text-mut); }
+    .finding .ev-mut { color: var(--text-dim); font-size: 11px; }
+    .finding .ev-json { margin: 0; padding: 8px 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; font-size: 11.5px; }
+    .finding .evidence-raw { margin-top: 8px; }
+    .finding .evidence-raw summary { font-size: 11px; }
+    @media (max-width: 720px) {
+      .finding .ev-row { grid-template-columns: 1fr; }
+      .finding .ev-hints { grid-column: 1; }
+    }
+
+    .notes { display: grid; gap: 8px; font-size: 13px; color: var(--text-mut); }
+    .notes li { padding: 8px 10px; background: rgba(255,154,60,0.07); border: 1px solid rgba(255,154,60,0.22); border-radius: 8px; list-style: none; }
+
+    .footer { color: var(--text-dim); font-size: 12px; text-align: center; margin-top: 40px; }
+
+    @media (max-width: 1000px) {
+      .hero { grid-template-columns: 1fr; }
+      .two-col { grid-template-columns: 1fr; }
+      .sev-grid { grid-template-columns: repeat(2, 1fr); }
+      .dist-row { grid-template-columns: 130px 1fr 40px; }
+      .heat { grid-template-columns: minmax(180px, 1fr) repeat(5, minmax(56px, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      main { padding: 16px 16px 60px; }
+      .topbar-inner { padding: 12px 16px; }
+      .modules-nav { top: 96px; }
+    }
+  </style>
+</head>
+<body data-active-tab="attack">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark">K</div>
+        <div class="brand-title">Kubesplaining<span>Security Report</span></div>
+      </div>
+      <div class="topbar-meta">
+        {{ if .Snapshot.Metadata.ClusterName }}<span>Cluster <strong>{{ .Snapshot.Metadata.ClusterName }}</strong></span><span class="sep"></span>{{ end }}
+        {{ if .Snapshot.Metadata.ClusterVersion }}<span><strong>{{ .Snapshot.Metadata.ClusterVersion }}</strong></span><span class="sep"></span>{{ end }}
+        {{ if .Snapshot.Metadata.APIServerURL }}<span>API <code class="mono" style="color:var(--accent)">{{ .Snapshot.Metadata.APIServerURL }}</code></span><span class="sep"></span>{{ end }}
+        {{ if .Snapshot.Metadata.SnapshotTimestamp }}<span>Snapshot <strong>{{ .Snapshot.Metadata.SnapshotTimestamp }}</strong></span>{{ end }}
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Report sections">
+      <button type="button" class="tab" role="tab" id="tabbtn-attack" aria-controls="tab-attack" aria-selected="true" data-tab="attack">Attack paths</button>
+      <button type="button" class="tab" role="tab" id="tabbtn-overview" aria-controls="tab-overview" aria-selected="false" data-tab="overview">Risk overview</button>
+      <button type="button" class="tab" role="tab" id="tabbtn-findings" aria-controls="tab-findings" aria-selected="false" data-tab="findings">Findings <span class="tab-count">{{ .Summary.Total }}</span></button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" data-tab="overview">
+      <div class="card soft">
+        <div class="kicker">Executive summary</div>
+        <h1>{{ .Headline }}</h1>
+        {{ if .Summaries }}<p class="cluster-line">{{ .Summaries }}</p>{{ end }}
+
+        {{ if .Narratives }}
+        <div class="tldr">
+          <strong>What the attack paths mean.</strong>
+          Individual findings don't tell the whole story — attackers chain them. This report detected
+          <strong>{{ len .Narratives }}</strong> attack {{ pluralize (len .Narratives) "chain" "chains" }} by looking at how rule IDs, subjects, and resources connect.
+          The attack-paths diagram below makes those connections explicit; each chain is walked through in plain English further down.
+        </div>
+        {{ end }}
+
+        <div class="sev-grid">
+          <div class="sev-tile crit"><div class="sev-num">{{ .Summary.Critical }}</div><div class="sev-lbl">Critical</div></div>
+          <div class="sev-tile high"><div class="sev-num">{{ .Summary.High }}</div><div class="sev-lbl">High</div></div>
+          <div class="sev-tile med"><div class="sev-num">{{ .Summary.Medium }}</div><div class="sev-lbl">Medium</div></div>
+          <div class="sev-tile low"><div class="sev-num">{{ .Summary.Low }}</div><div class="sev-lbl">Low</div></div>
+        </div>
+      </div>
+
+      <div class="card risk-card">
+        <div class="kicker">Risk index</div>
+        <div class="risk-row">
+          <svg viewBox="0 0 140 140" width="140" height="140" aria-label="Risk gauge" role="img">
+            <circle cx="70" cy="70" r="56" fill="none" stroke="#253049" stroke-width="14"/>
+            <circle cx="70" cy="70" r="56" fill="none" stroke="{{ .GaugeColor }}" stroke-width="14"
+                    stroke-linecap="round" stroke-dasharray="{{ .GaugeDash }}"
+                    transform="rotate(-90 70 70)"/>
+            <text x="70" y="72" text-anchor="middle" font-family="-apple-system,Inter,sans-serif"
+                  font-size="30" font-weight="700" fill="#e6eaf3" letter-spacing="-0.02em">{{ .RiskIndex }}</text>
+            <text x="70" y="92" text-anchor="middle" font-family="-apple-system,Inter,sans-serif"
+                  font-size="11" font-weight="600" fill="#8d99b1" letter-spacing="0.14em">/ 100</text>
+          </svg>
+          <div class="risk-digits">
+            <div><span class="rd-num">{{ .RiskLevel }}</span></div>
+            <div class="rd-lbl">Weighted from <strong>{{ .Summary.Critical }} critical</strong>, <strong>{{ .Summary.High }} high</strong>, <strong>{{ .Summary.Medium }} medium</strong>, <strong>{{ .Summary.Low }} low</strong>.</div>
+          </div>
+        </div>
+        <ul class="risk-factors">
+          {{ if .Narratives }}<li><strong>{{ len .Narratives }}</strong> attack {{ pluralize (len .Narratives) "chain" "chains" }} detected</li>{{ end }}
+          {{ if .TopNamespaces }}<li><strong>{{ (index .TopNamespaces 0).Summary.Total }}</strong> findings in namespace <code>{{ (index .TopNamespaces 0).Label }}</code></li>{{ end }}
+          {{ if .TopResources }}<li><strong>{{ (index .TopResources 0).Summary.Total }}</strong> findings on <code>{{ (index .TopResources 0).Label }}</code></li>{{ end }}
+          {{ if .Snapshot.Metadata.CollectionWarnings }}<li><strong>{{ len .Snapshot.Metadata.CollectionWarnings }}</strong> collection warnings — some signal may be missing</li>{{ end }}
+        </ul>
+      </div>
+    </section>
+
+    {{ if .Graph.Nodes }}
+    <section data-tab="attack">
+      <div class="card kp-graph-card">
+        <div class="card-hd">
+          <div>
+            <div class="kicker">Think in graphs</div>
+            <h2>Attack paths</h2>
+          </div>
+          <div class="legend">
+            <span class="legend-item"><span class="legend-dot crit"></span>critical edge</span>
+            <span class="legend-item"><span class="legend-dot high"></span>high edge</span>
+          </div>
+        </div>
+        <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
+        {{ if .Graph.Truncated }}
+        <p class="graph-truncated-notice"><span class="graph-truncated-badge">Showing {{ .Graph.Shown }} of {{ .Graph.TotalCaps }}</span>To keep the diagram readable, capabilities are capped at 10. The slate first guarantees one cap per impact category present in the cluster, then fills remaining slots by severity and score. The <strong>Findings</strong> tab has the complete list.</p>
+        {{ end }}
+        <div class="kp-filters" role="toolbar" aria-label="Filter the attack graph">
+          <span class="kp-filters-label">Show</span>
+          <button type="button" class="kp-chip" data-filter="sev" data-value="crit" aria-pressed="true"><span class="kp-chip-dot crit"></span>Critical</button>
+          <button type="button" class="kp-chip" data-filter="sev" data-value="high" aria-pressed="true"><span class="kp-chip-dot high"></span>High</button>
+          <button type="button" class="kp-chip" data-filter="sev" data-value="med" aria-pressed="true"><span class="kp-chip-dot med"></span>Medium</button>
+          <span class="kp-filters-sep" aria-hidden="true"></span>
+          <button type="button" class="kp-chip" data-filter="kind" data-value="Subject" aria-pressed="true">Subjects</button>
+          <button type="button" class="kp-chip" data-filter="kind" data-value="Resource" aria-pressed="true">Resources</button>
+          <span class="kp-filters-sep" aria-hidden="true"></span>
+          <button type="button" class="kp-chip kp-chip-reset" data-action="reset">Reset</button>
+        </div>
+        <div class="graph-wrap">
+          <svg class="attack-svg" viewBox="0 0 {{ .Graph.Width }} {{ .Graph.Height }}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Attack path graph — interactive">
+            <defs>
+              <linearGradient id="impact-crit" x1="0" x2="1" y1="0" y2="0">
+                <stop offset="0%" stop-color="#3a1018"/><stop offset="100%" stop-color="#1d0b10"/>
+              </linearGradient>
+              <symbol id="kp-icon-sa" viewBox="0 0 16 16">
+                <circle cx="8" cy="6" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M2.5 14c0-2.8 2.5-4.5 5.5-4.5s5.5 1.7 5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </symbol>
+              <symbol id="kp-icon-group" viewBox="0 0 16 16">
+                <circle cx="5" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <circle cx="11" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M1.5 13.5c0-2 1.7-3.4 3.5-3.4s3.5 1.4 3.5 3.4M7.5 13.5c0-2 1.7-3.4 3.5-3.4s3.5 1.4 3.5 3.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </symbol>
+              <symbol id="kp-icon-resource" viewBox="0 0 16 16">
+                <path d="M8 1.5l5.5 3v7L8 14.5 2.5 11.5v-7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+                <path d="M2.5 4.5L8 7.5l5.5-3M8 7.5v7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+              </symbol>
+              <symbol id="kp-icon-key" viewBox="0 0 16 16">
+                <circle cx="5" cy="11" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M6.8 9.2L13.5 2.5M11 5l1.5 1.5M9 7l1.5 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </symbol>
+            </defs>
+            {{ range $i, $lane := .Graph.Lanes }}
+              <rect class="lane-pill" x="{{ sub $lane.LabelX (div $lane.LabelW 2) }}" y="6" width="{{ $lane.LabelW }}" height="22" rx="11"/>
+              <text class="lane-hd" text-anchor="middle" x="{{ $lane.LabelX }}" y="22">{{ $lane.Label }}</text>
+            {{ end }}
+            <line x1="340" y1="36" x2="340" y2="{{ sub .Graph.Height 10 }}" stroke="#1a2134" stroke-dasharray="2 4"/>
+            <line x1="700" y1="36" x2="700" y2="{{ sub .Graph.Height 10 }}" stroke="#1a2134" stroke-dasharray="2 4"/>
+            {{ range .Graph.Edges }}
+              <path class="edge {{ .Class }}" data-edge-id="{{ .ID }}" d="{{ .D }}"/>
+            {{ end }}
+            {{ range .Graph.Nodes }}
+              {{ $node := . }}
+              {{ if eq .Kind "entry" }}
+                <g class="kp-node kp-node-entry" data-node-id="{{ .ID }}" data-kind="entry" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Entry point">
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
+                        fill="#151c2c"
+                        stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"
+                        stroke-opacity="0.55"/>
+                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 13 }}" cy="{{ add .Y 22 }}" r="4"/>
+                  {{ range .Lines }}
+                    <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
+                  {{ end }}
+                </g>
+              {{ else if eq .Kind "capability" }}
+                <g class="kp-node kp-node-cap" data-node-id="{{ .ID }}" data-kind="capability" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Abused capability">
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="8"
+                        fill="#1a2338"
+                        stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else }}#ff9a3c{{ end }}"
+                        stroke-opacity="0.55"/>
+                  <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 11 }}" cy="{{ add .Y 18 }}" r="4"/>
+                  {{ range .Lines }}
+                    <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
+                  {{ end }}
+                </g>
+              {{ else if eq .Kind "impact" }}
+                <g class="kp-node kp-node-impact" data-node-id="{{ .ID }}" data-kind="impact" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="Impact">
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
+                        fill="url(#impact-crit)" stroke="#ff5568" stroke-width="1.2"/>
+                  {{ range .Lines }}
+                    <text class="{{ .Class }}" x="{{ add $node.X .OffsetX }}" y="{{ add $node.Y .OffsetY }}">{{ .Text }}</text>
+                  {{ end }}
+                </g>
+              {{ end }}
+            {{ end }}
+          </svg>
+        </div>
+      </div>
+
+      <aside class="kp-detail" hidden role="dialog" aria-modal="false" aria-labelledby="kp-detail-title">
+        <header class="kp-detail-hd">
+          <h3 id="kp-detail-title">Click a node</h3>
+          <button type="button" class="kp-detail-close" aria-label="Close">×</button>
+        </header>
+        <div class="kp-detail-body" id="kp-detail-body"></div>
+      </aside>
+
+      <div class="kp-tooltip" hidden role="tooltip">
+        <div class="kp-tt-title"></div>
+        <div class="kp-tt-body" hidden></div>
+      </div>
+
+      <script type="application/json" id="kp-graph-data">{{ .GraphJSON }}</script>
+    </section>
+    {{ end }}
+
+    {{ if .Narratives }}
+    <section data-tab="attack">
+      <div class="card-hd" style="margin-bottom: 10px">
+        <div>
+          <div class="kicker">Walkthroughs</div>
+          <h2>Attack-chain narratives</h2>
+        </div>
+        <p class="sub">Auto-detected from rule combinations in this scan. Each walks through, in attacker order, how the findings connect.</p>
+      </div>
+      <div class="narratives">
+        {{ range .Narratives }}
+        <article class="narrative">
+          <h3>{{ .Title }} <span class="badge-sev {{ sevClass .Severity }}">{{ .Severity }}</span></h3>
+          <ol>
+            {{ range .Steps }}<li>{{ .Text }}{{ if .Items }}<ul class="step-items">{{ range .Items }}<li>{{ . }}</li>{{ end }}</ul>{{ end }}</li>{{ end }}
+          </ol>
+          {{ if .RuleIDs }}
+          <div class="chips">
+            {{ range .RuleIDs }}<a class="chip high chip-link" href="#finding-{{ . }}" data-rule="{{ . }}">{{ . }}</a>{{ end }}
+          </div>
+          {{ end }}
+        </article>
+        {{ end }}
+      </div>
+    </section>
+    {{ end }}
+
+    <section data-tab="overview">
+      <div class="two-col">
+        <div class="card">
+          <div class="card-hd">
+            <div>
+              <div class="kicker">Where the risk clusters</div>
+              <h2>Severity × attack category</h2>
+            </div>
+            <div class="legend">
+              <span class="legend-item"><span class="legend-dot crit"></span>Critical</span>
+              <span class="legend-item"><span class="legend-dot high"></span>High</span>
+              <span class="legend-item"><span class="legend-dot med"></span>Medium</span>
+              <span class="legend-item"><span class="legend-dot low"></span>Low</span>
+            </div>
+          </div>
+          <div class="dist-list">
+            {{ range .Categories }}
+            <button type="button" class="dist-row dist-row-clickable" data-fl-target="category:{{ .CSSKey }}" aria-label="Show findings in category {{ .Label }}">
+              <div class="dist-label">{{ .Label }}</div>
+              <div class="dist-bar">
+                {{ if .Summary.Critical }}<div class="dist-seg crit" style="flex: {{ .Summary.Critical }}">{{ .Summary.Critical }}</div>{{ end }}
+                {{ if .Summary.High }}<div class="dist-seg high" style="flex: {{ .Summary.High }}">{{ .Summary.High }}</div>{{ end }}
+                {{ if .Summary.Medium }}<div class="dist-seg med" style="flex: {{ .Summary.Medium }}">{{ .Summary.Medium }}</div>{{ end }}
+                {{ if .Summary.Low }}<div class="dist-seg low" style="flex: {{ .Summary.Low }}">{{ .Summary.Low }}</div>{{ end }}
+              </div>
+              <div class="dist-count">{{ .Summary.Total }}</div>
+            </button>
+            {{ end }}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-hd">
+            <div>
+              <div class="kicker">Module coverage</div>
+              <h2>Findings by module</h2>
+            </div>
+          </div>
+          <div class="dist-list">
+            {{ range .Modules }}
+            <button type="button" class="dist-row dist-row-clickable" data-fl-target="module:{{ .ID }}" aria-label="Show {{ .Label }} findings">
+              <div class="dist-label">{{ .Label }}</div>
+              <div class="dist-bar">
+                {{ if .Summary.Critical }}<div class="dist-seg crit" style="flex: {{ .Summary.Critical }}">{{ .Summary.Critical }}</div>{{ end }}
+                {{ if .Summary.High }}<div class="dist-seg high" style="flex: {{ .Summary.High }}">{{ .Summary.High }}</div>{{ end }}
+                {{ if .Summary.Medium }}<div class="dist-seg med" style="flex: {{ .Summary.Medium }}">{{ .Summary.Medium }}</div>{{ end }}
+                {{ if .Summary.Low }}<div class="dist-seg low" style="flex: {{ .Summary.Low }}">{{ .Summary.Low }}</div>{{ end }}
+              </div>
+              <div class="dist-count">{{ .Summary.Total }}</div>
+            </button>
+            {{ end }}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {{ if .HeatRows }}
+    <section data-tab="overview">
+      <div class="card">
+        <div class="card-hd">
+          <div>
+            <div class="kicker">Risk hotspots</div>
+            <h2>Resource × attack category</h2>
+          </div>
+          <p class="sub">Cell color intensity = finding concentration. Rows sorted top-first by severity weight.</p>
+        </div>
+        <div class="heat">
+          <div class="heat-hd res">Resource</div>
+          {{ range .HeatCats }}<div class="heat-hd">{{ .Label }}</div>{{ end }}
+          {{ range .HeatRows }}
+            <button type="button" class="heat-res heat-res-clickable" data-fl-target="resource:{{ .Label }}" aria-label="Show findings on {{ .Label }}"><span class="heat-sev {{ .SevClass }}">{{ .SevLabel }}</span>{{ .Label }}</button>
+            {{ range .Cells }}
+              {{ if .Count }}<button type="button" class="heat-cell heat-cell-clickable {{ .CatClass }} n{{ .Level }}" data-fl-target="resource:{{ .Resource }}|category:{{ .CatClass }}" aria-label="Show {{ .Count }} findings"><span>{{ .Count }}</span></button>{{ else }}<div class="heat-cell {{ .CatClass }} n{{ .Level }}"><span>{{ .Count }}</span></div>{{ end }}
+            {{ end }}
+          {{ end }}
+        </div>
+      </div>
+    </section>
+    {{ end }}
+
+    {{ if .Snapshot.Metadata.CollectionWarnings }}
+    <section data-tab="overview">
+      <div class="card">
+        <div class="card-hd"><div><div class="kicker">Collection notes</div><h2>Signal gaps in this scan</h2></div></div>
+        <ul class="notes">
+          {{ range .Snapshot.Metadata.CollectionWarnings }}<li>{{ . }}</li>{{ end }}
+        </ul>
+      </div>
+    </section>
+    {{ end }}
+
+    {{ if .Modules }}
+    <div class="findings-filters" data-tab="findings" role="toolbar" aria-label="Filter findings" hidden>
+      <span class="kp-filters-label">Filter</span>
+      <div class="fl-active" id="fl-active" hidden></div>
+      <button type="button" class="fl-clear" id="fl-clear" hidden>Clear filters</button>
+    </div>
+    <nav class="modules-nav" data-tab="findings" aria-label="Module navigation">
+      <div class="mn-title">Jump to module</div>
+      {{ range .Modules }}<a class="module-link" href="#{{ .ID }}">{{ .Label }} <span class="mn-count">{{ .Summary.Total }}</span></a>{{ end }}
+    </nav>
+
+    {{ range .Modules }}
+    <section class="module-section" data-tab="findings" data-module="{{ .ID }}" id="{{ .ID }}">
+      <div class="module-hd">
+        <h2>{{ .Label }}</h2>
+        <span class="mh-count">{{ .Summary.Total }} {{ pluralize .Summary.Total "finding" "findings" }} · {{ .Summary.Critical }} critical · {{ .Summary.High }} high · {{ .Summary.Medium }} medium · {{ .Summary.Low }} low</span>
+      </div>
+      <div class="finding-list">
+        {{ range .Findings }}
+        {{ $anchor := index $.AnchorByID .ID }}
+        <article class="finding {{ sevClass .Severity }}"{{ if $anchor }} id="{{ $anchor }}"{{ end }} data-rule="{{ .RuleID }}" data-severity="{{ sevClass .Severity }}" data-category="{{ catKey .Category }}"{{ if .Scope.Level }} data-scope="{{ .Scope.Level }}"{{ end }}{{ if .Resource }} data-resource="{{ resource .Resource }}"{{ end }}>
+          <div class="finding-hd">
+            <h3>{{ inlineHTML .Title }}</h3>
+            <span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
+            <span class="rule">{{ .RuleID }}</span>
+            <span class="score-lbl">Score <strong>{{ score .Score }}</strong></span>
+          </div>
+          {{ if or .Scope.Level .Scope.Detail }}
+          <div class="scope-row">
+            {{ if .Scope.Level }}<span class="scope-chip {{ .Scope.Level }}" title="Blast-radius level">Scope · {{ scopeLabel .Scope.Level }}</span>{{ end }}
+            {{ if .Scope.Detail }}<span class="scope-detail">{{ scopeDetailHTML .Scope.Detail }}</span>{{ end }}
+          </div>
+          {{ end }}
+          <div class="meta">
+            <span><span class="k">Category:</span> {{ catLabel .Category }}</span>
+            {{ if .Subject }}<span><span class="k">Subject:</span> <code>{{ subject .Subject }}</code></span>{{ end }}
+            {{ if .Resource }}<span><span class="k">Resource:</span> <code>{{ resource .Resource }}</code></span>{{ end }}
+            {{ if and (not .Subject) .Namespace }}<span><span class="k">Namespace:</span> <code>{{ .Namespace }}</code></span>{{ end }}
+          </div>
+          <div class="desc">{{ descriptionHTML .Description }}</div>
+          {{ if .Impact }}
+          <div class="impact">
+            <span class="k">Impact</span>
+            <span class="v">{{ inlineHTML .Impact }}</span>
+          </div>
+          {{ end }}
+          {{ if .AttackScenario }}
+          <div class="scenario">
+            <span class="k">How an attacker abuses this</span>
+            <ol>
+              {{ range .AttackScenario }}<li>{{ inlineHTML . }}</li>{{ end }}
+            </ol>
+          </div>
+          {{ end }}
+          {{ if .EscalationPath }}
+          <div class="chain">
+            <span class="k">Observed attack chain</span>
+            {{ escalationPathHTML .EscalationPath }}
+          </div>
+          {{ end }}
+          {{ if or .Remediation .RemediationSteps }}
+          <div class="rem">
+            <span class="k">Remediation</span>
+            {{ if .Remediation }}<div class="summary">{{ inlineHTML .Remediation }}</div>{{ end }}
+            {{ if .RemediationSteps }}
+            <ol>
+              {{ range .RemediationSteps }}<li>{{ remediationStepHTML . }}</li>{{ end }}
+            </ol>
+            {{ end }}
+          </div>
+          {{ end }}
+          {{ if .MitreTechniques }}
+          <div class="mitre">
+            <span class="k">MITRE ATT&amp;CK:</span>
+            {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
+          </div>
+          {{ end }}
+          {{ if .Evidence }}
+          <div class="evidence">
+            <span class="k">Evidence</span>
+            {{ evidenceHTML .Evidence }}
+            <details class="evidence-raw">
+              <summary>Show raw JSON</summary>
+              <pre><code>{{ json .Evidence }}</code></pre>
+            </details>
+          </div>
+          {{ end }}
+          {{ if .LearnMore }}
+          <details class="refs">
+            <summary>References <span class="ref-count">{{ len .LearnMore }}</span></summary>
+            <ul>
+              {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
+            </ul>
+          </details>
+          {{ else if .References }}
+          <details class="refs">
+            <summary>References <span class="ref-count">{{ len .References }}</span></summary>
+            <ul>
+              {{ range .References }}<li><a href="{{ . }}" target="_blank" rel="noopener noreferrer">{{ . }}</a></li>{{ end }}
+            </ul>
+          </details>
+          {{ end }}
+        </article>
+        {{ end }}
+      </div>
+    </section>
+    {{ end }}
+    {{ end }}
+
+    <p class="footer">Kubesplaining · {{ if .Snapshot.Metadata.KubesplainingVersion }}{{ .Snapshot.Metadata.KubesplainingVersion }} · {{ end }}{{ .Summary.Total }} findings · {{ len .Modules }} modules</p>
+  </main>
+  <script>{{ .GraphScript }}</script>
+</body>
+</html>

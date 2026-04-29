@@ -1,20 +1,4 @@
-// Package report — kpGraphScript is the inline JavaScript that powers the interactive attack
-// graph in the HTML report. It's kept here as a Go const so the report stays self-contained
-// (no external assets) and so the JS source remains readable without fighting Go template
-// escaping inside the htmlTemplate. The string is injected via template.JS in BuildHTMLData.
-//
-// Design notes:
-//   - Vanilla JS, no library dependencies, runs on DOMContentLoaded.
-//   - Reads the GraphPayload from <script type="application/json" id="kp-graph-data">.
-//   - Hover / click / keyboard handlers on every <g data-node-id> and <path data-edge-id>.
-//   - Side panel ("kp-detail") slides in with glossary + technique + remediation copy.
-//   - Filter chips toggle classes on the <svg>; CSS does the actual dimming.
-//   - innerHTML is used only for HTML already vetted by Go (Glossary.Long / Techniques.Plain
-//     are template.HTML emitted from a hardcoded glossary). All Finding-derived strings (Title,
-//     Description, Remediation, References) go through textContent / safe-attribute setters.
-package report
 
-const kpGraphScript = `
 // --- Tabs / cross-tab helpers (run regardless of graph presence) -----------
 (function() {
   var validTabs = { overview: 1, attack: 1, findings: 1 };
@@ -307,7 +291,7 @@ const kpGraphScript = `
 
   // ---- Markdown helpers (popup-pane prose) -----------------------------
   // Tiny tokenizer for the limited markdown analyzers emit:
-  //   ` + "`" + `code` + "`" + `         → <code>
+  //   `code`         → <code>
   //   **bold** → <strong>
   // Always uses textContent for content so analyzer strings can never
   // inject HTML. Returns nothing — appends nodes into the target.
@@ -316,7 +300,7 @@ const kpGraphScript = `
     var i = 0;
     while (i < s.length) {
       var bold = s.indexOf('**', i);
-      var code = s.indexOf('` + "`" + `', i);
+      var code = s.indexOf('`', i);
       var next = -1, which = null;
       if (bold >= 0 && (code < 0 || bold < code)) { next = bold; which = 'bold'; }
       else if (code >= 0) { next = code; which = 'code'; }
@@ -333,7 +317,7 @@ const kpGraphScript = `
         target.appendChild(strong);
         i = end + 2;
       } else {
-        var endC = s.indexOf('` + "`" + `', next + 1);
+        var endC = s.indexOf('`', next + 1);
         if (endC < 0) { target.appendChild(document.createTextNode(s.slice(next))); return; }
         var c = document.createElement('code');
         c.textContent = s.slice(next + 1, endC);
@@ -345,15 +329,15 @@ const kpGraphScript = `
 
   // renderInlineHTML mirrors renderInline but returns an HTML string instead of
   // appending DOM nodes — the floating tooltip uses innerHTML so it needs an
-  // HTML-string output. Text content is always escaped; only the safe ` + "`" + `<code>` + "`" + `
-  // and ` + "`" + `<strong>` + "`" + ` tags are inserted.
+  // HTML-string output. Text content is always escaped; only the safe `<code>`
+  // and `<strong>` tags are inserted.
   function renderInlineHTML(text) {
     var s = String(text || '');
     var out = '';
     var i = 0;
     while (i < s.length) {
       var bold = s.indexOf('**', i);
-      var code = s.indexOf('` + "`" + `', i);
+      var code = s.indexOf('`', i);
       var next = -1, which = null;
       if (bold >= 0 && (code < 0 || bold < code)) { next = bold; which = 'bold'; }
       else if (code >= 0) { next = code; which = 'code'; }
@@ -365,7 +349,7 @@ const kpGraphScript = `
         out += '<strong>' + escapeHtml(s.slice(next + 2, end)) + '</strong>';
         i = end + 2;
       } else {
-        var endC = s.indexOf('` + "`" + `', next + 1);
+        var endC = s.indexOf('`', next + 1);
         if (endC < 0) { out += escapeHtml(s.slice(next)); break; }
         out += '<code>' + escapeHtml(s.slice(next + 1, endC)) + '</code>';
         i = endC + 1;
@@ -625,13 +609,13 @@ const kpGraphScript = `
     // Pull out command-shaped backtick spans up-front; replace them with a
     // sentinel so they vanish from the prose. Identifier-style backticks
     // (no spaces, not a known CLI) stay inline and render as <code>.
-    var sanitized = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function(_, inner) {
+    var sanitized = s.replace(/`([^`]+)`/g, function(_, inner) {
       var isCmd = /\s/.test(inner) || /^(kubectl|kubeadm|helm|kubectl-)/.test(inner);
       if (isCmd) {
         commands.push(inner);
         return ''; // command renders as its own block below
       }
-      return '` + "`" + `' + inner + '` + "`" + `';
+      return '`' + inner + '`';
     });
     var prose = el('div', { class: 'kp-prose' });
     renderMarkdownBlocks(sanitized, prose);
@@ -782,4 +766,3 @@ const kpGraphScript = `
     });
   }
 })();
-`
