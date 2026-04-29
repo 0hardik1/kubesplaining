@@ -35,8 +35,20 @@
     a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(106,183,255,0.25); }
     a:hover { border-bottom-color: var(--accent); }
     code, pre, .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+    /* Inline <code> baseline — distinguishable from prose on dark surfaces. Per-context
+       overrides further down may bump this up but should not dim it. Block-level <pre><code>
+       overrides this back to transparent (see .kp-cmd pre code, etc.). */
+    code { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.06);
+           padding: 1px 6px; border-radius: 4px; }
     pre { margin: 0; background: #0b1120; color: #c1cde3; border: 1px solid var(--border-soft);
           border-radius: 10px; padding: 12px 14px; overflow-x: auto; line-height: 1.6; }
+    pre code { background: transparent; border: 0; padding: 0; }
+    /* code.gloss is wrapped around any inline Kind/resource reference whose Kind has a
+       Glossary entry. The dotted underline signals "hoverable for definition" without
+       shouting; the JS layer (initGlossTooltips in graph.js) shows the existing
+       .kp-tooltip element with the entry on hover. */
+    code.gloss { cursor: help; border-bottom: 1px dotted rgba(106,183,255,0.5); transition: background 0.12s ease, border-color 0.12s ease; }
+    code.gloss:hover { border-bottom-color: var(--accent); background: rgba(106,183,255,0.14); }
     h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
     h1 { font-size: 30px; letter-spacing: -0.025em; line-height: 1.15; }
     h2 { font-size: 19px; }
@@ -200,7 +212,7 @@
     .kp-prose { color: var(--text); font-size: 13.5px; line-height: 1.6; margin: 0; }
     .kp-prose p { margin: 0 0 8px; }
     .kp-prose p:last-child { margin-bottom: 0; }
-    .kp-prose code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+    .kp-prose code { background: rgba(255,255,255,0.10); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
     .kp-prose strong { color: var(--text); }
     .kp-prose em { color: #ffdbe0; font-style: normal; }
     .kp-prose ul, .kp-prose ol { margin: 6px 0 0; padding-left: 20px; }
@@ -218,7 +230,7 @@
     .kp-step-note { color: var(--text); font-size: 12.5px; margin: 8px 2px; line-height: 1.55; }
     .kp-fix { background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; padding: 10px 12px; margin-top: 16px; }
     .kp-fix h4 { color: var(--accent); margin-bottom: 4px; }
-    .kp-fix .kp-prose code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    .kp-fix .kp-prose code { background: rgba(255,255,255,0.10); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
     .kp-refs { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-mut); }
     .kp-refs li { margin: 3px 0; }
     .kp-refs a { word-break: break-all; }
@@ -247,7 +259,7 @@
     .kp-tt-body { font-size: 12px; color: var(--text-mut); margin-top: 4px; line-height: 1.5; }
     .kp-tt-prose { margin-top: 4px; }
     .kp-tt-prose p { margin: 0 0 4px; }
-    .kp-tt-prose code { background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 4px; }
+    .kp-tt-prose code { background: rgba(255,255,255,0.10); padding: 1px 4px; border-radius: 4px; }
     .kp-tt-sub { color: var(--text-dim); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; word-break: break-all; margin-bottom: 4px; }
     .kp-tt-why { margin-top: 5px; color: var(--text-mut); }
     .kp-tt-tag { display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 1px 6px; margin-right: 5px; border-radius: 999px; background: rgba(106,183,255,0.12); color: var(--accent); border: 1px solid rgba(106,183,255,0.25); vertical-align: middle; }
@@ -261,11 +273,21 @@
     .narratives { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
     .narrative { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); position: relative; overflow: hidden; }
     .narrative h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .badge-sev { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.06em; }
-    .badge-sev.crit { background: var(--critical-soft); color: #ffb4be; border: 1px solid var(--critical-edge); }
-    .badge-sev.high { background: var(--high-soft); color: #ffc89a; border: 1px solid var(--high-edge); }
-    .badge-sev.med  { background: var(--medium-soft); color: #ffe9a1; border: 1px solid var(--medium-edge); }
-    .badge-sev.low  { background: var(--low-soft); color: #a6f2cf; border: 1px solid var(--low-edge); }
+    /* Severity badges — solid-fill on dark text for crit/high/med so a critical reads
+       unmistakably critical at a glance. Low stays muted because a low finding shouldn't
+       compete for attention with a critical. Glyph prefixes (◆ / ▲ / ■) survive
+       screenshots and grayscale printing. */
+    .badge-sev { font-size: 10.5px; font-weight: 800; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.08em; line-height: 1.2; display: inline-block; }
+    .badge-sev.crit { background: var(--critical); color: #1a0408; border: 1px solid transparent;
+      box-shadow: 0 0 0 1px rgba(255,85,104,0.55), 0 4px 12px rgba(255,85,104,0.18); }
+    .badge-sev.high { background: var(--high); color: #1f1206; border: 1px solid transparent;
+      box-shadow: 0 0 0 1px rgba(255,154,60,0.5); }
+    .badge-sev.med  { background: var(--medium); color: #221b04; border: 1px solid transparent;
+      box-shadow: 0 0 0 1px rgba(255,210,76,0.45); }
+    .badge-sev.low  { background: rgba(141,153,177,0.18); color: #c8d4eb; border: 1px solid var(--border-strong); }
+    .badge-sev.crit::before { content: "◆ "; }
+    .badge-sev.high::before { content: "▲ "; }
+    .badge-sev.med::before  { content: "■ "; }
     .narrative ol { margin: 10px 0 0; padding-left: 18px; color: var(--text-mut); font-size: 14px; line-height: 1.58; }
     .narrative ol li { overflow-wrap: anywhere; word-break: break-word; }
     .narrative ol li + li { margin-top: 6px; }
@@ -355,6 +377,18 @@
     .heat-note strong { color: var(--text); }
 
     .modules-nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); position: sticky; top: 100px; z-index: 4; }
+    /* Free-text search above the filter chips. Always visible on the Findings tab.
+       Placeholder text describes what's searched. The "/" kbd hint disappears once
+       the input has a value. */
+    .findings-search { position: relative; margin-bottom: 10px; }
+    .findings-search input { width: 100%; font: inherit; font-size: 14px; padding: 11px 44px 11px 40px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); outline: none; transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease; }
+    .findings-search input::placeholder { color: var(--text-dim); }
+    .findings-search input:focus { border-color: var(--accent); background: var(--surface-hover); box-shadow: 0 0 0 3px rgba(106,183,255,0.12); }
+    .findings-search::before { content: "⌕"; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--text-mut); font-size: 18px; pointer-events: none; line-height: 1; }
+    .findings-search-hint { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px; background: rgba(255,255,255,0.02); pointer-events: none; }
+    .findings-search input:not(:placeholder-shown) ~ .findings-search-hint,
+    .findings-search input:focus ~ .findings-search-hint { display: none; }
+
     .findings-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
     .fl-active { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .fl-active[hidden] { display: none; }
@@ -371,6 +405,10 @@
     .modules-nav .mn-title { color: var(--text-mut); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; padding: 6px 8px 6px 2px; border-right: 1px solid var(--border-soft); margin-right: 6px; align-self: center; }
     .module-link { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text); background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
     .module-link:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+    /* Scroll-spy active state — highlights the module currently in view. Driven by the
+       IntersectionObserver in graph.js (initModuleScrollSpy). */
+    .module-link.active { color: var(--accent); border-color: rgba(106,183,255,0.45); background: rgba(106,183,255,0.10); }
+    .module-link.active .mn-count { color: var(--accent); background: rgba(106,183,255,0.16); }
     .module-link .mn-count { font-size: 11px; color: var(--text-mut); background: rgba(255,255,255,0.03); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
 
     .findings-toc { margin-top: 14px; padding: 14px 16px 4px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
@@ -416,14 +454,17 @@
        evidence/remediation sits behind a per-instance disclosure. The instances
        inherit .finding styling above so existing per-finding selectors keep working. */
     .rule-list { display: grid; gap: 16px; }
-    .rule-group { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); border-left: 4px solid var(--border); }
-    .rule-group.crit { border-left-color: var(--critical); }
-    .rule-group.high { border-left-color: var(--high); }
-    .rule-group.med  { border-left-color: var(--medium); }
-    .rule-group.low  { border-left-color: var(--low); }
+    .rule-group { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); border-left: 4px solid var(--border); transition: border-color 0.18s ease; }
+    /* Surrounding 1px border is tinted by severity so a column of critical cards reads as
+       a column of critical cards even before you focus on the badge. Subtle so it doesn't
+       shout — the 4px left rail and the badge do the loud work. */
+    .rule-group.crit { border-left-color: var(--critical); border-color: rgba(255,85,104,0.24); }
+    .rule-group.high { border-left-color: var(--high); border-color: rgba(255,154,60,0.20); }
+    .rule-group.med  { border-left-color: var(--medium); border-color: rgba(255,210,76,0.16); }
+    .rule-group.low  { border-left-color: var(--low); border-color: var(--border-soft); }
     .rule-hd { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
     .rule-hd .rule-title { flex: 1 1 320px; font-size: 16.5px; line-height: 1.35; letter-spacing: -0.01em; }
-    .rule-hd .rule-title code { background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+    .rule-hd .rule-title code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
     .rule-meta-pills { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
     .rule-group .rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,0.02); letter-spacing: 0.02em; }
     .rule-group .score-lbl { font-size: 12px; color: var(--text-mut); }
@@ -448,7 +489,7 @@
     .instance.finding > .instance-hd:hover { background: rgba(255,255,255,0.025); }
     .instance.finding > .instance-hd:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 10px; }
     .instance-title { flex: 1 1 240px; min-width: 0; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
-    .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; color: var(--text); }
+    .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; color: var(--text); }
     .instance-scope { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-mut); padding: 2px 7px; border: 1px solid var(--border-soft); border-radius: 999px; background: rgba(255,255,255,0.02); }
     .instance-score { font-size: 12px; color: var(--text-mut); font-variant-numeric: tabular-nums; }
     .instance-body { padding: 4px 16px 14px; border-top: 1px solid var(--border-soft); }
@@ -468,10 +509,10 @@
     .finding .scope-chip.workload { color: #a89cf6; border-color: rgba(168,156,246,0.4); background: rgba(168,156,246,0.08); }
     .finding .scope-chip.object { color: #88d49f; border-color: rgba(136,212,159,0.4); background: rgba(136,212,159,0.08); }
     .finding .scope-detail { color: var(--text); font-size: 13px; font-weight: 500; }
-    .finding .scope-detail code { background: rgba(255,255,255,0.04); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+    .finding .scope-detail code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; font-size: 12px; }
     .finding .meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0; color: var(--text-mut); font-size: 12.5px; }
     .finding .meta .k { color: var(--text-dim); }
-    .finding .meta code { background: rgba(255,255,255,0.03); padding: 1px 6px; border-radius: 4px; color: var(--text); }
+    .finding .meta code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; color: var(--text); }
     .finding .desc { margin: 6px 0 12px; color: #cfd6e5; font-size: 14px; line-height: 1.58; }
     .finding .desc p { margin-bottom: 8px; }
     .finding .desc p:last-child { margin-bottom: 0; }
@@ -498,7 +539,7 @@
     .finding .education .edu-body { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
     .finding .education .edu-body p { margin: 0 0 6px; }
     .finding .education .edu-body p:last-child { margin-bottom: 0; }
-    .finding .education .edu-body code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .education .edu-body code { background: rgba(255,255,255,0.10); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
     .finding .education .edu-body strong { color: var(--text); font-weight: 600; }
     .finding .education .edu-body em { color: var(--text); font-style: italic; }
     .finding .education .edu-body ul { margin: 4px 0 6px; padding-left: 18px; }
@@ -511,7 +552,7 @@
     .finding .rem ol { margin: 0; padding-left: 20px; color: var(--text); font-size: 13px; line-height: 1.6; }
     .finding .rem ol li { margin-bottom: 4px; }
     .finding .rem ol li:last-child { margin-bottom: 0; }
-    .finding .rem code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .finding .rem code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
     .finding details.refs { margin-top: 10px; font-size: 13px; color: var(--text-mut); }
     .finding details.refs summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
     .finding details.refs[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
@@ -530,9 +571,33 @@
     .finding details[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
     .finding details pre { margin-top: 10px; }
 
-    /* Structured attack-chain cards (privesc EscalationPath), nested inside .scenario */
-    .finding .scenario ol.attack-chain { list-style: none; padding-left: 0; margin: 0; display: grid; gap: 10px; counter-reset: step; }
-    .finding .scenario ol.attack-chain li.attack-step { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
+    /* Structured attack-chain cards (privesc EscalationPath), nested inside .scenario.
+       The chain reads as a progression: a vertical rail on the left ties step cards
+       together, with numbered circular markers per step. The terminal hop's marker
+       and rail-end are tinted critical-red so the eye lands on "where the chain leads."
+       Markers sit in their own gutter (padding-left: 36px on the <ol>) so card content
+       stays flush. */
+    .finding .scenario ol.attack-chain { list-style: none; padding-left: 36px; margin: 0; display: grid; gap: 12px; counter-reset: step; position: relative; }
+    .finding .scenario ol.attack-chain::before {
+      content: ""; position: absolute; left: 14px; top: 10px; bottom: 10px; width: 2px;
+      background: linear-gradient(180deg, var(--high-edge) 0%, var(--critical-edge) 100%);
+      border-radius: 2px; opacity: 0.6;
+    }
+    .finding .scenario ol.attack-chain li.attack-step { position: relative; counter-increment: step; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
+    .finding .scenario ol.attack-chain li.attack-step::before {
+      content: counter(step);
+      position: absolute; left: -29px; top: 8px; width: 24px; height: 24px;
+      border-radius: 999px; background: var(--surface);
+      border: 2px solid var(--high); color: var(--high);
+      font-size: 11px; font-weight: 700; line-height: 20px; text-align: center;
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+      box-shadow: 0 0 0 3px var(--bg-1);
+    }
+    /* Last step is the terminal sink (cluster-admin / system:masters / node-escape) —
+       tint its marker critical to signal "the chain lands here." */
+    .finding .scenario ol.attack-chain li.attack-step:last-child::before {
+      border-color: var(--critical); color: var(--critical);
+    }
     .finding .scenario .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
     .finding .scenario .step-num { font-weight: 700; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
     .finding .scenario .step-title { color: var(--text); font-weight: 600; font-size: 13px; }
@@ -540,14 +605,14 @@
     .finding .scenario .step-explainer { margin: 4px 0 8px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
     .finding .scenario .step-explainer p { margin: 0 0 6px; }
     .finding .scenario .step-explainer p:last-child { margin-bottom: 0; }
-    .finding .scenario .step-explainer code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .scenario .step-explainer code { background: rgba(255,255,255,0.10); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
     .finding .scenario .step-explainer strong { color: var(--text); font-weight: 600; }
     .finding .scenario .step-explainer em { color: var(--text); font-style: italic; }
     .finding .scenario .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
-    .finding .scenario .step-edge code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
+    .finding .scenario .step-edge code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
     .finding .scenario .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
     .finding .scenario .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
-    .finding .scenario .step-meta code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
+    .finding .scenario .step-meta code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
 
     /* Humanized Evidence section */
     .finding .evidence { margin-top: 12px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 10px; }
@@ -559,15 +624,15 @@
     .finding .ev-key { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; white-space: nowrap; }
     .finding .ev-val { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
     .finding .ev-val.ev-stack { flex-direction: column; align-items: stretch; gap: 6px; }
-    .finding .ev-val code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
+    .finding .ev-val code { background: rgba(255,255,255,0.10); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
     .finding .ev-chip { display: inline-flex; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text); background: rgba(255,255,255,0.03); }
     .finding .ev-chip.danger { border-color: rgba(255,154,60,0.5); color: #ffb060; background: rgba(255,154,60,0.08); }
     .finding .ev-chip.wild { border-color: rgba(255,90,90,0.5); color: #ff7777; background: rgba(255,90,90,0.1); font-weight: 700; }
     .finding .ev-hints { grid-column: 2; display: grid; gap: 1px; margin-top: 2px; }
     .finding .ev-hint { font-size: 11.5px; color: var(--text-mut); padding-left: 0; }
-    .finding .ev-hint code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-hint code { background: rgba(255,255,255,0.10); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
     .finding .ev-sentence { font-size: 12.5px; color: var(--text); }
-    .finding .ev-sentence code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-sentence code { background: rgba(255,255,255,0.10); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
     .finding .ev-rule { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); display: grid; gap: 3px; }
     .finding .ev-rule-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12.5px; color: var(--text); }
     .finding .ev-rule-meta { font-size: 11.5px; color: var(--text-mut); }
@@ -908,6 +973,10 @@
     {{ end }}
 
     {{ if .Modules }}
+    <div class="findings-search" data-tab="findings">
+      <input type="search" id="findings-search-input" placeholder="Search findings — subject, resource, rule ID..." aria-label="Search findings" autocomplete="off" spellcheck="false" />
+      <kbd class="findings-search-hint" aria-hidden="true">/</kbd>
+    </div>
     <div class="findings-filters" data-tab="findings" role="toolbar" aria-label="Filter findings" hidden>
       <span class="kp-filters-label">Filter</span>
       <div class="fl-active" id="fl-active" hidden></div>
@@ -1008,7 +1077,7 @@
             <details class="instance finding {{ sevClass $f.Severity }}"{{ if le $group.InstanceCount 2 }} open{{ end }} data-rule="{{ $f.RuleID }}" data-severity="{{ sevClass $f.Severity }}" data-category="{{ catKey $f.Category }}"{{ if $f.Scope.Level }} data-scope="{{ $f.Scope.Level }}"{{ end }}{{ if $f.Resource }} data-resource="{{ resource $f.Resource }}"{{ end }}{{ if $f.Subject }} data-subject="{{ subject $f.Subject }}"{{ end }}>
               <summary class="instance-hd">
                 <span class="badge-sev {{ sevClass $f.Severity }}">{{ sevShort $f.Severity }}</span>
-                <span class="instance-title">{{ if $f.Subject }}<code>{{ subject $f.Subject }}</code>{{ else if $f.Resource }}<code>{{ resource $f.Resource }}</code>{{ else }}{{ inlineHTML $f.Title }}{{ end }}</span>
+                <span class="instance-title">{{ if $f.Subject }}{{ subjectCode $f.Subject }}{{ else if $f.Resource }}{{ resourceCode $f.Resource }}{{ else }}{{ inlineHTML $f.Title }}{{ end }}</span>
                 {{ if $f.Scope.Level }}<span class="instance-scope" title="Blast-radius level">{{ scopeLabel $f.Scope.Level }}</span>{{ end }}
                 <span class="instance-score">{{ score $f.Score }}</span>
               </summary>
@@ -1024,8 +1093,8 @@
                 {{ end }}
                 <div class="meta">
                   <span><span class="k">Category:</span> {{ catLabel $f.Category }}</span>
-                  {{ if $f.Subject }}<span><span class="k">Subject:</span> <code>{{ subject $f.Subject }}</code></span>{{ end }}
-                  {{ if $f.Resource }}<span><span class="k">Resource:</span> <code>{{ resource $f.Resource }}</code></span>{{ end }}
+                  {{ if $f.Subject }}<span><span class="k">Subject:</span> {{ subjectCode $f.Subject }}</span>{{ end }}
+                  {{ if $f.Resource }}<span><span class="k">Resource:</span> {{ resourceCode $f.Resource }}</span>{{ end }}
                   {{ if and (not $f.Subject) $f.Namespace }}<span><span class="k">Namespace:</span> <code>{{ $f.Namespace }}</code></span>{{ end }}
                 </div>
                 <div class="desc">{{ descriptionHTML $f.Description }}</div>
