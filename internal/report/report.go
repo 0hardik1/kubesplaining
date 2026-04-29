@@ -607,6 +607,13 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 		"remediationStepHTML": func(step string) template.HTML {
 			return template.HTML(renderInlineCode(step))
 		},
+		// inlineHTML renders any analyzer-supplied single-line text (titles, impact,
+		// attack-scenario steps, remediation summary) with the same `code` / **bold**
+		// markdown subset as descriptions, so backticks and bold markers don't appear
+		// raw in the static Findings tab.
+		"inlineHTML": func(text string) template.HTML {
+			return template.HTML(renderInlineCode(text))
+		},
 		// evidenceHTML renders Finding.Evidence as a labeled grid with chips and glossary
 		// hints rather than raw JSON. The original payload is still available below in a
 		// "Show raw JSON" sub-details emitted by the template.
@@ -756,32 +763,51 @@ func stripMarkdown(text string) string {
 	return out
 }
 
-// renderInlineCode HTML-escapes text and replaces backtick-delimited spans with <code> tags.
-// Used for inline rendering of identifiers (resource names, kubectl flags) inside descriptions
-// and remediation steps. Single newlines become <br> for natural line breaks within a paragraph.
+// renderInlineCode HTML-escapes text and converts the small inline-markdown subset
+// analyzer-supplied finding text uses:
+//   `code`   → <code>
+//   **bold** → <strong>
+// Single newlines outside code spans become <br> for natural line breaks. Mirrors
+// the JS renderInlineHTML in graph_script.go so popup tooltips and the static
+// Findings tab render the same markdown.
 func renderInlineCode(text string) string {
 	escaped := template.HTMLEscapeString(text)
 	var b strings.Builder
-	b.Grow(len(escaped))
-	inCode := false
-	for _, r := range escaped {
-		if r == '`' {
-			if inCode {
-				b.WriteString("</code>")
-			} else {
-				b.WriteString("<code>")
+	b.Grow(len(escaped) + 16)
+	for i := 0; i < len(escaped); {
+		c := escaped[i]
+		if c == '`' {
+			end := strings.IndexByte(escaped[i+1:], '`')
+			if end < 0 { // unmatched backtick — render rest as plain text
+				b.WriteString(escaped[i+1:])
+				return b.String()
 			}
-			inCode = !inCode
+			b.WriteString("<code>")
+			b.WriteString(escaped[i+1 : i+1+end])
+			b.WriteString("</code>")
+			i += 1 + end + 1
 			continue
 		}
-		if r == '\n' && !inCode {
+		if c == '*' && i+1 < len(escaped) && escaped[i+1] == '*' {
+			rest := escaped[i+2:]
+			end := strings.Index(rest, "**")
+			if end < 0 { // unmatched bold — render rest as plain text
+				b.WriteString(escaped[i:])
+				return b.String()
+			}
+			b.WriteString("<strong>")
+			b.WriteString(rest[:end])
+			b.WriteString("</strong>")
+			i += 2 + end + 2
+			continue
+		}
+		if c == '\n' {
 			b.WriteString("<br>")
+			i++
 			continue
 		}
-		b.WriteRune(r)
-	}
-	if inCode { // unmatched backtick — close the tag so HTML stays valid
-		b.WriteString("</code>")
+		b.WriteByte(c)
+		i++
 	}
 	return b.String()
 }
@@ -2720,7 +2746,7 @@ const htmlTemplate = `<!doctype html>
         {{ $anchor := index $.AnchorByID .ID }}
         <article class="finding {{ sevClass .Severity }}"{{ if $anchor }} id="{{ $anchor }}"{{ end }} data-rule="{{ .RuleID }}" data-severity="{{ sevClass .Severity }}" data-category="{{ catKey .Category }}"{{ if .Scope.Level }} data-scope="{{ .Scope.Level }}"{{ end }}{{ if .Resource }} data-resource="{{ resource .Resource }}"{{ end }}>
           <div class="finding-hd">
-            <h3>{{ .Title }}</h3>
+            <h3>{{ inlineHTML .Title }}</h3>
             <span class="badge-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
             <span class="rule">{{ .RuleID }}</span>
             <span class="score-lbl">Score <strong>{{ score .Score }}</strong></span>
@@ -2741,14 +2767,14 @@ const htmlTemplate = `<!doctype html>
           {{ if .Impact }}
           <div class="impact">
             <span class="k">Impact</span>
-            <span class="v">{{ .Impact }}</span>
+            <span class="v">{{ inlineHTML .Impact }}</span>
           </div>
           {{ end }}
           {{ if .AttackScenario }}
           <div class="scenario">
             <span class="k">How an attacker abuses this</span>
             <ol>
-              {{ range .AttackScenario }}<li>{{ . }}</li>{{ end }}
+              {{ range .AttackScenario }}<li>{{ inlineHTML . }}</li>{{ end }}
             </ol>
           </div>
           {{ end }}
@@ -2761,7 +2787,7 @@ const htmlTemplate = `<!doctype html>
           {{ if or .Remediation .RemediationSteps }}
           <div class="rem">
             <span class="k">Remediation</span>
-            {{ if .Remediation }}<div class="summary">{{ .Remediation }}</div>{{ end }}
+            {{ if .Remediation }}<div class="summary">{{ inlineHTML .Remediation }}</div>{{ end }}
             {{ if .RemediationSteps }}
             <ol>
               {{ range .RemediationSteps }}<li>{{ remediationStepHTML . }}</li>{{ end }}
