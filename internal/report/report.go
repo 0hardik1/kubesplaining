@@ -601,6 +601,18 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding)
 		"remediationStepHTML": func(step string) template.HTML {
 			return template.HTML(renderInlineCode(step))
 		},
+		// evidenceHTML renders Finding.Evidence as a labeled grid with chips and glossary
+		// hints rather than raw JSON. The original payload is still available below in a
+		// "Show raw JSON" sub-details emitted by the template.
+		"evidenceHTML": func(raw json.RawMessage) template.HTML {
+			return renderEvidence(raw)
+		},
+		// escalationPathHTML renders Finding.EscalationPath as a numbered ordered list of
+		// per-hop step cards. Returns "" for empty input so the template gate suppresses
+		// the surrounding section on non-privesc findings.
+		"escalationPathHTML": func(hops []models.EscalationHop) template.HTML {
+			return renderEscalationPath(hops)
+		},
 		"pluralize": func(n int, singular, plural string) string {
 			if n == 1 {
 				return singular
@@ -2235,11 +2247,15 @@ const htmlTemplate = `<!doctype html>
     .finding .rem ol li { margin-bottom: 4px; }
     .finding .rem ol li:last-child { margin-bottom: 0; }
     .finding .rem code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 12px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
-    .finding .refs { margin: 10px 0 0; font-size: 13px; color: var(--text-mut); }
-    .finding .refs a { word-break: break-all; }
-    .finding .refs ul { list-style: none; padding-left: 0; margin: 6px 0 0; display: grid; gap: 4px; }
-    .finding .refs ul li { padding-left: 14px; position: relative; }
-    .finding .refs ul li::before { content: "↗"; position: absolute; left: 0; color: var(--text-dim); }
+    .finding details.refs { margin-top: 10px; font-size: 13px; color: var(--text-mut); }
+    .finding details.refs summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
+    .finding details.refs[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
+    .finding details.refs summary .ref-count { font-size: 10.5px; color: var(--text-dim); background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 999px; letter-spacing: 0; text-transform: none; font-weight: 600; }
+    .finding details.refs[open] summary .ref-count { color: var(--accent); background: rgba(106,183,255,0.12); }
+    .finding details.refs a { word-break: break-all; }
+    .finding details.refs ul { list-style: none; padding-left: 0; margin: 8px 0 0; display: grid; gap: 4px; }
+    .finding details.refs ul li { padding-left: 14px; position: relative; }
+    .finding details.refs ul li::before { content: "↗"; position: absolute; left: 0; color: var(--text-dim); }
     .finding .mitre { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mut); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .finding .mitre .k { color: var(--text-dim); }
     .finding .mitre a { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; text-decoration: none; background: rgba(255,255,255,0.02); }
@@ -2248,6 +2264,51 @@ const htmlTemplate = `<!doctype html>
     .finding details summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-block; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
     .finding details[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
     .finding details pre { margin-top: 10px; }
+
+    /* Observed attack chain (privesc EscalationPath) */
+    .finding .chain { margin-top: 12px; padding: 12px 14px; background: rgba(255,90,90,0.06); border: 1px solid rgba(255,90,90,0.22); border-radius: 10px; }
+    .finding .chain .k { color: var(--critical, #ff5a5a); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .chain ol.attack-chain { list-style: none; padding-left: 0; margin: 0; display: grid; gap: 10px; counter-reset: step; }
+    .finding .chain ol.attack-chain li.attack-step { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
+    .finding .chain .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+    .finding .chain .step-num { font-weight: 700; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .finding .chain .step-action { background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .finding .chain .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
+    .finding .chain .step-edge code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
+    .finding .chain .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
+    .finding .chain .step-meta .k { display: inline; color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; }
+    .finding .chain .step-meta code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
+
+    /* Humanized Evidence section */
+    .finding .evidence { margin-top: 12px; padding: 10px 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 10px; }
+    .finding .evidence > .k { color: var(--text-mut); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
+    .finding .ev-grid { display: grid; grid-template-columns: max-content 1fr; column-gap: 14px; row-gap: 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+    .finding .ev-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; row-gap: 2px; align-items: baseline; padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.04); }
+    .finding .ev-row:first-child { border-top: 0; padding-top: 0; }
+    .finding .ev-row.ev-row-block { display: block; }
+    .finding .ev-key { color: var(--text-dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; white-space: nowrap; }
+    .finding .ev-val { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
+    .finding .ev-val.ev-stack { flex-direction: column; align-items: stretch; gap: 6px; }
+    .finding .ev-val code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
+    .finding .ev-chip { display: inline-flex; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; color: var(--text); background: rgba(255,255,255,0.03); }
+    .finding .ev-chip.danger { border-color: rgba(255,154,60,0.5); color: #ffb060; background: rgba(255,154,60,0.08); }
+    .finding .ev-chip.wild { border-color: rgba(255,90,90,0.5); color: #ff7777; background: rgba(255,90,90,0.1); font-weight: 700; }
+    .finding .ev-hints { grid-column: 2; display: grid; gap: 1px; margin-top: 2px; }
+    .finding .ev-hint { font-size: 11.5px; color: var(--text-mut); padding-left: 0; }
+    .finding .ev-hint code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-sentence { font-size: 12.5px; color: var(--text); }
+    .finding .ev-sentence code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+    .finding .ev-rule { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); display: grid; gap: 3px; }
+    .finding .ev-rule-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12.5px; color: var(--text); }
+    .finding .ev-rule-meta { font-size: 11.5px; color: var(--text-mut); }
+    .finding .ev-mut { color: var(--text-dim); font-size: 11px; }
+    .finding .ev-json { margin: 0; padding: 8px 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; font-size: 11.5px; }
+    .finding .evidence-raw { margin-top: 8px; }
+    .finding .evidence-raw summary { font-size: 11px; }
+    @media (max-width: 720px) {
+      .finding .ev-row { grid-template-columns: 1fr; }
+      .finding .ev-hints { grid-column: 1; }
+    }
 
     .notes { display: grid; gap: 8px; font-size: 13px; color: var(--text-mut); }
     .notes li { padding: 8px 10px; background: rgba(255,154,60,0.07); border: 1px solid rgba(255,154,60,0.22); border-radius: 8px; list-style: none; }
@@ -2625,6 +2686,12 @@ const htmlTemplate = `<!doctype html>
             </ol>
           </div>
           {{ end }}
+          {{ if .EscalationPath }}
+          <div class="chain">
+            <span class="k">Observed attack chain</span>
+            {{ escalationPathHTML .EscalationPath }}
+          </div>
+          {{ end }}
           {{ if or .Remediation .RemediationSteps }}
           <div class="rem">
             <span class="k">Remediation</span>
@@ -2642,20 +2709,29 @@ const htmlTemplate = `<!doctype html>
             {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
           </div>
           {{ end }}
+          {{ if .Evidence }}
+          <div class="evidence">
+            <span class="k">Evidence</span>
+            {{ evidenceHTML .Evidence }}
+            <details class="evidence-raw">
+              <summary>Show raw JSON</summary>
+              <pre><code>{{ json .Evidence }}</code></pre>
+            </details>
+          </div>
+          {{ end }}
           {{ if .LearnMore }}
-          <div class="refs">
-            <span>References</span>
+          <details class="refs">
+            <summary>References <span class="ref-count">{{ len .LearnMore }}</span></summary>
             <ul>
               {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
             </ul>
-          </div>
+          </details>
           {{ else if .References }}
-          <div class="refs">References: {{ range $i, $ref := .References }}{{ if $i }}, {{ end }}<a href="{{ $ref }}" target="_blank" rel="noopener noreferrer">{{ $ref }}</a>{{ end }}</div>
-          {{ end }}
-          {{ if .Evidence }}
-          <details>
-            <summary>Evidence</summary>
-            <pre><code>{{ json .Evidence }}</code></pre>
+          <details class="refs">
+            <summary>References <span class="ref-count">{{ len .References }}</span></summary>
+            <ul>
+              {{ range .References }}<li><a href="{{ . }}" target="_blank" rel="noopener noreferrer">{{ . }}</a></li>{{ end }}
+            </ul>
           </details>
           {{ end }}
         </article>
