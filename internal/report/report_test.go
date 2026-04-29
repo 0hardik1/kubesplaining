@@ -129,6 +129,27 @@ func TestBuildHTMLDataGroupsFindings(t *testing.T) {
 	}
 }
 
+func TestRenderInlineCodeMarkdown(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in, want string
+	}{
+		{"plain", "plain"},
+		{"`Group/x` can reach **cluster-admin** in 1 hop", "<code>Group/x</code> can reach <strong>cluster-admin</strong> in 1 hop"},
+		{"unmatched `still safe", "unmatched still safe"},
+		{"unmatched **still safe", "unmatched **still safe"},
+		{"<script>", "&lt;script&gt;"},
+		{"line one\nline two", "line one<br>line two"},
+	}
+	for _, tc := range cases {
+		got := renderInlineCode(tc.in)
+		if got != tc.want {
+			t.Errorf("renderInlineCode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestHTMLReportInteractiveGraph verifies the rendered HTML carries the markup the JS layer
 // requires (CSP allows scripts, JSON payload is embedded, nodes/edges have data IDs). It is a
 // smoke test for the contract between Go and the embedded interactivity, not a behaviour test.
