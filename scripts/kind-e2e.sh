@@ -58,22 +58,16 @@ kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status ds/daemon-app -n rbac-f
 kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/unmatched -n flat-network --timeout=120s
 kubectl --kubeconfig "${KUBECONFIG_PATH}" rollout status deploy/ingress-app -n ingress-only --timeout=120s
 
-# Append a risky 'rewrite' directive to the coredns Corefile (triggers KUBE-CONFIGMAP-002).
-existing_corefile=$(kubectl --kubeconfig "${KUBECONFIG_PATH}" -n kube-system get cm coredns -o jsonpath='{.data.Corefile}')
-kubectl --kubeconfig "${KUBECONFIG_PATH}" -n kube-system create cm coredns \
-  --from-literal=Corefile="${existing_corefile}
-rewrite name regex (.*)\.evil\.com {1}.example.com
-" --dry-run=client -o yaml | kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f -
-
 "${ROOT_DIR}/bin/kubesplaining" download \
   --kubeconfig "${KUBECONFIG_PATH}" \
   --output-file "${ROOT_DIR}/.tmp/e2e-snapshot.json"
 
+# Use the default "standard" exclusions preset so the e2e mirrors how users run
+# the tool: built-in kube-system / system:* / kubeadm:* noise is suppressed.
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
-  --output-format html,json,csv \
-  --exclusions-preset none
+  --output-format html,json,csv
 
 EXPECTED_RULES=(
   KUBE-PRIVESC-001 KUBE-PRIVESC-003 KUBE-PRIVESC-005 KUBE-PRIVESC-008 KUBE-PRIVESC-009
@@ -85,7 +79,7 @@ EXPECTED_RULES=(
   KUBE-PODSEC-APE-001 KUBE-PODSEC-ROOT-001 KUBE-IMAGE-LATEST-001
   KUBE-NETPOL-COVERAGE-001 KUBE-NETPOL-COVERAGE-002 KUBE-NETPOL-COVERAGE-003
   KUBE-NETPOL-WEAKNESS-001 KUBE-NETPOL-WEAKNESS-002
-  KUBE-SECRETS-001 KUBE-SECRETS-002 KUBE-CONFIGMAP-001 KUBE-CONFIGMAP-002
+  KUBE-SECRETS-001 KUBE-CONFIGMAP-001
   KUBE-ADMISSION-001 KUBE-ADMISSION-002 KUBE-ADMISSION-003
   KUBE-SA-DEFAULT-001 KUBE-SA-DEFAULT-002 KUBE-SA-PRIVILEGED-001 KUBE-SA-PRIVILEGED-002
   KUBE-SA-DAEMONSET-001
