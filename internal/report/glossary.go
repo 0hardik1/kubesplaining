@@ -196,6 +196,24 @@ var Glossary = map[string]GlossaryEntry{
 // Techniques maps a privesc-action key (matching the Action strings in
 // internal/analyzer/privesc/graph.go) to its educational content.
 var Techniques = map[string]TechniqueExplainer{
+	"impersonate_system_masters": {
+		Title: "Impersonation of system:masters",
+		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>groups: ["*"]</code> (or explicitly on <code>system:masters</code>) lets the holder send requests as the hard-coded <code>system:masters</code> group. The kube-apiserver short-circuits authorization for that group — every API call succeeds regardless of RBAC.</p><p>This is the worst-case impersonation grant: it bypasses the cluster's entire RBAC layer rather than borrowing another principal's permissions.</p>`),
+		Mitre: "T1078.004 — Cloud Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the bypass works by querying as system:masters", Cmd: "kubectl auth can-i --list --as=system:masters --as-group=system:masters"},
+			{Note: "Read every Secret cluster-wide", Cmd: "kubectl --as=system:masters --as-group=system:masters get secrets -A"},
+		},
+	},
+	"mint_arbitrary_token": {
+		Title: "Mint a token for any ServiceAccount",
+		Plain: template.HTML(`<p>The <code>create</code> verb on <code>serviceaccounts/token</code> at cluster scope (without <code>resourceNames</code>) lets the holder mint a fresh, valid token for <em>any</em> ServiceAccount in any namespace. No pod creation or exec needed, and it leaves a thinner audit trail than the pod-mount route.</p>`),
+		Mitre: "T1528 — Steal Application Access Token",
+		AttackerSteps: []AttackerStep{
+			{Note: "Mint a 24h token for a privileged ServiceAccount", Cmd: "kubectl create token <sa> -n <ns> --duration=24h"},
+			{Note: "Call the API as the ServiceAccount using the minted token", Cmd: "curl --header 'Authorization: Bearer <token>' https://kubernetes.default.svc/api/..."},
+		},
+	},
 	"impersonate": {
 		Title: "RBAC impersonation",
 		Plain: template.HTML(`<p>Kubernetes has a built-in "act as another user" feature — the <code>impersonate</code> verb on <code>users</code>, <code>groups</code>, or <code>serviceaccounts</code>. Anyone with that verb can submit requests as <em>any</em> identity, bypassing whatever permissions they don't have themselves.</p><p>Granting <code>impersonate</code> on <code>groups</code> = <code>["*"]</code> is equivalent to cluster-admin: the holder can impersonate <code>system:masters</code>.</p>`),

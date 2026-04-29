@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,5 +196,88 @@ func TestHTMLReportInteractiveGraph(t *testing.T) {
 		if !strings.Contains(html, needle) {
 			t.Errorf("rendered HTML missing %q", needle)
 		}
+	}
+}
+
+// TestHTMLReportHidesEvidenceWhenAllKeysSuppressed verifies the template-level gate
+// for the Evidence section. Privesc-path findings carry only suppressed evidence keys
+// (target/hop_count/techniques/first_action/chain_summary), so renderEvidence returns
+// "" — and the surrounding wrapper must hide rather than emit an empty box.
+// Sister test: TestRenderEvidenceSuppressesPrivescSummary in evidence_render_test.go
+// covers the unit-level behavior of renderEvidence; this one covers the template gate.
+func TestHTMLReportHidesEvidenceWhenAllKeysSuppressed(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+
+	rawEvidence, err := json.Marshal(map[string]any{
+		"target":        "cluster_admin_equivalent",
+		"hop_count":     1,
+		"techniques":    []string{"impersonate"},
+		"first_action":  "impersonate",
+		"chain_summary": []string{"1. impersonate"},
+	})
+	if err != nil {
+		t.Fatalf("marshal evidence: %v", err)
+	}
+
+	findings := []models.Finding{
+		{
+			ID:       "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/default/risky:cluster_admin_equivalent",
+			RuleID:   "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+			Severity: models.SeverityCritical,
+			Score:    9.8,
+			Category: models.CategoryPrivilegeEscalation,
+			Title:    "Privesc path",
+			Subject:  &models.SubjectRef{Kind: "ServiceAccount", Name: "risky", Namespace: "default"},
+			Evidence: rawEvidence,
+			EscalationPath: []models.EscalationHop{
+				{
+					Step:        1,
+					Action:      "impersonate",
+					FromSubject: models.SubjectRef{Kind: "ServiceAccount", Name: "risky", Namespace: "default"},
+					Permission:  "impersonate users",
+					Gains:       "cluster-admin",
+				},
+			},
+			Tags: []string{"module:privesc"},
+		},
+	}
+
+	if _, err := Write(tmpDir, []string{"html"}, snapshot, findings); err != nil {
+		t.Fatalf("Write html: %v", err)
+	}
+	htmlBytes, err := os.ReadFile(filepath.Join(tmpDir, "report.html"))
+	if err != nil {
+		t.Fatalf("read report.html: %v", err)
+	}
+	html := string(htmlBytes)
+
+	// Sanity: the OBSERVED ATTACK CHAIN block still rendered — that's what justifies
+	// hiding Evidence in the first place.
+	if !strings.Contains(html, `class="attack-chain"`) {
+		t.Fatalf("expected EscalationPath markup (attack-chain) to render, but it is missing")
+	}
+
+	// The technique glossary explainer must surface for any known hop technique
+	// (here: "impersonate"). If this assertion ever fails, the chain card has
+	// regressed back to printing slugs without their plain-English description.
+	if !strings.Contains(html, `class="step-explainer"`) {
+		t.Fatalf("expected glossary-driven step-explainer markup in attack-chain card, but it is missing")
+	}
+	// And the human-readable technique title (from glossary.Techniques) must be
+	// surfaced rather than only the raw slug.
+	if !strings.Contains(html, `RBAC impersonation`) {
+		t.Fatalf("expected technique title %q in chain card, but it is missing", "RBAC impersonation")
+	}
+
+	// The "Evidence" header markup must NOT appear, since the structured grid was empty.
+	if strings.Contains(html, `<span class="k">Evidence</span>`) {
+		t.Errorf("Evidence section still rendered for fully-suppressed payload — expected the wrapper to be hidden")
+	}
+	// The "Show raw JSON" toggle is part of the same wrapper — it must also be gone.
+	if strings.Contains(html, `class="evidence-raw"`) {
+		t.Errorf("evidence-raw <details> still rendered for fully-suppressed payload — expected the wrapper to be hidden")
 	}
 }

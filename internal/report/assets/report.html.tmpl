@@ -42,7 +42,7 @@
     h2 { font-size: 19px; }
     h3 { font-size: 15.5px; }
 
-    .topbar { border-bottom: 1px solid var(--border-soft); background: rgba(10,13,22,0.72); position: sticky; top: 0; z-index: 5; }
+    .topbar { border-bottom: 1px solid var(--border-soft); background: rgba(10,13,22,0.96); -webkit-backdrop-filter: blur(12px) saturate(140%); backdrop-filter: blur(12px) saturate(140%); position: sticky; top: 0; z-index: 5; }
     .topbar-inner { max-width: 1280px; margin: 0 auto; padding: 14px 28px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
     .brand { display: flex; align-items: center; gap: 12px; }
     .brand-mark { width: 30px; height: 30px; border-radius: 8px;
@@ -115,10 +115,12 @@
     .risk-factors li::before { content: '▸'; position: absolute; left: 2px; color: var(--accent); font-size: 11px; top: 1px; }
     .risk-factors li strong { color: var(--text); font-weight: 600; }
 
-    .graph-intro { color: var(--text-mut); font-size: 14px; max-width: 820px; margin: 0 0 4px; }
+    .graph-header-row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; margin: 0 0 6px; }
+    .graph-header-row > * { margin: 0; }
+    .graph-intro { color: var(--text-mut); font-size: 14px; max-width: 820px; flex: 1 1 420px; margin: 0 0 4px; }
     .graph-intro strong { color: var(--text); }
     .graph-intro .kp-hint { display: inline-block; margin-left: 4px; color: var(--accent); font-size: 12.5px; }
-    .graph-truncated-notice { color: var(--text-mut); font-size: 12.5px; max-width: 820px; margin: 8px 0 6px; padding: 8px 12px; background: rgba(255,154,60,0.06); border-left: 2px solid rgba(255,154,60,0.55); border-radius: 4px; line-height: 1.5; }
+    .graph-truncated-notice { color: var(--text-mut); font-size: 12.5px; flex: 1 1 360px; min-width: 280px; padding: 8px 12px; background: rgba(255,154,60,0.06); border-left: 2px solid rgba(255,154,60,0.55); border-radius: 4px; line-height: 1.5; }
     .graph-truncated-notice strong { color: var(--text); }
     .graph-truncated-badge { display: inline-block; font-weight: 600; color: var(--text); margin-right: 6px; padding: 1px 6px; background: rgba(255,154,60,0.18); border-radius: 3px; font-size: 11.5px; letter-spacing: 0.02em; }
     .graph-wrap { margin-top: 10px; overflow-x: auto; }
@@ -440,9 +442,16 @@
     .finding .chain .k { color: var(--critical, #ff5a5a); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; display: block; }
     .finding .chain ol.attack-chain { list-style: none; padding-left: 0; margin: 0; display: grid; gap: 10px; counter-reset: step; }
     .finding .chain ol.attack-chain li.attack-step { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 13px; line-height: 1.5; color: var(--text); }
-    .finding .chain .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+    .finding .chain .step-hd { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; flex-wrap: wrap; }
     .finding .chain .step-num { font-weight: 700; color: var(--accent); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
-    .finding .chain .step-action { background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .finding .chain .step-title { color: var(--text); font-weight: 600; font-size: 13px; }
+    .finding .chain .step-action { background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 6px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text-mut); }
+    .finding .chain .step-explainer { margin: 4px 0 8px; color: var(--text-mut); font-size: 12.5px; line-height: 1.55; }
+    .finding .chain .step-explainer p { margin: 0 0 6px; }
+    .finding .chain .step-explainer p:last-child { margin-bottom: 0; }
+    .finding .chain .step-explainer code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); }
+    .finding .chain .step-explainer strong { color: var(--text); font-weight: 600; }
+    .finding .chain .step-explainer em { color: var(--text); font-style: italic; }
     .finding .chain .step-edge { color: var(--text-mut); margin-bottom: 4px; font-size: 13px; }
     .finding .chain .step-edge code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text); }
     .finding .chain .step-meta { font-size: 12.5px; color: var(--text-mut); margin-top: 2px; }
@@ -584,10 +593,12 @@
             <span class="legend-item"><span class="legend-dot high"></span>high edge</span>
           </div>
         </div>
-        <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
-        {{ if .Graph.Truncated }}
-        <p class="graph-truncated-notice"><span class="graph-truncated-badge">Showing {{ .Graph.Shown }} of {{ .Graph.TotalCaps }}</span>To keep the diagram readable, capabilities are capped at 10. The slate first guarantees one cap per impact category present in the cluster, then fills remaining slots by severity and score. The <strong>Findings</strong> tab has the complete list.</p>
-        {{ end }}
+        <div class="graph-header-row">
+          <p class="graph-intro">Defenders look at findings as a list. <strong>Attackers chain them</strong>. This graph walks each entry point through the capability it grants to the impact it achieves — so a finding's real danger is the <em>path</em> it joins, not its individual score. <span class="kp-hint">Hover for context · click any node for a plain-language explainer.</span></p>
+          {{ if .Graph.Truncated }}
+          <p class="graph-truncated-notice"><span class="graph-truncated-badge">Showing {{ .Graph.Shown }} of {{ .Graph.TotalCaps }}</span>To keep the diagram readable, capabilities are capped at 10. The slate first guarantees one cap per impact category present in the cluster, then fills remaining slots by severity and score. The <strong>Findings</strong> tab has the complete list.</p>
+          {{ end }}
+        </div>
         <div class="kp-filters" role="toolbar" aria-label="Filter the attack graph">
           <span class="kp-filters-label">Show</span>
           <button type="button" class="kp-chip" data-filter="sev" data-value="crit" aria-pressed="true"><span class="kp-chip-dot crit"></span>Critical</button>
@@ -882,10 +893,11 @@
             {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
           </div>
           {{ end }}
-          {{ if .Evidence }}
+          {{ $ev := evidenceHTML .Evidence }}
+          {{ if $ev }}
           <div class="evidence">
             <span class="k">Evidence</span>
-            {{ evidenceHTML .Evidence }}
+            {{ $ev }}
             <details class="evidence-raw">
               <summary>Show raw JSON</summary>
               <pre><code>{{ json .Evidence }}</code></pre>
