@@ -190,22 +190,51 @@ func secretTypeLabelDelta(t string) string {
 }
 
 // renderEscalationPath emits a numbered ordered list of step cards describing the
-// per-hop chain from the source subject to the privesc sink. Returns "" for empty
-// input so the template `{{ if … }}` gate can suppress the whole section.
+// per-hop chain from the source subject to the privesc sink. Each card surfaces the
+// human-readable technique title and a one-paragraph explainer from the Techniques
+// glossary so a reader who has never seen the slug (`impersonate`, `wildcard_permission`)
+// learns what it means in place. Returns "" for empty input so the template
+// `{{ if … }}` gate can suppress the whole section.
+//
+// The "Step N of M" prefix is omitted for single-hop chains — there is no chain to
+// follow, so numbering reads as ceremony.
 func renderEscalationPath(hops []models.EscalationHop) template.HTML {
 	if len(hops) == 0 {
 		return ""
 	}
+	total := len(hops)
 	var b strings.Builder
 	b.WriteString(`<ol class="attack-chain">`)
 	for _, hop := range hops {
 		b.WriteString(`<li class="attack-step">`)
 
-		b.WriteString(`<div class="step-hd"><span class="step-num">Step `)
-		b.WriteString(fmt.Sprintf("%d", hop.Step))
-		b.WriteString(`</span> <code class="step-action">`)
-		b.WriteString(template.HTMLEscapeString(hop.Action))
-		b.WriteString(`</code></div>`)
+		expl, hasExpl := Techniques[hop.Action]
+		title := expl.Title
+		if title == "" {
+			title = hop.Action
+		}
+
+		b.WriteString(`<div class="step-hd">`)
+		if total > 1 {
+			b.WriteString(`<span class="step-num">Step `)
+			b.WriteString(fmt.Sprintf("%d of %d", hop.Step, total))
+			b.WriteString(`</span> `)
+		}
+		b.WriteString(`<span class="step-title">`)
+		b.WriteString(template.HTMLEscapeString(title))
+		b.WriteString(`</span>`)
+		if hop.Action != "" && hop.Action != title {
+			b.WriteString(` <code class="step-action">`)
+			b.WriteString(template.HTMLEscapeString(hop.Action))
+			b.WriteString(`</code>`)
+		}
+		b.WriteString(`</div>`)
+
+		if hasExpl && expl.Plain != "" {
+			b.WriteString(`<div class="step-explainer">`)
+			b.WriteString(string(expl.Plain))
+			b.WriteString(`</div>`)
+		}
 
 		from := subjectKey(hop.FromSubject)
 		to := subjectKey(hop.ToSubject)
@@ -228,12 +257,12 @@ func renderEscalationPath(hops []models.EscalationHop) template.HTML {
 		}
 
 		if hop.Permission != "" {
-			b.WriteString(`<div class="step-meta"><span class="k">Permission</span> <code>`)
+			b.WriteString(`<div class="step-meta"><span class="k">Permission granted</span> <code>`)
 			b.WriteString(template.HTMLEscapeString(hop.Permission))
 			b.WriteString(`</code></div>`)
 		}
 		if hop.Gains != "" {
-			b.WriteString(`<div class="step-meta"><span class="k">Gains</span> <span class="v">`)
+			b.WriteString(`<div class="step-meta"><span class="k">Gives the attacker</span> <span class="v">`)
 			b.WriteString(template.HTMLEscapeString(hop.Gains))
 			b.WriteString(`</span></div>`)
 		}

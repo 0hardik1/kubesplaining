@@ -68,24 +68,114 @@ func scopeForPath(source models.SubjectRef, target models.EscalationTarget) mode
 	}
 }
 
-// hopNarrative renders one hop into a single-sentence attacker step using the hop's
-// own Gains field plus the technique label.
+// hopNarrative renders one hop into a natural-prose sentence describing what the
+// attacker does at that step. The output goes into Finding.AttackScenario, which
+// the report template wraps in an <ol> — so we deliberately omit any "Step N:"
+// prefix (the list renders the number) and write each hop as a self-contained
+// sentence using the technique's human-readable title rather than its slug.
+//
+// The technique titles here intentionally mirror internal/report/glossary.go's
+// Techniques map. We don't import that map directly because the privesc analyzer
+// must not depend on the report package; if a slug is added there it should be
+// reflected here too. Fallback prose is generic but still readable.
 func hopNarrative(hop models.EscalationHop) string {
-	parts := []string{}
-	if hop.Action != "" {
-		parts = append(parts, fmt.Sprintf("technique `%s`", hop.Action))
-	}
+	from := backtickSubject(hop.FromSubject)
+	to := backtickSubject(hop.ToSubject)
+	hasTo := to != ""
+	perm := ""
 	if hop.Permission != "" {
-		parts = append(parts, fmt.Sprintf("via permission `%s`", hop.Permission))
+		perm = fmt.Sprintf("`%s`", hop.Permission)
 	}
-	if hop.Gains != "" {
-		parts = append(parts, hop.Gains)
+	gains := strings.TrimSpace(hop.Gains)
+
+	switch hop.Action {
+	case "bound_to_cluster_admin":
+		return fmt.Sprintf("%s is bound directly to the `cluster-admin` ClusterRole — no chain step is needed beyond compromising the subject itself.", from)
+
+	case "wildcard_permission":
+		return fmt.Sprintf("The identity %s already holds wildcard verbs on wildcard resources (%s), which is functionally identical to `cluster-admin`. The attacker can take any action on any resource in the cluster without further escalation.", from, perm)
+
+	case "modify_role_binding":
+		return fmt.Sprintf("Acting as %s, the attacker abuses RoleBinding write access (%s) to add themselves (or any subject they control) to a high-privilege ClusterRoleBinding — typically `cluster-admin`. They don't need the target role's permissions today, only the ability to change bindings.", from, perm)
+
+	case "bind_or_escalate":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind`/`escalate` bypass (%s) to grant themselves a role they do not currently hold and bind to %s. `bind`/`escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker uses the RBAC `bind`/`escalate` bypass (%s) to grant themselves any role they choose — typically `cluster-admin`. `bind`/`escalate` is the carve-out that lets the holder escape RBAC's normal \"you can only grant what you have\" guardrail.", from, perm)
+
+	case "impersonate":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as %s — the kube-apiserver honours the `Impersonate-User` / `Impersonate-Group` headers and authorizes the request against the impersonated identity's permissions instead of the attacker's.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as any identity in the cluster — including `system:masters`, which the apiserver hard-codes as cluster-admin. Granting `impersonate` on `groups: [\"*\"]` is functionally a cluster-admin grant.", from, perm)
+
+	case "impersonate_system_masters":
+		return fmt.Sprintf("Acting as %s, the attacker impersonates the `system:masters` group (%s). The kube-apiserver hard-codes that group as authorized for every operation regardless of RBAC — a single such grant collapses the entire authorization layer.", from, perm)
+
+	case "read_secrets":
+		return fmt.Sprintf("Acting as %s, the attacker reads ServiceAccount tokens out of the cluster's Secrets store (%s) and uses one of those tokens — typically a control-plane controller's — to escalate. Read-access on Secrets is the most consequential single verb in Kubernetes RBAC because every other identity's credential lives in a Secret object somewhere.", from, perm)
+
+	case "nodes_proxy":
+		return fmt.Sprintf("Acting as %s, the attacker uses `nodes/proxy` (%s) to forward requests directly to the kubelet on each node. Combined with the kubelet's `/exec` endpoint this becomes a primitive for running commands inside any pod the kubelet can see.", from, perm)
+
+	case "pod_create_token_theft":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker creates a pod that mounts the %s ServiceAccount and then reads `/var/run/secrets/kubernetes.io/serviceaccount/token` from inside the container. The pod becomes a token-theft primitive: any ServiceAccount the attacker can mount, they can lift.", from, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker creates a pod that mounts a privileged ServiceAccount and reads `/var/run/secrets/kubernetes.io/serviceaccount/token` from inside the container — the pod is a token-theft primitive.", from)
+
+	case "pod_exec":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker uses `pods/exec` (%s) to open a shell inside %s and inherit whatever ServiceAccount or host privileges that container holds.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker uses `pods/exec` (%s) to open a shell inside a privileged pod and inherit whatever ServiceAccount or host privileges that container holds.", from, perm)
+
+	case "token_request":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker calls the `serviceaccounts/token` subresource (%s) to mint a fresh, valid token for %s — no pod creation required, and a thinner audit trail than the pod-mount route.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker calls the `serviceaccounts/token` subresource (%s) to mint a fresh token for a privileged ServiceAccount — no pod creation required, and a thinner audit trail than the pod-mount route.", from, perm)
+
+	case "mint_arbitrary_token":
+		return fmt.Sprintf("Acting as %s, the attacker calls `serviceaccounts/token` at cluster scope (%s) to mint a token for any ServiceAccount in any namespace. With no `resourceNames` constraint, the verb amounts to a credential-issuing oracle.", from, perm)
+
+	case "pod_host_escape":
+		return fmt.Sprintf("Acting as %s, the attacker schedules a pod with host-level access (`privileged: true`, `hostPath: /`, `hostPID`, or `hostNetwork`) and escapes onto the underlying node. From there they read every co-located pod's filesystem, every projected ServiceAccount token on that node, and the kubelet's client cert.", from)
 	}
-	prefix := fmt.Sprintf("Step %d: from `%s` to `%s`", hop.Step, hop.FromSubject.Key(), hop.ToSubject.Key())
-	if len(parts) == 0 {
-		return prefix + "."
+
+	// Fallback: unknown technique slug. Produce readable prose using the raw fields
+	// rather than a colon-and-semicolon dump, so a future analyzer rule that emits
+	// a new slug still reads sensibly until a case is added above.
+	var b strings.Builder
+	fmt.Fprintf(&b, "Acting as %s", from)
+	if hasTo {
+		fmt.Fprintf(&b, ", the attacker uses the `%s` technique to reach %s", hop.Action, to)
+	} else if hop.Action != "" {
+		fmt.Fprintf(&b, ", the attacker uses the `%s` technique", hop.Action)
 	}
-	return prefix + " — " + strings.Join(parts, "; ") + "."
+	if perm != "" {
+		fmt.Fprintf(&b, " via %s", perm)
+	}
+	if gains != "" {
+		fmt.Fprintf(&b, " — %s", gains)
+	}
+	b.WriteString(".")
+	return b.String()
+}
+
+// backtickSubject returns a Markdown backtick-wrapped Key() for a subject, or
+// "" when the SubjectRef is empty (e.g. the tail of an escalation path whose
+// terminal hop ends at a synthetic sink — cluster_admin, node_escape — instead
+// of another subject). Callers that reference the target should branch on the
+// empty case to produce sink-aware prose, since an empty backtick pair reads
+// as a rendering bug to the reader.
+func backtickSubject(s models.SubjectRef) string {
+	key := s.Key()
+	if key == "" || key == "/" {
+		return ""
+	}
+	return fmt.Sprintf("`%s`", key)
 }
 
 // hopsRemediation surfaces the hop most suitable for breaking the chain: prefer mid-chain
