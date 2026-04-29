@@ -271,31 +271,30 @@
     }
 
     .narratives { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
-    .narrative { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); position: relative; overflow: hidden; }
-    .narrative h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    /* Severity badges — solid-fill on dark text for crit/high/med so a critical reads
-       unmistakably critical at a glance. Low stays muted because a low finding shouldn't
-       compete for attention with a critical. Glyph prefixes (◆ / ▲ / ■) survive
-       screenshots and grayscale printing. */
-    .badge-sev { font-size: 10.5px; font-weight: 800; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.08em; line-height: 1.2; display: inline-block; }
-    .badge-sev.crit { background: var(--critical); color: #1a0408; border: 1px solid transparent;
-      box-shadow: 0 0 0 1px rgba(255,85,104,0.55), 0 4px 12px rgba(255,85,104,0.18); }
-    .badge-sev.high { background: var(--high); color: #1f1206; border: 1px solid transparent;
-      box-shadow: 0 0 0 1px rgba(255,154,60,0.5); }
-    .badge-sev.med  { background: var(--medium); color: #221b04; border: 1px solid transparent;
-      box-shadow: 0 0 0 1px rgba(255,210,76,0.45); }
-    .badge-sev.low  { background: rgba(141,153,177,0.18); color: #c8d4eb; border: 1px solid var(--border-strong); }
-    .badge-sev.crit::before { content: "◆ "; }
-    .badge-sev.high::before { content: "▲ "; }
-    .badge-sev.med::before  { content: "■ "; }
-    .narrative ol { margin: 10px 0 0; padding-left: 18px; color: var(--text-mut); font-size: 14px; line-height: 1.58; }
+    /* Narrative card: severity badge is the first child and pinned to the top-left corner
+       so its placement is consistent across every card regardless of how the title wraps.
+       The h3 then renders below the badge, free to wrap onto multiple lines without
+       dragging the badge with it. */
+    .narrative { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+    .narrative > .badge-sev { align-self: flex-start; margin-bottom: 2px; }
+    .narrative h3 { margin: 0; font-size: 16px; line-height: 1.35; }
+    /* Severity badges — outlined pills with translucent fills and bold severity-tinted
+       text. Full-color border (not the soft edge) gives them visual weight while keeping
+       the dossier-style appearance the side-panel already uses. Low stays muted because
+       a low finding shouldn't compete for attention with a critical. */
+    .badge-sev { font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; letter-spacing: 0.08em; line-height: 1.2; display: inline-block; text-transform: uppercase; }
+    .badge-sev.crit { background: var(--critical-soft); color: #ff8da0; border: 1px solid var(--critical); }
+    .badge-sev.high { background: var(--high-soft); color: #ffb47a; border: 1px solid var(--high); }
+    .badge-sev.med  { background: var(--medium-soft); color: #ffe086; border: 1px solid var(--medium); }
+    .badge-sev.low  { background: rgba(141,153,177,0.14); color: #c8d4eb; border: 1px solid var(--border-strong); }
+    .narrative ol { margin: 0; padding-left: 18px; color: var(--text-mut); font-size: 14px; line-height: 1.58; align-self: stretch; }
     .narrative ol li { overflow-wrap: anywhere; word-break: break-word; }
     .narrative ol li + li { margin-top: 6px; }
     .narrative ol .step-items { margin: 6px 0 2px; padding-left: 18px; list-style: disc; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.55; }
     .narrative ol .step-items li { margin-top: 0; }
     .narrative ol .step-items li + li { margin-top: 2px; }
     .narrative ol strong { color: var(--text); font-weight: 600; }
-    .narrative .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .narrative .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; align-self: stretch; }
     .chip { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-mut); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0.02em; }
     .chip.crit { color: #ffb4be; border-color: var(--critical-edge); background: var(--critical-soft); }
     .chip.high { color: #ffc89a; border-color: var(--high-edge); background: var(--high-soft); }
@@ -472,9 +471,12 @@
     .rule-instance-count { font-size: 11.5px; color: var(--text-mut); padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.02); }
     .rule-shared { padding: 10px 0 4px; border-top: 1px solid var(--border-soft); margin-top: 12px; }
     .rule-shared .mitre { margin: 4px 0; }
-    .rule-shared > details.refs { margin-top: 6px; }
     .rule-instances { margin-top: 14px; }
     .rule-instances-hd { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-mut); font-weight: 700; margin: 0 0 8px; }
+    /* Rule-card footer holds the per-rule References, anchored at the bottom so the
+       affected-subjects list reads first and the references sit out of the triage path. */
+    .rule-footer { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
+    .rule-footer > details.refs { margin: 0; }
 
     /* A finding rendered as a per-instance disclosure inside a rule group: collapsed
        by default for groups with 3+ instances, expanded for 1–2. The summary row
@@ -562,10 +564,13 @@
     .finding details.refs ul { list-style: none; padding-left: 0; margin: 8px 0 0; display: grid; gap: 4px; }
     .finding details.refs ul li { padding-left: 14px; position: relative; }
     .finding details.refs ul li::before { content: "↗"; position: absolute; left: 0; color: var(--text-dim); }
-    .finding .mitre { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mut); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-    .finding .mitre .k { color: var(--text-dim); }
-    .finding .mitre a { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; text-decoration: none; background: rgba(255,255,255,0.02); }
-    .finding .mitre a:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+    /* MITRE link chip styling — shared by per-finding (.finding .mitre, legacy) and
+       per-rule-card (.rule-shared .mitre) contexts. flex + gap gives the links breathing
+       room so they don't run together as "T1552.007T1078.004T1098". */
+    .mitre { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mut); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .mitre .k { color: var(--text-dim); margin-right: 2px; }
+    .mitre a { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11px; text-decoration: none; background: rgba(255,255,255,0.02); }
+    .mitre a:hover { border-color: var(--border-strong); background: var(--surface-hover); }
     .finding details { margin-top: 12px; }
     .finding details summary { cursor: pointer; user-select: none; font-size: 12px; color: var(--text-mut); padding: 6px 10px; border: 1px dashed var(--border); border-radius: 8px; display: inline-block; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600; }
     .finding details[open] summary { color: var(--accent); border-color: var(--border-strong); border-style: solid; }
@@ -866,7 +871,8 @@
       <div class="narratives">
         {{ range .Narratives }}
         <article class="narrative">
-          <h3>{{ .Title }} <span class="badge-sev {{ sevClass .Severity }}">{{ .Severity }}</span></h3>
+          <span class="badge-sev {{ sevClass .Severity }}">{{ .Severity }}</span>
+          <h3>{{ .Title }}</h3>
           <ol>
             {{ range .Steps }}<li>{{ .Text }}{{ if .Items }}<ul class="step-items">{{ range .Items }}<li>{{ . }}</li>{{ end }}</ul>{{ end }}</li>{{ end }}
           </ol>
@@ -1045,29 +1051,12 @@
               <span class="score-lbl">Score <strong>{{ score .MaxScore }}{{ if ne .MaxScore .MinScore }}–{{ score .MinScore }}{{ end }}</strong></span>
             </span>
           </header>
-          {{ if or .MitreTechniques .LearnMore .References }}
+          {{ if .MitreTechniques }}
           <div class="rule-shared">
-            {{ if .MitreTechniques }}
             <div class="mitre">
               <span class="k">MITRE ATT&amp;CK:</span>
               {{ range .MitreTechniques }}<a href="{{ .URL }}" target="_blank" rel="noopener noreferrer" title="{{ .Name }}">{{ .ID }}</a>{{ end }}
             </div>
-            {{ end }}
-            {{ if .LearnMore }}
-            <details class="refs">
-              <summary>References <span class="ref-count">{{ len .LearnMore }}</span></summary>
-              <ul>
-                {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
-              </ul>
-            </details>
-            {{ else if .References }}
-            <details class="refs">
-              <summary>References <span class="ref-count">{{ len .References }}</span></summary>
-              <ul>
-                {{ range .References }}<li><a href="{{ . }}" target="_blank" rel="noopener noreferrer">{{ . }}</a></li>{{ end }}
-              </ul>
-            </details>
-            {{ end }}
           </div>
           {{ end }}
           <div class="rule-instances">
@@ -1147,6 +1136,25 @@
             </details>
             {{ end }}
           </div>
+          {{ if or .LearnMore .References }}
+          <div class="rule-footer">
+            {{ if .LearnMore }}
+            <details class="refs">
+              <summary>References <span class="ref-count">{{ len .LearnMore }}</span></summary>
+              <ul>
+                {{ range .LearnMore }}<li><a href="{{ .URL }}" target="_blank" rel="noopener noreferrer">{{ .Title }}</a></li>{{ end }}
+              </ul>
+            </details>
+            {{ else if .References }}
+            <details class="refs">
+              <summary>References <span class="ref-count">{{ len .References }}</span></summary>
+              <ul>
+                {{ range .References }}<li><a href="{{ . }}" target="_blank" rel="noopener noreferrer">{{ . }}</a></li>{{ end }}
+              </ul>
+            </details>
+            {{ end }}
+          </div>
+          {{ end }}
         </article>
         {{ end }}
       </div>
