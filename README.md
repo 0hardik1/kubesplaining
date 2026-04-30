@@ -1,5 +1,11 @@
 # Kubesplaining
 
+[![Latest release](https://img.shields.io/github/v/release/0hardik1/Kubesplaining?include_prereleases&sort=semver)](https://github.com/0hardik1/Kubesplaining/releases)
+[![License](https://img.shields.io/github/license/0hardik1/Kubesplaining)](LICENSE)
+[![CI](https://github.com/0hardik1/Kubesplaining/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/0hardik1/Kubesplaining/actions/workflows/lint.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/0hardik1/Kubesplaining)](go.mod)
+[![Go Report Card](https://goreportcard.com/badge/github.com/0hardik1/kubesplaining)](https://goreportcard.com/report/github.com/0hardik1/kubesplaining)
+
 Kubesplaining is a Kubernetes security assessment CLI inspired by Salesforce's [Cloudsplaining](https://github.com/salesforce/cloudsplaining) (which does the same job for AWS IAM). It reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings as HTML, JSON, CSV, or SARIF.
 
 It focuses on the things that matter most for *offensive-realistic* Kubernetes hardening:
@@ -15,37 +21,65 @@ Every finding names the technique, shows the evidence, and includes remediation 
 
 **See an example report:** the e2e suite scans a deliberately misconfigured cluster and publishes the result at <https://0hardik1.github.io/Kubesplaining/> — open it to see how findings, the attack graph, and remediation copy actually render before installing anything.
 
+## How it compares
+
+| Tool | Focus | Privesc graph | Offline snapshots | Output formats |
+| --- | --- | --- | --- | --- |
+| **Kubesplaining** | Cluster-wide attack-path analysis with remediation | ✅ multi-hop BFS to 4 sinks | ✅ `download` + `scan --input-file` | HTML / JSON / CSV / SARIF |
+| kube-bench | CIS Benchmark compliance | ❌ | ❌ | text / JSON |
+| kubescape | NSA / MITRE framework controls | ❌ (per-rule, not chained) | ✅ | JSON / SARIF |
+| KubiScan | RBAC-only risky permissions | ❌ (annotates roles, not chains) | ❌ | text |
+| rbac-tool | RBAC visualization & queries | partial (graph viz, not attack-pathing) | ❌ | text / JSON |
+
+The differentiator is **graph-based privilege-escalation path detection**: BFS from every non-system RBAC subject to four escalation sinks (cluster-admin, system:masters, node-escape, kube-system-secrets), with the full hop chain attached to every finding. None of the tools above do this; they all stop at per-rule findings.
+
+## Install
+
+### Container image (zero install)
+
+The smallest path to a report — works against your current `kubectl` context if `~/.kube` is mounted in:
+
+```bash
+docker run --rm \
+  -v "$HOME/.kube:/.kube:ro" \
+  -v "$(pwd)/kubesplaining-report:/kubesplaining-report" \
+  ghcr.io/0hardik1/kubesplaining:latest scan
+open kubesplaining-report/report.html
+```
+
+The image is multi-arch (linux/amd64 + linux/arm64), distroless, runs as non-root.
+
+### Pre-built binary
+
+Grab the archive matching your OS / arch from the [Releases page](https://github.com/0hardik1/Kubesplaining/releases/latest), extract, and put `kubesplaining` on your `PATH`. Each release ships:
+
+- `kubesplaining_<version>_Linux_x86_64.tar.gz`
+- `kubesplaining_<version>_Linux_arm64.tar.gz`
+- `kubesplaining_<version>_Darwin_x86_64.tar.gz`
+- `kubesplaining_<version>_Darwin_arm64.tar.gz`
+- `kubesplaining_<version>_Windows_x86_64.zip`
+- `kubesplaining_<version>_checksums.txt` (SHA-256)
+
+Verify the checksum, then move the binary into place:
+
+```bash
+shasum -a 256 -c kubesplaining_<version>_checksums.txt
+sudo install kubesplaining /usr/local/bin/
+```
+
+### Go install
+
+```bash
+go install github.com/0hardik1/kubesplaining/cmd/kubesplaining@latest
+```
+
 ## Quickstart
 
-The repo pins its developer tools (Go, kubectl, kind, ripgrep) with [Hermit](https://cashapp.github.io/hermit/), so you do **not** need a system Go install. The `./bin/` directory ships shim symlinks; the first invocation of any of them auto-downloads the pinned version into `~/Library/Caches/hermit` (macOS) or `~/.cache/hermit` (Linux). No global install required, no `sudo`.
-
-Activate the environment once per shell so plain `go`, `kubectl`, etc. resolve to the pinned versions:
+After installing, point Kubesplaining at your current `kubectl` context and open the report:
 
 ```bash
-. ./bin/activate-hermit          # adds ./bin to PATH for this shell
-```
-
-> Don't want to activate? Skip the line above and call shims directly: `./bin/go ...`, `./bin/kubectl ...`. Either path works; everything below assumes you've activated.
-
-Build the CLI and scan your current `kubectl` context — one command:
-
-```bash
-make scan                                   # builds if needed, then scans the current context
-open kubesplaining-report/report.html       # macOS; xdg-open on Linux
-```
-
-`make scan` builds the binary on first run (Hermit auto-fetches Go) and then re-runs incrementally. Pass extra CLI flags via `ARGS`, e.g. `make scan ARGS="--threshold high --only-modules privesc"`. To run the binary directly instead:
-
-```bash
-make build
-./bin/kubesplaining scan
-```
-
-Or capture a snapshot first and analyze it offline (good for jumphosts, audits, diffs):
-
-```bash
-./bin/kubesplaining download --output-file snapshot.json
-./bin/kubesplaining scan --input-file snapshot.json
+kubesplaining scan                        # writes ./kubesplaining-report/
+open kubesplaining-report/report.html     # macOS; xdg-open on Linux
 ```
 
 Useful flags:
@@ -56,31 +90,24 @@ Useful flags:
 - `--ci-mode --ci-max-critical 0 --ci-max-high 0` — non-zero exit when over budget, for CI.
 - `--max-privesc-depth 7` — deeper BFS on the escalation graph (default 5).
 
+Capture a snapshot once and analyze it offline (good for jumphosts, audits, diffs):
+
+```bash
+kubesplaining download --output-file snapshot.json
+kubesplaining scan --input-file snapshot.json
+```
+
 For one-off manifest checks without cluster access:
 
 ```bash
-./bin/kubesplaining scan-resource --input-file deployment.yaml
+kubesplaining scan-resource --input-file deployment.yaml
 ```
-
-### Developer setup
-
-With Hermit activated (see Quickstart), the standard loop is:
-
-```bash
-make setup                        # download Go module deps into ./.tmp
-make test                         # go test ./...
-make lint                         # gofmt -l + go vet
-make e2e                          # spin up kind, apply risky manifests, assert findings (needs Docker)
-make install-hooks                # activate repo-local pre-commit + commit-msg hooks (one-time per clone)
-```
-
-Docker is intentionally not Hermit-managed — install the Docker daemon on the host. To add or change a pinned tool, run `./bin/hermit install <pkg>` and commit the resulting symlinks under `bin/`.
-
-After `make install-hooks`, every commit runs `gofmt` and `golangci-lint` against staged Go files, and commit messages are validated against [Conventional Commits](https://www.conventionalcommits.org/). The linter is pinned via Hermit too — install it once with `./bin/hermit install golangci-lint`. See [`.githooks/README.md`](.githooks/README.md) for the full hook contract and how to bypass in emergencies.
 
 ## Status
 
-Initial implementation, not the full specification yet — see [PLAN.md](PLAN.md) for the roadmap and what is/isn't done. The current focus is RBAC dangerous-permission detection and pod-security misconfiguration, plus the privilege-escalation graph that ties them together.
+v1.0.0 ships **41 stable rule IDs across 7 analyzer modules**, the RBAC privilege-escalation graph (BFS to 4 escalation sinks), four output formats, exclusions presets, and offline snapshot scanning. See [`docs/findings.md`](docs/findings.md) for the full rule catalog and [`PLAN.md`](PLAN.md) for what's planned next (cloud-provider modules, more rules, an interactive privesc graph view in the HTML report).
+
+Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Why It Is Useful
 
@@ -260,8 +287,39 @@ Kubesplaining needs **cluster-wide read** on the resource kinds listed under Sta
 
 No admission webhooks, CRDs, or agent pods are installed. The tool is safe to point at production.
 
+## Developer setup
+
+The repo pins its developer toolchain (Go, kubectl, kind, ripgrep, golangci-lint, goreleaser) with [Hermit](https://cashapp.github.io/hermit/), so contributing requires no system Go install. The `./bin/` directory ships shim symlinks; the first invocation of any of them auto-downloads the pinned version into `~/Library/Caches/hermit` (macOS) or `~/.cache/hermit` (Linux). No global install required, no `sudo`.
+
+Activate the environment once per shell so plain `go`, `kubectl`, etc. resolve to the pinned versions:
+
+```bash
+. ./bin/activate-hermit          # adds ./bin to PATH for this shell
+```
+
+> Don't want to activate? Skip the line above and call shims directly: `./bin/go ...`, `./bin/kubectl ...`. Either path works.
+
+Standard development loop:
+
+```bash
+make setup                        # download Go module deps into ./.tmp
+make build                        # builds ./bin/kubesplaining (with version stamping)
+make test                         # go test ./...
+make lint                         # gofmt -l + go vet
+make e2e                          # spin up kind, apply risky manifests, assert findings (needs Docker)
+make install-hooks                # activate repo-local pre-commit + commit-msg hooks (one-time per clone)
+```
+
+After `make install-hooks`, every commit runs `gofmt` and `golangci-lint` against staged Go files, and commit messages are validated against [Conventional Commits](https://www.conventionalcommits.org/). See [`.githooks/README.md`](.githooks/README.md) for the full hook contract and [CONTRIBUTING.md](CONTRIBUTING.md) for the rule-ID conventions and where to add tests.
+
+Docker is intentionally not Hermit-managed — install the Docker daemon on the host. To add or change a pinned tool, run `./bin/hermit install <pkg>` and commit the resulting symlinks under `bin/`.
+
 ## Where To Go Next
 
 - Full rule catalog (implemented + planned): [docs/findings.md](docs/findings.md).
 - Status of each module / roadmap item: [PLAN.md](PLAN.md).
+- Releases & changelog: [CHANGELOG.md](CHANGELOG.md) / [GitHub Releases](https://github.com/0hardik1/Kubesplaining/releases).
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+- Security: [SECURITY.md](SECURITY.md) (GitHub Private Vulnerability Reporting only).
+- License: [Apache-2.0](LICENSE).
 - End-to-end verification: `make e2e` — provisions a local `kind` cluster with intentionally risky manifests in [testdata/](testdata/) and asserts expected findings.

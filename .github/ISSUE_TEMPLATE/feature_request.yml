@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new analyzer rule, output format, or capability.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For new **rules**, scan [`docs/findings.md`](https://github.com/0hardik1/Kubesplaining/blob/main/docs/findings.md) and [`PLAN.md`](https://github.com/0hardik1/Kubesplaining/blob/main/PLAN.md) first to make sure the rule isn't already implemented or already on the roadmap.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the gap — a misconfiguration that goes undetected today, an output you can't easily produce, a workflow that's awkward.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: |
+        How would Kubesplaining behave if this were implemented? For new rules, describe the detection (what fields, what conditions) and the remediation suggestion.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other tools you've checked, workarounds you're using, or approaches you've ruled out.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links to related Kubernetes docs, MITRE ATT&CK techniques, blog posts, or upstream issues.

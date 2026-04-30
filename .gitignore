@@ -12,3 +12,6 @@ bin/kubesplaining
 
 # Generated reports
 kubesplaining-report/
+
+# GoReleaser snapshot/release output
+dist/

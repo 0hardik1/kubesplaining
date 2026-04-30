@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main is the kubesplaining CLI entrypoint. It wires build metadata
 // into the cobra root command and exits non-zero on any command error.
 package main
@@ -6,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hardik/kubesplaining/internal/cli"
+	"github.com/0hardik1/kubesplaining/internal/cli"
 )
 
 // These vars are populated at link time via -ldflags and surfaced through the version command.
