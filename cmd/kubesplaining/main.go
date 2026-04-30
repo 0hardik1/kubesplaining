@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package main is the kubesplaining CLI entrypoint. It wires build metadata
 // into the cobra root command and exits non-zero on any command error.
 package main
