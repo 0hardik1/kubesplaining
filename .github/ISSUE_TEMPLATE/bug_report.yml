@@ -1,0 +1,95 @@
+name: Bug report
+description: Report incorrect output, a crash, or unexpected behavior in Kubesplaining.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please fill out the fields below — the more reproducible the report, the faster the fix.
+
+        **Security issues do not belong here.** See [SECURITY.md](https://github.com/0hardik1/Kubesplaining/blob/main/SECURITY.md) for private disclosure via GitHub PVR.
+
+  - type: input
+    id: version
+    attributes:
+      label: Kubesplaining version
+      description: Output of `kubesplaining version`.
+      placeholder: "version=v1.0.0 commit=abcdef0 date=2026-04-30T12:00:00Z"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Pre-built binary (GitHub Releases)
+        - Container image (ghcr.io)
+        - go install
+        - Built from source (make build)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes server version
+      description: Output of `kubectl version --short` (server line). Leave blank if scanning a snapshot file.
+      placeholder: "Server Version: v1.31.0"
+
+  - type: dropdown
+    id: variant
+    attributes:
+      label: Kubernetes variant
+      options:
+        - kind / minikube (local)
+        - EKS
+        - GKE
+        - AKS
+        - OpenShift
+        - Rancher / k3s
+        - Vanilla / kubeadm
+        - Other / not applicable
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: The exact `kubesplaining ...` invocation, plus any relevant flags / config files.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What output / behavior would have been correct.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What you got
+      description: The actual output, error message, or finding. Paste relevant snippets — feel free to redact secrets / cluster identifiers.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: snapshot
+    attributes:
+      label: Snapshot fragment (optional but very helpful)
+      description: |
+        If the bug reproduces against a specific resource, attach the smallest snapshot/manifest fragment that triggers it.
+        Run `kubesplaining download --output-file snapshot.json` and trim it down, or paste a single Role/Pod/etc. YAML.
+      render: yaml
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, anything else that helps. Drag and drop files here.
