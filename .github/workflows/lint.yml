@@ -1,4 +1,4 @@
-name: Lint and test
+name: CI
 
 on:
   pull_request:
@@ -19,7 +19,9 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/hermit
+          path: |
+            ~/.cache/hermit
+            ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
       - uses: actions/cache@v4
@@ -43,7 +45,9 @@ jobs:
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/hermit
+          path: |
+            ~/.cache/hermit
+            ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
       - uses: actions/cache@v4
@@ -65,14 +69,20 @@ jobs:
         run: ./bin/golangci-lint run ./...
 
   test:
-    name: go test ./...
-    runs-on: ubuntu-latest
+    name: go test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/hermit
+          path: |
+            ~/.cache/hermit
+            ~/Library/Caches/hermit
           key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
 
       - uses: actions/cache@v4
@@ -87,6 +97,41 @@ jobs:
 
       - name: make test
         run: make test
+
+  build:
+    name: make build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/hermit
+            ~/Library/Caches/hermit
+          key: hermit-${{ runner.os }}-${{ hashFiles('bin/.*.pkg') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: .tmp/go-mod-cache
+          key: gomod-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - name: Activate Hermit
+        run: |
+          . ./bin/activate-hermit
+          env >> "$GITHUB_ENV"
+
+      - name: make build
+        run: make build
+
+      - name: Verify version stamping
+        run: ./bin/kubesplaining version
 
   commit-msg-check:
     name: Conventional Commits PR title
