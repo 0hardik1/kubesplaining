@@ -1,0 +1,136 @@
+# GoReleaser v2 config. Triggered by .github/workflows/release.yml on a
+# `v*` tag push. Produces tar.gz/zip archives, sha256 checksums, multi-arch
+# Linux Docker images on ghcr.io, and a GitHub release.
+#
+# To dry-run locally:
+#   goreleaser release --snapshot --clean --skip=publish
+
+version: 2
+
+project_name: kubesplaining
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kubesplaining
+    binary: kubesplaining
+    main: ./cmd/kubesplaining
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+release:
+  github:
+    owner: 0hardik1
+    name: Kubesplaining
+  draft: false
+  prerelease: auto
+  mode: replace
+
+# Used only when --release-notes is NOT passed by the workflow. For tagged
+# releases that match a CHANGELOG.md section the workflow injects that
+# section directly; otherwise this commit-grouping is the fallback.
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+      - "^chore\\(deps\\):"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([^)]+\))?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([^)]+\))?:.+$'
+      order: 1
+    - title: Other
+      order: 999
+
+dockers:
+  - id: kubesplaining-amd64
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/0hardik1/kubesplaining:{{ .Version }}-amd64"
+    use: buildx
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.source=https://github.com/0hardik1/Kubesplaining"
+      - "--label=org.opencontainers.image.url=https://github.com/0hardik1/Kubesplaining"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+      - "--label=org.opencontainers.image.description=Kubernetes security CLI: RBAC privesc graph, offline snapshot scanning"
+
+  - id: kubesplaining-arm64
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/0hardik1/kubesplaining:{{ .Version }}-arm64"
+    use: buildx
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.source=https://github.com/0hardik1/Kubesplaining"
+      - "--label=org.opencontainers.image.url=https://github.com/0hardik1/Kubesplaining"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+      - "--label=org.opencontainers.image.description=Kubernetes security CLI: RBAC privesc graph, offline snapshot scanning"
+
+docker_manifests:
+  - name_template: "ghcr.io/0hardik1/kubesplaining:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/0hardik1/kubesplaining:{{ .Version }}-amd64"
+      - "ghcr.io/0hardik1/kubesplaining:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/0hardik1/kubesplaining:latest"
+    image_templates:
+      - "ghcr.io/0hardik1/kubesplaining:{{ .Version }}-amd64"
+      - "ghcr.io/0hardik1/kubesplaining:{{ .Version }}-arm64"
+    skip_push: auto
