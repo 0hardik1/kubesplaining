@@ -344,7 +344,6 @@ The `standard` preset suppresses control-plane noise (kube-system, system:*, kub
 
 - **Full rule catalog** (implemented + planned): [docs/findings.md](docs/findings.md)
 - **Architecture deep-dive** (per-stage walkthrough, scoring, data model): [docs/architecture.md](docs/architecture.md)
-- **Full tool comparison** (15 tools, including archived projects): [docs/comparison.md](docs/comparison.md)
 - **Roadmap & status**: [PLAN.md](PLAN.md)
 - **Releases & changelog**: [CHANGELOG.md](CHANGELOG.md) / [GitHub Releases](https://github.com/0hardik1/kubesplaining/releases)
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
