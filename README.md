@@ -10,7 +10,7 @@ A Kubernetes security assessment CLI that maps every RBAC subject's privilege-es
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
-<video src="docs/assets/kubesplaining.mp4" controls muted playsinline width="100%"></video>
+> ![Kubesplaining demo](docs/assets/kubesplaining.gif)
 
 Inspired by [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) at BeyondTrust Phantom Labs and his [Cloudsplaining](https://github.com/salesforce/cloudsplaining), which does the same job for AWS IAM. Kubesplaining reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings: explanation, not just detection.
 
