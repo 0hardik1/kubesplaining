@@ -77,13 +77,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 
 			summary := report.BuildSummary(findings)
-			for _, path := range written {
-				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\n", path); err != nil {
-					return err
-				}
-			}
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "findings: total=%d critical=%d high=%d medium=%d low=%d info=%d\n",
-				summary.Total, summary.Critical, summary.High, summary.Medium, summary.Low, summary.Info); err != nil {
+			if err := printScanResults(cmd.OutOrStdout(), written, summary); err != nil {
 				return err
 			}
 
