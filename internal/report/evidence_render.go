@@ -88,6 +88,10 @@ func orderedEvidenceKeys(obj map[string]any) []string {
 		"techniques":    true,
 		"first_action":  true,
 		"chain_summary": true,
+		// target_namespace is empty for cluster-wide sinks and, for namespace_admin
+		// sinks, already surfaced as Finding.Namespace / Finding.Resource and in the
+		// escalation chain's terminal hop.
+		"target_namespace": true,
 	}
 
 	seen := map[string]bool{}
