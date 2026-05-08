@@ -106,6 +106,8 @@ func printTruncationNotice(w io.Writer, info models.TruncationInfo) {
 	if !info.Truncated {
 		return
 	}
-	fmt.Fprintf(w, "showing top %d of %d findings (re-run with --all-findings to include all)\n",
+	// Stderr write failures are not actionable from a CLI helper, so swallow
+	// the error rather than propagate it through three call sites.
+	_, _ = fmt.Fprintf(w, "showing top %d of %d findings (re-run with --all-findings to include all)\n",
 		info.Shown, info.Original)
 }
