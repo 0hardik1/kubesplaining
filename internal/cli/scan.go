@@ -36,6 +36,8 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		ciMaxHigh            int
 		maxPrivescDepth      int
 		admissionMode        string
+		maxFindings          int
+		allFindings          bool
 	)
 
 	cmd := &cobra.Command{
@@ -75,11 +77,13 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 			findings, _ = exclusions.Apply(cfg, findings)
 
+			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
+
 			if outputDir == "" {
 				outputDir = filepath.Join(".", "kubesplaining-report")
 			}
 
-			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, findings, result.Admission)
+			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, findings, result.Admission, truncation)
 			if err != nil {
 				return err
 			}
@@ -88,6 +92,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			if err := printScanResults(cmd.OutOrStdout(), written, summary); err != nil {
 				return err
 			}
+			printTruncationNotice(cmd.ErrOrStderr(), truncation)
 
 			if ciMode {
 				if summary.Critical > ciMaxCritical {
@@ -120,6 +125,8 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().IntVar(&ciMaxHigh, "ci-max-high", 0, "Maximum high findings allowed in CI mode")
 	cmd.Flags().IntVar(&maxPrivescDepth, "max-privesc-depth", 5, "Maximum depth for privilege escalation path search")
 	cmd.Flags().StringVar(&admissionMode, "admission-mode", string(analyzer.AdmissionModeSuppress), "How to react to namespace PSA labels: off|attenuate|suppress")
+	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the report to the top N findings by severity/score; 0 disables. CI thresholds evaluate against the truncated list — pass --all-findings in CI mode to evaluate all.")
+	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the report; overrides --max-findings")
 
 	return cmd
 }

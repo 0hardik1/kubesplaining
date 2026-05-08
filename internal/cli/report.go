@@ -23,6 +23,8 @@ func NewReportCmd() *cobra.Command {
 		exclusionsFile    string
 		exclusionsPreset  string
 		metadataFile      string
+		maxFindings       int
+		allFindings       bool
 	)
 
 	cmd := &cobra.Command{
@@ -56,6 +58,8 @@ func NewReportCmd() *cobra.Command {
 			}
 			filtered, _ = exclusions.Apply(cfg, filtered)
 
+			filtered, truncation := report.Truncate(filtered, maxFindings, allFindings)
+
 			snapshot := models.NewSnapshot()
 			snapshot.Metadata.ClusterName = "report-regeneration"
 			metadataPath := metadataFile
@@ -87,7 +91,7 @@ func NewReportCmd() *cobra.Command {
 				}
 			}
 
-			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, filtered, admissionSummary)
+			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, filtered, admissionSummary, truncation)
 			if err != nil {
 				return err
 			}
@@ -96,6 +100,7 @@ func NewReportCmd() *cobra.Command {
 			if err := printScanResults(cmd.OutOrStdout(), written, summary); err != nil {
 				return err
 			}
+			printTruncationNotice(cmd.ErrOrStderr(), truncation)
 
 			return nil
 		},
@@ -108,6 +113,8 @@ func NewReportCmd() *cobra.Command {
 	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
 	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringVar(&metadataFile, "metadata-file", "", "Optional path to scan metadata JSON")
+	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the regenerated report to the top N findings by severity/score; 0 disables.")
+	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the regenerated report; overrides --max-findings")
 
 	return cmd
 }

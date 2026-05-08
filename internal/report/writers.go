@@ -121,7 +121,7 @@ func writeCSV(path string, findings []models.Finding) error {
 }
 
 // writeHTML renders the embedded htmlTemplate with findings-derived data and writes a self-contained report page.
-func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary) error {
+func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create html report: %w", err)
@@ -274,6 +274,7 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding,
 
 	data := BuildHTMLData(snapshot, findings)
 	data.Admission = admission
+	data.Truncation = truncation
 
 	if err := tmpl.Execute(file, data); err != nil {
 		return fmt.Errorf("render html report: %w", err)

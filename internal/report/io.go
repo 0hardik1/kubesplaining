@@ -112,3 +112,50 @@ func ReadAdmissionSummary(path string) (models.AdmissionSummary, error) {
 func GuessAdmissionSummaryPath(findingsPath string) string {
 	return filepath.Join(filepath.Dir(findingsPath), "admission-summary.json")
 }
+
+// WriteTruncationInfo writes truncation-info.json alongside scan-metadata.json so the
+// `kubesplaining report` subcommand (and other consumers) can surface a "showing top N
+// of M" banner without having to re-run analysis. Only call this when the cap actually
+// fired; an empty (Truncated=false) sidecar would just be noise.
+func WriteTruncationInfo(outputDir string, info models.TruncationInfo) (string, error) {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return "", fmt.Errorf("create truncation info directory: %w", err)
+	}
+
+	path := filepath.Join(outputDir, "truncation-info.json")
+	file, err := os.Create(path)
+	if err != nil {
+		return "", fmt.Errorf("create truncation info file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(info); err != nil {
+		return "", fmt.Errorf("encode truncation info file: %w", err)
+	}
+
+	return path, nil
+}
+
+// ReadTruncationInfo decodes a truncation-info.json file. Missing-file errors propagate;
+// callers should os.Stat first if absent files are acceptable.
+func ReadTruncationInfo(path string) (models.TruncationInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return models.TruncationInfo{}, fmt.Errorf("open truncation info file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	var info models.TruncationInfo
+	if err := json.NewDecoder(file).Decode(&info); err != nil {
+		return models.TruncationInfo{}, fmt.Errorf("decode truncation info file: %w", err)
+	}
+
+	return info, nil
+}
+
+// GuessTruncationInfoPath returns the default truncation-info.json location for a findings file.
+func GuessTruncationInfoPath(findingsPath string) string {
+	return filepath.Join(filepath.Dir(findingsPath), "truncation-info.json")
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/exclusions"
 	"github.com/0hardik1/kubesplaining/internal/manifest"
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/report"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +24,8 @@ func NewScanResourceCmd() *cobra.Command {
 		exclusionsFile   string
 		exclusionsPreset string
 		outputFormats    []string
+		maxFindings      int
+		allFindings      bool
 	)
 
 	cmd := &cobra.Command{
@@ -54,7 +57,13 @@ func NewScanResourceCmd() *cobra.Command {
 			}
 			findings, _ = exclusions.Apply(cfg, findings)
 
-			return writeScanResourceOutput(cmd, findings, outputFormats)
+			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
+
+			if err := writeScanResourceOutput(cmd, findings, outputFormats); err != nil {
+				return err
+			}
+			printTruncationNotice(cmd.ErrOrStderr(), truncation)
+			return nil
 		},
 	}
 
@@ -63,6 +72,8 @@ func NewScanResourceCmd() *cobra.Command {
 	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
 	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringSliceVar(&outputFormats, "output-format", []string{"table"}, "Output formats: table,json")
+	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the output to the top N findings by severity/score; 0 disables.")
+	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding; overrides --max-findings")
 
 	return cmd
 }

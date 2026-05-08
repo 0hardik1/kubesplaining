@@ -570,3 +570,397 @@ func TestHTMLReportHidesEvidenceWhenAllKeysSuppressed(t *testing.T) {
 		t.Errorf("evidence-raw <details> still rendered for fully-suppressed payload — expected the wrapper to be hidden")
 	}
 }
+
+func TestHTMLReportRendersTruncationBanner(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	snapshot.Metadata.ClusterName = "trunc-banner-on"
+
+	findings := []models.Finding{{
+		ID:       "finding-1",
+		RuleID:   "KUBE-TEST-001",
+		Severity: models.SeverityHigh,
+		Score:    8.0,
+		Category: models.CategoryPrivilegeEscalation,
+		Title:    "Banner fixture",
+	}}
+
+	written, err := WriteWithAdmission(tmpDir, []string{"html"}, snapshot, findings,
+		models.AdmissionSummary{},
+		models.TruncationInfo{Truncated: true, Original: 147, Shown: 20, Limit: 20})
+	if err != nil {
+		t.Fatalf("WriteWithAdmission() error = %v", err)
+	}
+
+	// Truncation sidecar must be written when the cap fired.
+	sidecarFound := false
+	for _, p := range written {
+		if filepath.Base(p) == "truncation-info.json" {
+			sidecarFound = true
+		}
+	}
+	if !sidecarFound {
+		t.Fatalf("expected truncation-info.json in written artifacts: %v", written)
+	}
+
+	htmlBytes, err := os.ReadFile(filepath.Join(tmpDir, "report.html"))
+	if err != nil {
+		t.Fatalf("read report.html: %v", err)
+	}
+	html := string(htmlBytes)
+
+	if !strings.Contains(html, `<div class="truncation-banner"`) {
+		t.Errorf("expected .truncation-banner div in HTML output")
+	}
+	if !strings.Contains(html, "Showing top 20 of 147 findings") {
+		t.Errorf("expected banner copy with shown/original counts in HTML output")
+	}
+	if !strings.Contains(html, "kubesplaining scan --all-findings") {
+		t.Errorf("expected banner to include the --all-findings rerun command")
+	}
+}
+
+func TestHTMLReportOmitsTruncationBannerWhenNotTruncated(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	snapshot.Metadata.ClusterName = "trunc-banner-off"
+
+	findings := []models.Finding{{
+		ID:       "finding-1",
+		RuleID:   "KUBE-TEST-002",
+		Severity: models.SeverityLow,
+		Score:    2.0,
+		Category: models.CategoryPrivilegeEscalation,
+		Title:    "No-banner fixture",
+	}}
+
+	written, err := WriteWithAdmission(tmpDir, []string{"html"}, snapshot, findings,
+		models.AdmissionSummary{}, models.TruncationInfo{})
+	if err != nil {
+		t.Fatalf("WriteWithAdmission() error = %v", err)
+	}
+
+	// No sidecar when truncation didn't fire.
+	for _, p := range written {
+		if filepath.Base(p) == "truncation-info.json" {
+			t.Fatalf("did not expect truncation-info.json when not truncated, got %v", written)
+		}
+	}
+
+	htmlBytes, err := os.ReadFile(filepath.Join(tmpDir, "report.html"))
+	if err != nil {
+		t.Fatalf("read report.html: %v", err)
+	}
+	html := string(htmlBytes)
+
+	if strings.Contains(html, `<div class="truncation-banner"`) {
+		t.Errorf("did not expect .truncation-banner div in HTML when not truncated")
+	}
+	if strings.Contains(html, "Showing top") {
+		t.Errorf("did not expect banner copy in HTML when not truncated")
+	}
+}
+
+func TestSARIFEmbedsTruncationProperty(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	snapshot.Metadata.ClusterName = "sarif-trunc"
+
+	findings := []models.Finding{{
+		ID:       "finding-1",
+		RuleID:   "KUBE-TEST-003",
+		Severity: models.SeverityHigh,
+		Score:    7.5,
+		Title:    "SARIF fixture",
+	}}
+
+	if _, err := WriteWithAdmission(tmpDir, []string{"sarif"}, snapshot, findings,
+		models.AdmissionSummary{},
+		models.TruncationInfo{Truncated: true, Original: 50, Shown: 20, Limit: 20}); err != nil {
+		t.Fatalf("WriteWithAdmission() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "findings.sarif"))
+	if err != nil {
+		t.Fatalf("read sarif: %v", err)
+	}
+
+	var doc struct {
+		Runs []struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal sarif: %v", err)
+	}
+	if len(doc.Runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(doc.Runs))
+	}
+	truncRaw, ok := doc.Runs[0].Properties["truncation"]
+	if !ok {
+		t.Fatalf("expected runs[0].properties.truncation, got keys: %v", doc.Runs[0].Properties)
+	}
+	var info models.TruncationInfo
+	if err := json.Unmarshal(truncRaw, &info); err != nil {
+		t.Fatalf("decode truncation property: %v", err)
+	}
+	want := models.TruncationInfo{Truncated: true, Original: 50, Shown: 20, Limit: 20}
+	if info != want {
+		t.Errorf("truncation property = %#v, want %#v", info, want)
+	}
+}
+
+func TestSARIFOmitsTruncationPropertyWhenNotTruncated(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	snapshot.Metadata.ClusterName = "sarif-no-trunc"
+
+	findings := []models.Finding{{
+		ID:       "finding-1",
+		RuleID:   "KUBE-TEST-004",
+		Severity: models.SeverityLow,
+		Score:    2.0,
+		Title:    "SARIF fixture",
+	}}
+
+	if _, err := WriteWithAdmission(tmpDir, []string{"sarif"}, snapshot, findings,
+		models.AdmissionSummary{}, models.TruncationInfo{}); err != nil {
+		t.Fatalf("WriteWithAdmission() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "findings.sarif"))
+	if err != nil {
+		t.Fatalf("read sarif: %v", err)
+	}
+
+	var doc struct {
+		Runs []struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal sarif: %v", err)
+	}
+	if len(doc.Runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(doc.Runs))
+	}
+	if _, ok := doc.Runs[0].Properties["truncation"]; ok {
+		t.Errorf("did not expect truncation property when not truncated")
+	}
+}
+
+func TestReadWriteTruncationInfoRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	info := models.TruncationInfo{
+		Truncated: true,
+		Original:  147,
+		Shown:     20,
+		Limit:     20,
+	}
+
+	path, err := WriteTruncationInfo(tmpDir, info)
+	if err != nil {
+		t.Fatalf("WriteTruncationInfo() error = %v", err)
+	}
+	if path != filepath.Join(tmpDir, "truncation-info.json") {
+		t.Fatalf("unexpected path: %s", path)
+	}
+
+	loaded, err := ReadTruncationInfo(path)
+	if err != nil {
+		t.Fatalf("ReadTruncationInfo() error = %v", err)
+	}
+
+	if loaded != info {
+		t.Fatalf("round-trip mismatch: got %#v, want %#v", loaded, info)
+	}
+}
+
+func TestGuessTruncationInfoPath(t *testing.T) {
+	t.Parallel()
+
+	got := GuessTruncationInfoPath(filepath.Join("some", "dir", "findings.json"))
+	want := filepath.Join("some", "dir", "truncation-info.json")
+	if got != want {
+		t.Fatalf("GuessTruncationInfoPath = %q, want %q", got, want)
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	t.Parallel()
+
+	// Build a deterministic findings slice with N entries, all in the same
+	// category — diverseTopN degenerates to a plain prefix slice in that case,
+	// so the index-based assertions below still hold.
+	build := func(n int) []models.Finding {
+		out := make([]models.Finding, n)
+		for i := range out {
+			out[i] = models.Finding{
+				ID:       "f-" + string(rune('a'+i)),
+				RuleID:   "RULE-" + string(rune('A'+i)),
+				Severity: models.SeverityHigh,
+				Category: models.CategoryPrivilegeEscalation,
+			}
+		}
+		return out
+	}
+
+	cases := []struct {
+		name        string
+		input       int
+		limit       int
+		allFindings bool
+		wantLen     int
+		wantTrunc   bool
+		wantOrig    int
+	}{
+		{name: "below cap", input: 3, limit: 5, wantLen: 3, wantTrunc: false},
+		{name: "at cap", input: 5, limit: 5, wantLen: 5, wantTrunc: false},
+		{name: "above cap", input: 10, limit: 5, wantLen: 5, wantTrunc: true, wantOrig: 10},
+		{name: "all-findings overrides", input: 10, limit: 5, allFindings: true, wantLen: 10, wantTrunc: false},
+		{name: "limit zero is no-op", input: 10, limit: 0, wantLen: 10, wantTrunc: false},
+		{name: "limit negative is no-op", input: 10, limit: -1, wantLen: 10, wantTrunc: false},
+		{name: "empty input", input: 0, limit: 5, wantLen: 0, wantTrunc: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := build(tc.input)
+			gotFindings, gotInfo := Truncate(input, tc.limit, tc.allFindings)
+
+			if len(gotFindings) != tc.wantLen {
+				t.Fatalf("len(findings) = %d, want %d", len(gotFindings), tc.wantLen)
+			}
+			if gotInfo.Truncated != tc.wantTrunc {
+				t.Fatalf("info.Truncated = %v, want %v", gotInfo.Truncated, tc.wantTrunc)
+			}
+			if tc.wantTrunc {
+				if gotInfo.Original != tc.wantOrig {
+					t.Errorf("info.Original = %d, want %d", gotInfo.Original, tc.wantOrig)
+				}
+				if gotInfo.Shown != tc.wantLen {
+					t.Errorf("info.Shown = %d, want %d", gotInfo.Shown, tc.wantLen)
+				}
+				if gotInfo.Limit != tc.limit {
+					t.Errorf("info.Limit = %d, want %d", gotInfo.Limit, tc.limit)
+				}
+				// Top-N preservation: first element must equal the input's first element.
+				if gotFindings[0].RuleID != input[0].RuleID {
+					t.Errorf("top-N preservation: first finding RuleID = %q, want %q",
+						gotFindings[0].RuleID, input[0].RuleID)
+				}
+			} else {
+				// Zero-value info when no truncation.
+				if gotInfo != (models.TruncationInfo{}) {
+					t.Errorf("expected zero TruncationInfo when not truncated, got %#v", gotInfo)
+				}
+			}
+		})
+	}
+}
+
+func TestTruncateDiversifiesAcrossCategories(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the e2e shape: a single dominant category (privesc) with many
+	// findings, plus a handful of lower-volume categories. Without
+	// diversification, top-N would be all privesc; with diversification, every
+	// category should appear in the truncated set.
+	categories := []models.RiskCategory{
+		models.CategoryPrivilegeEscalation,        // 30 entries
+		models.CategoryLateralMovement,            // 5 entries
+		models.CategoryDataExfiltration,           // 3 entries
+		models.CategoryInfrastructureModification, // 2 entries
+		models.CategoryDefenseEvasion,             // 1 entry
+	}
+	counts := []int{30, 5, 3, 2, 1}
+
+	// Build a globally severity-sorted slice: privesc occupies all 30 top
+	// slots (CRITICAL, score 9.5), then 5 lateral CRITICALs at score 9.0,
+	// then 3 exfil HIGHs, then 2 infra HIGHs, then 1 evasion MEDIUM. This
+	// matches the analyzer's sort output: privesc dominates the prefix.
+	findings := make([]models.Finding, 0, 41)
+	severities := []models.Severity{
+		models.SeverityCritical, models.SeverityCritical,
+		models.SeverityHigh, models.SeverityHigh, models.SeverityMedium,
+	}
+	scores := []float64{9.5, 9.0, 8.0, 7.5, 6.0}
+	for i, cat := range categories {
+		for j := 0; j < counts[i]; j++ {
+			findings = append(findings, models.Finding{
+				ID:       string(cat) + "-" + string(rune('a'+j)),
+				RuleID:   "RULE-" + string(cat) + "-" + string(rune('A'+j)),
+				Severity: severities[i],
+				Score:    scores[i],
+				Category: cat,
+			})
+		}
+	}
+	if len(findings) != 41 {
+		t.Fatalf("fixture wiring: expected 41 findings, got %d", len(findings))
+	}
+
+	got, info := Truncate(findings, 10, false)
+
+	if !info.Truncated {
+		t.Fatalf("expected truncation to fire on 41-finding input with limit=10")
+	}
+	if len(got) != 10 {
+		t.Fatalf("len(got) = %d, want 10", len(got))
+	}
+
+	// Every category that has findings must appear in the truncated set.
+	seen := make(map[models.RiskCategory]int)
+	for _, f := range got {
+		seen[f.Category]++
+	}
+	for _, cat := range categories {
+		if seen[cat] == 0 {
+			t.Errorf("category %q absent from truncated set: %#v", cat, seen)
+		}
+	}
+
+	// Verify the absolute top finding (privesc-a, the very first input entry)
+	// is preserved as the top of the result — diversification must not
+	// displace the highest-severity finding from position 0.
+	if got[0].ID != "privilege_escalation-a" {
+		t.Errorf("expected top finding to be the global top-1 'privilege_escalation-a', got %q", got[0].ID)
+	}
+
+	// Verify the result is sorted by severity rank → score.
+	for i := 1; i < len(got); i++ {
+		prev, cur := got[i-1], got[i]
+		if prev.Severity.Rank() < cur.Severity.Rank() {
+			t.Errorf("result not severity-sorted at index %d: %s before %s", i, prev.Severity, cur.Severity)
+		}
+	}
+}
+
+func TestDiverseTopNSingleCategoryDegenerates(t *testing.T) {
+	t.Parallel()
+
+	// When every finding shares a category, diverseTopN must return the
+	// plain prefix slice — no reshuffling, no reordering.
+	in := []models.Finding{
+		{ID: "1", RuleID: "A", Severity: models.SeverityHigh, Category: models.CategoryPrivilegeEscalation},
+		{ID: "2", RuleID: "B", Severity: models.SeverityHigh, Category: models.CategoryPrivilegeEscalation},
+		{ID: "3", RuleID: "C", Severity: models.SeverityHigh, Category: models.CategoryPrivilegeEscalation},
+	}
+	got := diverseTopN(in, 2)
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].ID != "1" || got[1].ID != "2" {
+		t.Errorf("expected prefix [1,2], got [%s,%s]", got[0].ID, got[1].ID)
+	}
+}
