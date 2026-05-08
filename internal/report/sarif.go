@@ -65,7 +65,7 @@ type sarifLogicalLocation struct {
 }
 
 // writeSARIF serializes findings as a SARIF 2.1.0 document with one rule per unique RuleID and one result per finding.
-func writeSARIF(path string, findings []models.Finding, admission models.AdmissionSummary) error {
+func writeSARIF(path string, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create sarif report: %w", err)
@@ -82,8 +82,14 @@ func writeSARIF(path string, findings []models.Finding, admission models.Admissi
 		},
 		Results: sarifResults(findings),
 	}
-	if admission.Mode != "" {
-		run.Properties = map[string]any{"admission": admission}
+	if admission.Mode != "" || truncation.Truncated {
+		run.Properties = map[string]any{}
+		if admission.Mode != "" {
+			run.Properties["admission"] = admission
+		}
+		if truncation.Truncated {
+			run.Properties["truncation"] = truncation
+		}
 	}
 
 	report := sarifReport{

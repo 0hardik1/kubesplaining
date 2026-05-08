@@ -111,14 +111,53 @@ step "Capturing snapshot"
   --kubeconfig "${KUBECONFIG_PATH}" \
   --output-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" | prefix_ok
 
-step "Running kubesplaining scan"
+step "Running kubesplaining scan (default --max-findings=20)"
 # Use the default "standard" exclusions preset so the e2e mirrors how users run
 # the tool: built-in kube-system / system:* / kubeadm:* noise is suppressed.
+# This invocation uses default flags so the e2e demonstrates the user-facing
+# default truncation behavior. Rule-ID coverage assertions further down run
+# against a separate --all-findings scan into .tmp/e2e-report-full.
 SCAN_LOG="${ROOT_DIR}/.tmp/e2e-scan.log"
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
   --output-format html,json,csv | tee "${SCAN_LOG}" | prefix_ok
+
+step "Verifying default truncation behavior"
+# The fixture deliberately produces > 20 findings, so the default cap must fire.
+TRUNC_SIDECAR="${ROOT_DIR}/.tmp/e2e-report/truncation-info.json"
+if [[ ! -f "${TRUNC_SIDECAR}" ]]; then
+  echo "missing: truncation-info.json should exist when default --max-findings=20 cap fires" >&2
+  exit 1
+fi
+if ! rg -q '"truncated":\s*true' "${TRUNC_SIDECAR}"; then
+  echo "expected truncation-info.json to record truncated=true" >&2
+  exit 1
+fi
+if ! rg -q '"shown":\s*20' "${TRUNC_SIDECAR}"; then
+  echo "expected truncation-info.json to record shown=20" >&2
+  exit 1
+fi
+DEFAULT_FINDING_COUNT=$(rg -c '"rule_id"' "${ROOT_DIR}/.tmp/e2e-report/findings.json" || echo 0)
+if [[ "${DEFAULT_FINDING_COUNT}" != "20" ]]; then
+  echo "expected exactly 20 findings under default cap, got ${DEFAULT_FINDING_COUNT}" >&2
+  exit 1
+fi
+if ! rg -q 'class="truncation-banner"' "${ROOT_DIR}/.tmp/e2e-report/report.html"; then
+  echo "expected HTML report to render the truncation-banner div" >&2
+  exit 1
+fi
+ok "default cap produced 20 findings, sidecar + HTML banner present"
+
+step "Running kubesplaining scan --all-findings (assertion coverage)"
+# All rule-ID assertions and regression checks below run against the full,
+# uncapped findings list so we can verify every expected rule fired. The
+# default-cap scan above already covers the user-visible banner UX.
+"${ROOT_DIR}/bin/kubesplaining" scan \
+  --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --output-dir "${ROOT_DIR}/.tmp/e2e-report-full" \
+  --all-findings \
+  --output-format json | prefix_ok
 SUMMARY_LINE=$(grep -m1 "^findings:" "${SCAN_LOG}" 2>/dev/null || echo "")
 
 step "Verifying expected rule IDs"
@@ -143,7 +182,7 @@ EXPECTED_RULES=(
 
 missing=()
 for rule in "${EXPECTED_RULES[@]}"; do
-  if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+  if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
     missing+=("${rule}")
   fi
 done
@@ -160,7 +199,7 @@ ok "all ${#EXPECTED_RULES[@]} expected rule IDs present"
 # pinpoints the exact false positive without needing jq.
 NS_SUBJECT_KEY="ServiceAccount/rbac-ns-fixtures/sa-ns-rolebinding-mutate"
 NS_FP_ID_PREFIX="KUBE-PRIVESC-PATH-CLUSTER-ADMIN:${NS_SUBJECT_KEY}:"
-if rg -q "\"id\":\s*\"${NS_FP_ID_PREFIX}" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+if rg -q "\"id\":\s*\"${NS_FP_ID_PREFIX}" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
   echo "regression: namespace-scoped RoleBinding produced KUBE-PRIVESC-PATH-CLUSTER-ADMIN (issue #48)" >&2
   exit 1
 fi
@@ -172,7 +211,7 @@ ok "no cluster-admin false positive for namespace-scoped RoleBinding"
 # returns true for any baseline-or-stricter level. Asserting the absence is more
 # valuable than asserting presence: it locks in that the posture finding correctly
 # suppresses itself when *any* admission control is in place.
-if rg -q "\"rule_id\":\s*\"KUBE-ADMISSION-NO-POLICY-ENGINE-001\"" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+if rg -q "\"rule_id\":\s*\"KUBE-ADMISSION-NO-POLICY-ENGINE-001\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
   echo "regression: KUBE-ADMISSION-NO-POLICY-ENGINE-001 fired despite psa-suppressed namespace having enforce=restricted" >&2
   exit 1
 fi
@@ -182,7 +221,7 @@ ok "no policy-engine posture finding (correctly suppressed by psa-suppressed enf
 # the namespace it can take over. The finding ID encodes the target namespace as
 # the last segment after a fourth `:`.
 NS_OK_ID="KUBE-PRIVESC-PATH-NAMESPACE-ADMIN:${NS_SUBJECT_KEY}:namespace_admin:rbac-ns-fixtures"
-if ! rg -q "\"id\":\s*\"${NS_OK_ID}\"" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+if ! rg -q "\"id\":\s*\"${NS_OK_ID}\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
   echo "missing: namespace-scoped RoleBinding did not produce expected KUBE-PRIVESC-PATH-NAMESPACE-ADMIN finding for ${NS_SUBJECT_KEY} → rbac-ns-fixtures" >&2
   exit 1
 fi
@@ -191,18 +230,18 @@ ok "namespace-admin path emitted for namespace-scoped RoleBinding"
 # Default --admission-mode=suppress must drop the privileged-pod finding for the
 # psa-suppressed namespace because its enforce=restricted label would block the spec.
 PSA_FINDING_ID="KUBE-ESCAPE-001:Deployment:psa-suppressed:psa-priv-app"
-if rg -q "\"id\":\s*\"${PSA_FINDING_ID}" "${ROOT_DIR}/.tmp/e2e-report/findings.json"; then
+if rg -q "\"id\":\s*\"${PSA_FINDING_ID}" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
   echo "regression: --admission-mode=suppress did not drop ${PSA_FINDING_ID}" >&2
   exit 1
 fi
 ok "default suppress mode dropped privileged finding in psa-suppressed namespace"
 
 # admission-summary.json must record the suppression count and the per-namespace breakdown.
-if ! rg -q "\"suppressed\":\s*[1-9]" "${ROOT_DIR}/.tmp/e2e-report/admission-summary.json"; then
+if ! rg -q "\"suppressed\":\s*[1-9]" "${ROOT_DIR}/.tmp/e2e-report-full/admission-summary.json"; then
   echo "missing: admission-summary.json should record suppressed >= 1" >&2
   exit 1
 fi
-if ! rg -q "psa-suppressed" "${ROOT_DIR}/.tmp/e2e-report/admission-summary.json"; then
+if ! rg -q "psa-suppressed" "${ROOT_DIR}/.tmp/e2e-report-full/admission-summary.json"; then
   echo "missing: admission-summary.json should mention psa-suppressed namespace" >&2
   exit 1
 fi
@@ -213,6 +252,7 @@ step "Re-running scan with --admission-mode=attenuate"
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report-attenuate" \
   --admission-mode attenuate \
+  --all-findings \
   --output-format json >/dev/null
 
 # Attenuate keeps the finding visible but with the admission tag applied.

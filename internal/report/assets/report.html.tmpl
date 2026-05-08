@@ -113,6 +113,11 @@
     .admission-banner summary { cursor: pointer; color: var(--accent); font-size: 12.5px; }
     .admission-banner ul { margin: 6px 0 0; padding-left: 18px; }
     .admission-banner li { margin: 2px 0; }
+    .truncation-banner { margin-top: 12px; font-size: 13.5px; line-height: 1.55; color: var(--text-mut);
+      padding: 10px 14px; border: 1px solid rgba(255,179,71,0.32);
+      background: rgba(255,179,71,0.06); border-radius: 10px; }
+    .truncation-banner strong { color: var(--text); font-weight: 600; }
+    .truncation-banner code { color: var(--accent); background: rgba(106,183,255,0.10); padding: 1px 4px; border-radius: 4px; }
 
     /* Cluster reconnaissance — collapsible top-of-report panel surfacing
        pentester-relevant snapshot facts. Sits as the first card inside <main>
@@ -1106,6 +1111,15 @@
             </ul>
           </details>
           {{ end }}
+        </div>
+        {{ end }}
+
+        {{ if .Truncation.Truncated }}
+        <div class="truncation-banner" role="status">
+          <strong>Showing top {{ .Truncation.Shown }} of {{ .Truncation.Original }} findings.</strong>
+          Lower-priority findings were trimmed for readability. Re-run with
+          <code>kubesplaining scan --all-findings</code> to include the full list, or raise the cap with
+          <code>--max-findings={{ .Truncation.Original }}</code>.
         </div>
         {{ end }}
       </div>

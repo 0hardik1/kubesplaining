@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/report"
 )
 
@@ -95,4 +96,16 @@ func printScanResults(w io.Writer, written []string, summary report.Summary) err
 		return err
 	}
 	return nil
+}
+
+// printTruncationNotice writes a one-line notice to w when the --max-findings
+// cap fired. It is meant for stderr so it never collides with JSON output on
+// stdout or the parseable `findings: total=...` line that CI scripts grep.
+// No-op when info.Truncated is false.
+func printTruncationNotice(w io.Writer, info models.TruncationInfo) {
+	if !info.Truncated {
+		return
+	}
+	fmt.Fprintf(w, "showing top %d of %d findings (re-run with --all-findings to include all)\n",
+		info.Shown, info.Original)
 }

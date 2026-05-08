@@ -266,4 +266,9 @@ type htmlReportData struct {
 	// Admission carries the engine's admission-aware reweight summary. Empty Mode means
 	// no admission-aware step ran; the template gates the banner on Mode.
 	Admission models.AdmissionSummary
+
+	// Truncation carries the --max-findings cap state. Truncated=false (the zero
+	// value) means no cap was applied; the template gates the banner on
+	// .Truncation.Truncated.
+	Truncation models.TruncationInfo
 }
