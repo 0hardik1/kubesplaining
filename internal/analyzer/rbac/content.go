@@ -11,6 +11,7 @@ package rbac
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
 )
@@ -557,5 +558,125 @@ func contentRBACOverbroad001(subject models.SubjectRef, bindingName string) rule
 			refNSAHardening,
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1078, mitreT1078_004, mitreT1098, mitreT1548},
+	}
+}
+
+// staleContext carries the binding + role + subject details a stale-binding
+// content builder needs to render its prose. Keeping this in one struct avoids
+// a 6-argument function signature for the two rules below.
+type staleContext struct {
+	BindingRef       string // formatted, e.g. "ClusterRoleBinding `crb-foo`" or "RoleBinding `ns/rb-foo`"
+	BindingNamespace string // raw namespace ("" for ClusterRoleBindings), used by scopeForRule
+	RoleRef          string // formatted, e.g. "ClusterRole `cr-foo`" — the role pointed at by the binding
+	RoleName         string // raw role name (for kubectl commands in remediation steps)
+	RoleKind         string // "Role" or "ClusterRole"
+	Subject          models.SubjectRef
+	OtherSubjects    []models.SubjectRef // co-subjects on the same binding (only used by STALE-001)
+}
+
+// contentRBACStale001 — Binding references a Role/ClusterRole that does not
+// exist in the snapshot (KUBE-RBAC-STALE-001).
+//
+// A dangling roleRef is the "deleted the Role but forgot the binding" pattern.
+// The binding grants no permissions while the role is missing, but the moment
+// someone with `create roles` (or a routine `kubectl apply` of a cached
+// manifest) re-creates a role with that exact name, every subject named on the
+// binding inherits whatever rules the new role contains — without anyone
+// reviewing the binding. Severity is MEDIUM: latent risk, but a real one.
+func contentRBACStale001(ctx staleContext) ruleContent {
+	scope := scopeForRule(ctx.BindingNamespace)
+	phrase := scopePhrase(scope)
+	otherCount := len(ctx.OtherSubjects)
+	othersClause := ""
+	if otherCount == 1 {
+		othersClause = fmt.Sprintf(" The binding lists %d other subject who would also inherit the role's permissions.", otherCount)
+	} else if otherCount > 1 {
+		othersClause = fmt.Sprintf(" The binding lists %d other subjects who would also inherit the role's permissions.", otherCount)
+	}
+	kubectlScope := ""
+	if ctx.BindingNamespace != "" {
+		kubectlScope = fmt.Sprintf(" -n %s", ctx.BindingNamespace)
+	}
+	roleKindLower := strings.ToLower(ctx.RoleKind)
+	bindingKindLower := "clusterrolebinding"
+	bindingNameForKubectl := ""
+	if strings.HasPrefix(ctx.BindingRef, "RoleBinding ") {
+		bindingKindLower = "rolebinding"
+	}
+	if idx := strings.Index(ctx.BindingRef, "`"); idx != -1 {
+		bindingNameForKubectl = strings.Trim(ctx.BindingRef[idx:], "`")
+		if slash := strings.LastIndex(bindingNameForKubectl, "/"); slash != -1 {
+			bindingNameForKubectl = bindingNameForKubectl[slash+1:]
+		}
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("%s stale binding references non-existent %s on `%s`", phrase, ctx.RoleKind, subjectKey(ctx.Subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("%s grants permissions from %s, but no %s named `%s` exists in this cluster. The binding currently confers no effective permissions, so an attacker who already has %s gains nothing today.%s\n\n"+
+			"What makes this risky is what happens *next*. The moment any identity with `create %ss` re-creates a %s named exactly `%s` — by restoring it from version control, applying a cached manifest, or as a deliberate attack step — this binding silently activates and grants the new role's rules to every subject listed. The binding itself was never re-reviewed; the only review gate that fired was on the role definition. If the original review process that introduced this binding was looking at it in the context of a specific role's rules, that context is now gone.",
+			ctx.BindingRef, ctx.RoleRef, ctx.RoleKind, ctx.RoleName, subjectKey(ctx.Subject), othersClause, roleKindLower, roleKindLower, ctx.RoleName),
+		Impact: fmt.Sprintf("Latent grant: if anyone re-creates %s `%s`, %s (and every co-subject of this binding) inherits its permissions without further review.", ctx.RoleKind, ctx.RoleName, subjectKey(ctx.Subject)),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker enumerates RBAC drift with `kubectl get clusterrolebindings,rolebindings -A -o json | jq` and identifies %s as referencing a non-existent %s `%s`.", ctx.BindingRef, ctx.RoleKind, ctx.RoleName),
+			fmt.Sprintf("Attacker (or any identity with `create %ss`) crafts a %s manifest named `%s` with maximally permissive rules — `*` verbs on `*` resources, for example.", roleKindLower, ctx.RoleKind, ctx.RoleName),
+			fmt.Sprintf("The new %s is created; Kubernetes immediately resolves the existing binding %s to the new rules.", ctx.RoleKind, ctx.BindingRef),
+			fmt.Sprintf("%s now holds those permissions without any binding-review log entry — only the (likely-routine-looking) %s creation was reviewed.", subjectKey(ctx.Subject), ctx.RoleKind),
+		},
+		Remediation: fmt.Sprintf("Delete the stale binding (`kubectl delete %s %s%s`). If the %s was deleted by mistake, restore it from version control and confirm the binding's intended grant is still appropriate.", bindingKindLower, bindingNameForKubectl, kubectlScope, ctx.RoleKind),
+		RemediationSteps: []string{
+			fmt.Sprintf("Confirm the binding is no longer needed: `kubectl get %s %s%s -o yaml`.", bindingKindLower, bindingNameForKubectl, kubectlScope),
+			fmt.Sprintf("If the %s `%s` should still exist, restore it from version control and re-review the binding's grant in the context of the restored rules.", ctx.RoleKind, ctx.RoleName),
+			fmt.Sprintf("If the binding is obsolete, delete it: `kubectl delete %s %s%s`.", bindingKindLower, bindingNameForKubectl, kubectlScope),
+			fmt.Sprintf("Add a CI lint (Kyverno / Gatekeeper / ValidatingAdmissionPolicy) that rejects any %s whose roleRef does not resolve to an existing %s.", bindingKindLower, ctx.RoleKind),
+		},
+		LearnMore: []models.Reference{
+			refRBACGoodPractices,
+			refRBACDocs,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1098, mitreT1078},
+	}
+}
+
+// contentRBACStale002 — Binding subject is a ServiceAccount that does not
+// exist (KUBE-RBAC-STALE-002).
+//
+// User and Group subjects cannot be validated against the snapshot because
+// Kubernetes maintains no inventory of them. Only ServiceAccount subjects
+// reach this rule. Severity is LOW because realising the grant requires an
+// attacker (or accidental redeploy) to also have `create serviceaccounts` in
+// the target namespace — a second-order primitive, not an immediate threat.
+func contentRBACStale002(ctx staleContext) ruleContent {
+	scope := scopeForRule(ctx.BindingNamespace)
+	phrase := scopePhrase(scope)
+	saKey := fmt.Sprintf("%s/%s", ctx.Subject.Namespace, ctx.Subject.Name)
+	return ruleContent{
+		Title: fmt.Sprintf("%s stale binding lists non-existent ServiceAccount `%s`", phrase, saKey),
+		Scope: scope,
+		Description: fmt.Sprintf("%s grants permissions from %s to ServiceAccount `%s`, but no such ServiceAccount exists in namespace `%s`. No pods can mount a token for this SA today, so the binding confers no realised permissions.\n\n"+
+			"This is latent privilege escalation. The moment a ServiceAccount named exactly `%s` is created in namespace `%s` — by an attacker with `create serviceaccounts` in that namespace, by a routine redeploy from a stale GitOps repo, or by an operator restoring an accidentally-deleted SA — it inherits everything %s grants. The binding itself is never re-reviewed; only the SA creation is, and that step usually looks unremarkable.\n\n"+
+			"Note: kubesplaining only validates `ServiceAccount` subjects this way. `User` and `Group` subjects cannot be checked against the snapshot — Kubernetes authenticates them externally (OIDC, client certs, cloud IAM) and keeps no inventory of which identities are valid.",
+			ctx.BindingRef, ctx.RoleRef, saKey, ctx.Subject.Namespace, ctx.Subject.Name, ctx.Subject.Namespace, ctx.RoleRef),
+		Impact: fmt.Sprintf("Latent grant: an attacker with `create serviceaccounts -n %s` can pre-position a ServiceAccount named `%s`, mount its token in a pod they control, and instantly assume the permissions from %s.", ctx.Subject.Namespace, ctx.Subject.Name, ctx.RoleRef),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker enumerates bindings with `kubectl get rolebindings,clusterrolebindings -A -o json` and notices %s lists a subject `ServiceAccount %s` that does not exist.", ctx.BindingRef, saKey),
+			fmt.Sprintf("Attacker uses an existing `create serviceaccounts -n %s` permission (or compromises an identity that has it) to create a ServiceAccount named `%s` in that namespace.", ctx.Subject.Namespace, ctx.Subject.Name),
+			fmt.Sprintf("Attacker creates a pod with `spec.serviceAccountName: %s` (or projects a TokenRequest for the new SA into a pod they control).", ctx.Subject.Name),
+			fmt.Sprintf("The mounted token authenticates as ServiceAccount `%s`, which now resolves through %s into the role's permissions.", saKey, ctx.BindingRef),
+		},
+		Remediation: fmt.Sprintf("Remove the stale ServiceAccount subject from the binding, or delete the binding entirely if it's obsolete. If the SA was deleted in error, restore it from version control."),
+		RemediationSteps: []string{
+			fmt.Sprintf("Confirm no workloads still depend on this SA: `kubectl get all -n %s -o yaml | rg 'serviceAccountName:\\s*%s'`.", ctx.Subject.Namespace, ctx.Subject.Name),
+			"Edit the binding to drop the stale subject, or delete the binding outright if it is obsolete.",
+			fmt.Sprintf("If the SA was deleted by mistake, restore it (`kubectl apply -f <sa.yaml>`) and re-review whether the binding's grant is still appropriate."),
+			"Add a CI lint that rejects bindings whose `ServiceAccount` subjects do not resolve to an existing SA in the named namespace.",
+		},
+		LearnMore: []models.Reference{
+			refRBACGoodPractices,
+			{Title: "Kubernetes — Managing Service Accounts", URL: "https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/"},
+			refRBACDocs,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1098, mitreT1078},
 	}
 }

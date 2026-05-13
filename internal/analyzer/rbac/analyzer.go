@@ -219,7 +219,228 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		}
 	}
 
+	// Third pass — stale / dangling bindings.
+	//
+	// A (Cluster)RoleBinding whose roleRef points at a Role/ClusterRole that no
+	// longer exists in the snapshot grants no permissions today, but reactivates
+	// with whatever permissions the role contains the moment anyone re-creates
+	// the role with the same name — without the binding being re-reviewed. That's
+	// the KUBE-RBAC-STALE-001 case.
+	//
+	// Likewise, a binding whose subjects include a ServiceAccount that does not
+	// exist in the snapshot becomes a live grant the moment a SA with that
+	// namespace+name is (re-)created (an attacker with `create serviceaccounts`,
+	// or a routine redeploy). That's KUBE-RBAC-STALE-002. User and Group subjects
+	// cannot be validated this way: Kubernetes maintains no inventory of
+	// Users/Groups (they are authenticated externally and asserted per request),
+	// so the snapshot cannot tell us whether they "exist".
+	serviceAccountSet := make(map[string]struct{}, len(snapshot.Resources.ServiceAccounts))
+	for _, sa := range snapshot.Resources.ServiceAccounts {
+		serviceAccountSet[fmt.Sprintf("%s/%s", sa.Namespace, sa.Name)] = struct{}{}
+	}
+	for _, binding := range snapshot.Resources.RoleBindings {
+		findings = analyzeStaleBinding(findings, seen, binding.Name, "RoleBinding", binding.Namespace, binding.RoleRef, binding.Subjects, roleRules, clusterRoleRules, serviceAccountSet)
+	}
+	for _, binding := range snapshot.Resources.ClusterRoleBindings {
+		findings = analyzeStaleBinding(findings, seen, binding.Name, "ClusterRoleBinding", "", binding.RoleRef, binding.Subjects, roleRules, clusterRoleRules, serviceAccountSet)
+	}
+
 	return findings, nil
+}
+
+// analyzeStaleBinding emits KUBE-RBAC-STALE-001 / -002 findings for a single
+// (Cluster)RoleBinding. See the third-pass comment in Analyze for the rule
+// semantics. When the roleRef is missing we emit -001 for every subject and
+// skip the -002 check for that subject — a missing role already captures the
+// drift, so adding -002 for any missing SA subjects on the same binding would
+// just inflate the finding count.
+func analyzeStaleBinding(
+	findings []models.Finding,
+	seen map[string]struct{},
+	bindingName, bindingKind, bindingNamespace string,
+	roleRef rbacv1.RoleRef,
+	subjects []rbacv1.Subject,
+	roleRules, clusterRoleRules map[string][]rbacv1.PolicyRule,
+	serviceAccountSet map[string]struct{},
+) []models.Finding {
+	refs := make([]models.SubjectRef, 0, len(subjects))
+	for _, s := range subjects {
+		refs = append(refs, subjectRef(s, bindingNamespace))
+	}
+	bindingRefStr := formatBindingRef(bindingKind, bindingNamespace, bindingName)
+	roleNamespace := roleRefNamespaceFor(roleRef, bindingNamespace)
+	roleRefStr := formatRoleRef(roleRef.Kind, roleNamespace, roleRef.Name)
+	roleExists := isBuiltinClusterRole(roleRef) || lookupRoleExists(roleRef, bindingNamespace, roleRules, clusterRoleRules)
+
+	for i, subject := range subjects {
+		ref := refs[i]
+		if !roleExists {
+			others := append([]models.SubjectRef{}, refs[:i]...)
+			others = append(others, refs[i+1:]...)
+			ctx := staleContext{
+				BindingRef:       bindingRefStr,
+				BindingNamespace: bindingNamespace,
+				RoleRef:          roleRefStr,
+				RoleName:         roleRef.Name,
+				RoleKind:         roleRef.Kind,
+				Subject:          ref,
+				OtherSubjects:    others,
+			}
+			evidence, _ := json.Marshal(map[string]any{
+				"source_binding":      bindingName,
+				"source_binding_kind": bindingKind,
+				"binding_namespace":   bindingNamespace,
+				"missing_role":        roleRef.Name,
+				"missing_role_kind":   roleRef.Kind,
+				"other_subjects":      others,
+			})
+			findings = appendFinding(findings, seen, staleFinding(
+				"KUBE-RBAC-STALE-001",
+				models.SeverityMedium,
+				5.0,
+				ref,
+				&models.ResourceRef{Kind: roleRef.Kind, Name: roleRef.Name, Namespace: roleNamespace, APIGroup: "rbac.authorization.k8s.io"},
+				bindingNamespace, bindingName, bindingKind,
+				evidence,
+				contentRBACStale001(ctx),
+				"stale:roleref",
+			))
+			continue
+		}
+		// -002 only applies to ServiceAccount subjects. User/Group existence
+		// cannot be verified from the snapshot — see third-pass docstring above.
+		if subject.Kind != "ServiceAccount" {
+			continue
+		}
+		if _, ok := serviceAccountSet[fmt.Sprintf("%s/%s", ref.Namespace, ref.Name)]; ok {
+			continue
+		}
+		ctx := staleContext{
+			BindingRef:       bindingRefStr,
+			BindingNamespace: bindingNamespace,
+			RoleRef:          roleRefStr,
+			RoleName:         roleRef.Name,
+			RoleKind:         roleRef.Kind,
+			Subject:          ref,
+		}
+		evidence, _ := json.Marshal(map[string]any{
+			"source_binding":      bindingName,
+			"source_binding_kind": bindingKind,
+			"binding_namespace":   bindingNamespace,
+			"source_role":         roleRef.Name,
+			"source_role_kind":    roleRef.Kind,
+		})
+		findings = appendFinding(findings, seen, staleFinding(
+			"KUBE-RBAC-STALE-002",
+			models.SeverityLow,
+			3.5,
+			ref,
+			&models.ResourceRef{Kind: roleRef.Kind, Name: roleRef.Name, Namespace: roleNamespace, APIGroup: "rbac.authorization.k8s.io"},
+			bindingNamespace, bindingName, bindingKind,
+			evidence,
+			contentRBACStale002(ctx),
+			"stale:subject",
+		))
+	}
+	return findings
+}
+
+// isBuiltinClusterRole reports whether roleRef names one of the four user-facing
+// ClusterRoles every Kubernetes distribution ships: `cluster-admin`, `admin`,
+// `edit`, `view`. A snapshot that omits these (scan-resource of a single
+// manifest, or a collection that hit RBAC-list permission errors) is still
+// describing a real cluster where these roles exist — so we must not flag
+// bindings to them as stale just because they're missing from the snapshot.
+//
+// We deliberately do NOT add `system:*` here: the standard exclusions preset
+// drops findings whose subjects are `system:*` Users/Groups/SAs, so orphan
+// findings involving a `system:*` subject disappear at the exclusions stage
+// anyway. Conversely, a non-`system:*` subject bound to a missing `system:*`
+// role is still a legitimate cleanup signal worth keeping.
+func isBuiltinClusterRole(roleRef rbacv1.RoleRef) bool {
+	if roleRef.Kind != "ClusterRole" {
+		return false
+	}
+	switch roleRef.Name {
+	case "cluster-admin", "admin", "edit", "view":
+		return true
+	}
+	return false
+}
+
+// lookupRoleExists reports whether roleRef resolves to a known Role/ClusterRole
+// in the supplied lookup maps. Unknown roleRef.Kind values are treated as
+// existing (conservative — we don't flag what we can't categorize).
+func lookupRoleExists(roleRef rbacv1.RoleRef, bindingNamespace string, roleRules, clusterRoleRules map[string][]rbacv1.PolicyRule) bool {
+	switch roleRef.Kind {
+	case "Role":
+		_, ok := roleRules[fmt.Sprintf("%s/%s", bindingNamespace, roleRef.Name)]
+		return ok
+	case "ClusterRole":
+		_, ok := clusterRoleRules[roleRef.Name]
+		return ok
+	}
+	return true
+}
+
+// roleRefNamespaceFor returns the namespace component of a RoleRef for prose
+// rendering. RoleBinding → Role inherits the binding's namespace; everything
+// else (RoleBinding → ClusterRole, ClusterRoleBinding → ClusterRole) is
+// cluster-scoped.
+func roleRefNamespaceFor(roleRef rbacv1.RoleRef, bindingNamespace string) string {
+	if roleRef.Kind == "Role" {
+		return bindingNamespace
+	}
+	return ""
+}
+
+// staleFinding assembles a KUBE-RBAC-STALE-* Finding. It mirrors
+// findingFromContent but specialises Evidence and Resource to the stale-binding
+// shape (Resource = the role itself, not "RBACRule"; no per-rule verb/resource
+// fields). The Finding.ID encodes the binding, so two stale findings on the
+// same subject from two different bindings dedupe independently.
+func staleFinding(
+	ruleID string,
+	severity models.Severity,
+	score float64,
+	subject models.SubjectRef,
+	resource *models.ResourceRef,
+	bindingNamespace, bindingName, bindingKind string,
+	evidence json.RawMessage,
+	content ruleContent,
+	extraTag string,
+) models.Finding {
+	id := fmt.Sprintf("%s:%s:%s/%s/%s", ruleID, subject.Key(), bindingKind, bindingNamespace, bindingName)
+	references := make([]string, 0, len(content.LearnMore))
+	for _, ref := range content.LearnMore {
+		references = append(references, ref.URL)
+	}
+	tags := []string{"module:rbac"}
+	if extraTag != "" {
+		tags = append(tags, extraTag)
+	}
+	return models.Finding{
+		ID:               id,
+		RuleID:           ruleID,
+		Severity:         severity,
+		Score:            score,
+		Category:         models.CategoryPrivilegeEscalation,
+		Title:            content.Title,
+		Description:      content.Description,
+		Subject:          &subject,
+		Resource:         resource,
+		Namespace:        bindingNamespace,
+		Scope:            content.Scope,
+		Impact:           content.Impact,
+		AttackScenario:   content.AttackScenario,
+		Evidence:         evidence,
+		Remediation:      content.Remediation,
+		RemediationSteps: content.RemediationSteps,
+		References:       references,
+		LearnMore:        content.LearnMore,
+		MitreTechniques:  content.MitreTechniques,
+		Tags:             tags,
+	}
 }
 
 // appendFinding adds finding to the slice unless its ID has already been seen (deduplication keyed by Finding.ID).

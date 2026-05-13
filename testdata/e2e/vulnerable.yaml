@@ -413,6 +413,59 @@ roleRef:
   kind: ClusterRole
   name: cluster-admin
 ---
+# === Stale / dangling RBAC binding fixtures ===
+# Two fixtures exercise KUBE-RBAC-STALE-001 and KUBE-RBAC-STALE-002. Both use
+# non-system: subjects so the standard exclusions preset does not silently
+# drop them.
+
+# STALE-001: ClusterRoleBinding whose roleRef points at a ClusterRole that does
+# not exist. The SA subject itself IS defined so we don't also pick up -002.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-stale-roleref
+  namespace: rbac-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-stale-roleref
+subjects:
+  - kind: ServiceAccount
+    name: sa-stale-roleref
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubesplaining-fixture-deleted-role
+---
+# STALE-002: RoleBinding pointing at an existing Role in the same namespace,
+# with a subject ServiceAccount that does NOT exist. The Role is defined just
+# below so this binding wouldn't also trigger -001.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: r-stale-subject-target
+  namespace: rbac-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rb-stale-subject
+  namespace: rbac-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: ghost-sa-fixture
+    namespace: rbac-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: r-stale-subject-target
+---
 # Namespace-scoped RoleBinding: regression guard for issue #48. Granting
 # `create rolebindings` via a RoleBinding only confers namespace-admin in
 # `rbac-ns-fixtures`, NOT cluster-admin. The e2e script asserts that

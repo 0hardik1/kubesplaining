@@ -42,7 +42,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] Effective permission aggregation — [internal/permissions/aggregate.go](internal/permissions/aggregate.go)
 - [x] Dangerous permissions: wildcards, pod/workload create, secret access, impersonate, escalate/bind, nodes/proxy, serviceaccounts/token, configmap modification (KUBE-PRIVESC-001, -003, -005, -008, -009, -010, -012, -014, -017)
 - [x] Overly-broad bindings (KUBE-RBAC-OVERBROAD-001)
-- [ ] Stale / unused bindings — dangling RoleRef, deleted subjects
+- [x] Stale / unused bindings — dangling RoleRef (`KUBE-RBAC-STALE-001`) and dangling ServiceAccount subjects (`KUBE-RBAC-STALE-002`). User/Group subject existence is intentionally not validated: the snapshot has no Users/Groups inventory (Kubernetes authenticates them externally and keeps no roster). Built-in `cluster-admin`/`admin`/`edit`/`view` ClusterRoles are allowlisted so partial snapshots don't false-fire.
 - [ ] Remaining technique IDs: -002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft correlation), -011 (CSR), -013 (ephemeral containers), -015 (portforward), -016 (node drain)
 
 ### Pod Security — [internal/analyzer/podsec/](internal/analyzer/podsec/analyzer.go)
@@ -50,7 +50,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] Pod namespaces (hostNetwork, hostPID, hostIPC)
 - [x] Dangerous hostPath mounts, docker/containerd sockets
 - [x] Default SA usage, mutable image tags
-- [ ] `allowPrivilegeEscalation`, `readOnlyRootFilesystem`, `seccompProfile`, `procMount` checks
+- [~] `allowPrivilegeEscalation` covered by `KUBE-PODSEC-APE-001`; `readOnlyRootFilesystem`, `seccompProfile`, `procMount` checks still pending
 - [ ] Exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, etc.)
 - [ ] PersistentVolume hostPath bypass check (KUBE-ESCAPE-011)
 - [ ] Pod Security Admission namespace label assessment — `pod-security.kubernetes.io/{enforce,audit,warn}`
@@ -172,9 +172,10 @@ All four present: HTML, JSON, CSV, SARIF.
 
 ## Next Goal
 
-**Stale / dangling RBAC bindings** — smallest high-value item remaining in the RBAC module. Detect RoleBindings / ClusterRoleBindings whose `roleRef` points at a non-existent Role / ClusterRole, and bindings whose subjects include ServiceAccounts that do not exist in the snapshot. Emit findings under a new `KUBE-RBAC-STALE-*` family.
+**Pod Security gaps** — pick up the three next-easiest rules in the podsec module: `readOnlyRootFilesystem`, `seccompProfile`, and `procMount: Unmasked`. Each is a one-day rule addition that materially improves PodSec coverage, follows the existing `internal/analyzer/podsec/analyzer.go` + `content.go` pattern, and slots cleanly into the admission-aware reweight already applied to every podsec rule. After that, the next-largest leverage item is **CIS/NSA framework tags on every rule** (adds a `Frameworks []FrameworkRef` field to `models.Finding` plus a static mapping table + report tab — STRATEGY.md Tier 2.5).
 
 ## Completed
 
+- Stale / dangling RBAC bindings — `KUBE-RBAC-STALE-001` (dangling roleRef) and `KUBE-RBAC-STALE-002` (dangling ServiceAccount subject). Third pass in [internal/analyzer/rbac/analyzer.go](internal/analyzer/rbac/analyzer.go) emits one finding per (binding, subject) pair; built-in `cluster-admin`/`admin`/`edit`/`view` roles are allowlisted so partial snapshots don't false-fire, and `User`/`Group` subjects are intentionally not validated (Kubernetes has no inventory of them). Unit tests in [internal/analyzer/rbac/analyzer_test.go](internal/analyzer/rbac/analyzer_test.go); e2e fixtures in [testdata/e2e/vulnerable.yaml](testdata/e2e/vulnerable.yaml) and assertions in [scripts/kind-e2e.sh](scripts/kind-e2e.sh).
 - Composite scoring & correlation (MVP) — `scoring.Factors` + `scoring.Compose`, `scoring.ChainModifier`, engine post-run correlation that bumps non-privesc findings whose Subject has a privesc chain, cross-module dedup on `(RuleID, Subject, Resource)`. Tests in [internal/scoring/scorer_test.go](internal/scoring/scorer_test.go) and [internal/analyzer/correlate_test.go](internal/analyzer/correlate_test.go).
 - Privilege Escalation Path Detection (MVP) — verified on `make e2e`: picks up the `kubeadm:cluster-admins` direct cluster-admin path, the canonical 2-hop `create pods → mount default SA → node-escape via privileged pod`, and the 1-hop `secrets cluster-wide → kube-system-secrets` chain.
