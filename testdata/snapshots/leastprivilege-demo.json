@@ -1,0 +1,196 @@
+{
+  "metadata": {
+    "kubesplaining_version": "dev",
+    "snapshot_timestamp": "2026-05-13T00:00:00Z",
+    "cluster_name": "lp-demo-cluster",
+    "cluster_version": "v1.32.1",
+    "api_server_url": "https://demo.local",
+    "namespaces_scanned": [
+      "monitoring",
+      "prod-apps",
+      "analytics",
+      "legacy",
+      "billing",
+      "dashboard"
+    ]
+  },
+  "resources": {
+    "namespaces": [
+      { "metadata": { "name": "monitoring" } },
+      { "metadata": { "name": "prod-apps" } },
+      { "metadata": { "name": "analytics" } },
+      { "metadata": { "name": "legacy" } },
+      { "metadata": { "name": "billing" } },
+      { "metadata": { "name": "dashboard" } }
+    ],
+    "service_accounts": [
+      { "metadata": { "name": "prometheus", "namespace": "monitoring" } },
+      { "metadata": { "name": "deployer", "namespace": "prod-apps" } },
+      { "metadata": { "name": "etl-runner", "namespace": "analytics" } },
+      { "metadata": { "name": "loadtester", "namespace": "legacy" } },
+      { "metadata": { "name": "admin-sa", "namespace": "dashboard" } }
+    ],
+    "pods": [
+      {
+        "metadata": { "name": "prometheus-0", "namespace": "monitoring" },
+        "spec": { "serviceAccountName": "prometheus" }
+      },
+      {
+        "metadata": { "name": "deployer-7b9f", "namespace": "prod-apps" },
+        "spec": { "serviceAccountName": "deployer" }
+      },
+      {
+        "metadata": { "name": "etl-pipeline-abc", "namespace": "analytics" },
+        "spec": { "serviceAccountName": "etl-runner" }
+      },
+      {
+        "metadata": { "name": "loadtester-runner", "namespace": "legacy" },
+        "spec": { "serviceAccountName": "loadtester" }
+      },
+      {
+        "metadata": { "name": "dashboard-7c8d", "namespace": "dashboard" },
+        "spec": { "serviceAccountName": "admin-sa" }
+      }
+    ],
+    "cluster_roles": [
+      {
+        "metadata": { "name": "prometheus-reader" },
+        "rules": [
+          {
+            "apiGroups": [""],
+            "resources": ["pods", "services", "endpoints", "nodes"],
+            "verbs": ["get", "list", "watch", "create", "delete"]
+          }
+        ]
+      }
+    ],
+    "cluster_role_bindings": [
+      {
+        "metadata": { "name": "prometheus-reader" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "prometheus", "namespace": "monitoring" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "prometheus-reader"
+        }
+      },
+      {
+        "metadata": { "name": "dashboard-admin" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "admin-sa", "namespace": "dashboard" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "cluster-admin"
+        }
+      }
+    ],
+    "roles": [
+      {
+        "metadata": { "name": "prod-deployer", "namespace": "prod-apps" },
+        "rules": [
+          {
+            "apiGroups": [""],
+            "resources": ["pods"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+          },
+          {
+            "apiGroups": ["apps"],
+            "resources": ["deployments"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["events"],
+            "verbs": ["create", "patch"]
+          }
+        ]
+      },
+      {
+        "metadata": { "name": "etl-runner", "namespace": "analytics" },
+        "rules": [
+          {
+            "apiGroups": [""],
+            "resources": ["configmaps"],
+            "verbs": ["*"]
+          }
+        ]
+      },
+      {
+        "metadata": { "name": "loadtester", "namespace": "legacy" },
+        "rules": [
+          {
+            "apiGroups": [""],
+            "resources": ["pods"],
+            "verbs": ["get", "list"]
+          },
+          {
+            "apiGroups": [""],
+            "resources": ["pods/log"],
+            "verbs": ["get"]
+          }
+        ]
+      }
+    ],
+    "role_bindings": [
+      {
+        "metadata": { "name": "deployer", "namespace": "prod-apps" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "deployer", "namespace": "prod-apps" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "Role",
+          "name": "prod-deployer"
+        }
+      },
+      {
+        "metadata": { "name": "etl-runner", "namespace": "analytics" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "etl-runner", "namespace": "analytics" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "Role",
+          "name": "etl-runner"
+        }
+      },
+      {
+        "metadata": { "name": "loadtester", "namespace": "legacy" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "loadtester", "namespace": "legacy" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "Role",
+          "name": "loadtester"
+        }
+      },
+      {
+        "metadata": { "name": "old-ci-bot", "namespace": "billing" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "old-ci-bot", "namespace": "billing" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "view"
+        }
+      },
+      {
+        "metadata": { "name": "cleanup-cron", "namespace": "billing" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "cleanup-cron", "namespace": "billing" }
+        ],
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "Role",
+          "name": "cleanup-helper"
+        }
+      }
+    ]
+  }
+}

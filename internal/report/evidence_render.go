@@ -45,6 +45,13 @@ func renderEvidence(raw json.RawMessage) template.HTML {
 	var rows strings.Builder
 	for _, key := range orderedEvidenceKeys(obj) {
 		val := obj[key]
+		// Skip rows whose value carries no information: empty strings (e.g.
+		// `binding_namespace` for cluster-scoped bindings) and empty slices. They
+		// render as bare `""` / `[]` boxes which clutter the evidence grid without
+		// telling the reader anything.
+		if isEmptyEvidenceValue(val) {
+			continue
+		}
 		row := renderEvidenceRow(key, val, obj)
 		if row != "" {
 			rows.WriteString(row)
@@ -780,6 +787,26 @@ func workloadsRow(val any) string {
 	}
 	b.WriteString(`</span></div>`)
 	return b.String()
+}
+
+// isEmptyEvidenceValue reports whether val carries no useful information and should be
+// dropped from the evidence grid. Empty strings, nil, and empty slices/maps qualify;
+// false booleans and the literal zero integer do NOT qualify (those values are
+// meaningful evidence about pod-security flags / counts).
+func isEmptyEvidenceValue(val any) bool {
+	switch v := val.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case []any:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	case map[string]any:
+		return len(v) == 0
+	}
+	return false
 }
 
 // jsonFallbackRow prints "Label: <pre>json</pre>" for any unknown shape.

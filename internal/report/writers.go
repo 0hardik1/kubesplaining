@@ -120,8 +120,12 @@ func writeCSV(path string, findings []models.Finding) error {
 	return writer.Error()
 }
 
-// writeHTML renders the embedded htmlTemplate with findings-derived data and writes a self-contained report page.
-func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo) error {
+// writeHTMLWithOptions renders the embedded htmlTemplate with findings-derived data plus
+// CLI-supplied Options (default tab, audit-log window summary) and writes a
+// self-contained report page. Callers that don't need Options pass Options{}; there is no
+// shorter helper because Options is a small zero-value-friendly struct and every concrete
+// caller already constructs it.
+func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo, opts Options) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create html report: %w", err)
@@ -275,6 +279,13 @@ func writeHTML(path string, snapshot models.Snapshot, findings []models.Finding,
 	data := BuildHTMLData(snapshot, findings)
 	data.Admission = admission
 	data.Truncation = truncation
+	// Re-build the Least Privilege section with the UsageInfo from opts so the tab can
+	// show the audit-log window header. BuildHTMLData itself builds it with nil
+	// usageInfo (the legacy path) — overwriting here keeps both call paths working.
+	data.LeastPrivilege = buildLeastPrivilegeSection(findings, opts.UsageInfo)
+	data.DefaultTab = opts.DefaultTab
+	data.UsageInfo = opts.UsageInfo
+	data.LeastPrivilegeOnly = opts.LeastPrivilegeOnly
 
 	if err := tmpl.Execute(file, data); err != nil {
 		return fmt.Errorf("render html report: %w", err)

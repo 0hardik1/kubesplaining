@@ -1,0 +1,37 @@
+{
+  "events": [
+    {
+      "logStreamName": "kube-apiserver-audit-7c41a3c2",
+      "timestamp": 1747641600000,
+      "message": "{\"kind\":\"Event\",\"apiVersion\":\"audit.k8s.io/v1\",\"level\":\"Metadata\",\"auditID\":\"a1b2c3d4-1\",\"stage\":\"ResponseComplete\",\"requestURI\":\"/api/v1/namespaces/default/secrets/db-creds\",\"verb\":\"get\",\"user\":{\"username\":\"system:serviceaccount:default:reader\",\"uid\":\"6f2c1eb0-aaaa-bbbb-cccc-1\",\"groups\":[\"system:serviceaccounts\",\"system:serviceaccounts:default\",\"system:authenticated\"]},\"sourceIPs\":[\"10.0.12.34\"],\"userAgent\":\"reader-pod/v1.0\",\"objectRef\":{\"resource\":\"secrets\",\"namespace\":\"default\",\"name\":\"db-creds\",\"apiVersion\":\"v1\"},\"responseStatus\":{\"metadata\":{},\"code\":200},\"requestReceivedTimestamp\":\"2026-05-12T10:00:00.000000Z\",\"stageTimestamp\":\"2026-05-12T10:00:00.012345Z\",\"annotations\":{\"authorization.k8s.io/decision\":\"allow\",\"authorization.k8s.io/reason\":\"RBAC: allowed by ClusterRoleBinding reader-role\"}}"
+    },
+    {
+      "logStreamName": "kube-apiserver-audit-7c41a3c2",
+      "timestamp": 1747641660000,
+      "message": "{\"kind\":\"Event\",\"apiVersion\":\"audit.k8s.io/v1\",\"level\":\"Metadata\",\"auditID\":\"a1b2c3d4-2\",\"stage\":\"ResponseComplete\",\"requestURI\":\"/api/v1/namespaces/default/secrets/db-creds\",\"verb\":\"get\",\"user\":{\"username\":\"system:serviceaccount:default:reader\",\"uid\":\"6f2c1eb0-aaaa-bbbb-cccc-1\"},\"sourceIPs\":[\"10.0.12.34\"],\"objectRef\":{\"resource\":\"secrets\",\"namespace\":\"default\",\"name\":\"db-creds\",\"apiVersion\":\"v1\"},\"responseStatus\":{\"metadata\":{},\"code\":200},\"requestReceivedTimestamp\":\"2026-05-12T10:01:00.000000Z\",\"stageTimestamp\":\"2026-05-12T10:01:00.008934Z\"}"
+    },
+    {
+      "logStreamName": "kube-apiserver-audit-7c41a3c2",
+      "timestamp": 1747645200000,
+      "message": "{\"kind\":\"Event\",\"apiVersion\":\"audit.k8s.io/v1\",\"level\":\"Metadata\",\"auditID\":\"a1b2c3d4-3\",\"stage\":\"ResponseComplete\",\"requestURI\":\"/api/v1/namespaces/default/secrets/app-tls\",\"verb\":\"get\",\"user\":{\"username\":\"system:serviceaccount:default:reader\",\"uid\":\"6f2c1eb0-aaaa-bbbb-cccc-1\"},\"sourceIPs\":[\"10.0.12.34\"],\"objectRef\":{\"resource\":\"secrets\",\"namespace\":\"default\",\"name\":\"app-tls\",\"apiVersion\":\"v1\"},\"responseStatus\":{\"metadata\":{},\"code\":200},\"requestReceivedTimestamp\":\"2026-05-12T11:00:00.000000Z\",\"stageTimestamp\":\"2026-05-12T11:00:00.005120Z\"}"
+    },
+    {
+      "logStreamName": "kube-apiserver-audit-7c41a3c2",
+      "timestamp": 1747728000000,
+      "message": "{\"kind\":\"Event\",\"apiVersion\":\"audit.k8s.io/v1\",\"level\":\"Metadata\",\"auditID\":\"a1b2c3d4-4\",\"stage\":\"ResponseComplete\",\"requestURI\":\"/api/v1/namespaces/kube-system/serviceaccounts/kube-proxy/token\",\"verb\":\"create\",\"user\":{\"username\":\"system:serviceaccount:kube-system:tokenrequest-controller\",\"uid\":\"control-plane-aaaa\"},\"sourceIPs\":[\"10.0.0.1\"],\"objectRef\":{\"resource\":\"serviceaccounts\",\"subresource\":\"token\",\"namespace\":\"kube-system\",\"name\":\"kube-proxy\",\"apiVersion\":\"v1\"},\"responseStatus\":{\"metadata\":{},\"code\":201},\"requestReceivedTimestamp\":\"2026-05-13T10:00:00.000000Z\",\"stageTimestamp\":\"2026-05-13T10:00:00.003291Z\"}"
+    },
+    {
+      "logStreamName": "kube-apiserver-audit-7c41a3c2",
+      "timestamp": 1747728060000,
+      "message": "{\"kind\":\"Event\",\"apiVersion\":\"audit.k8s.io/v1\",\"level\":\"Metadata\",\"auditID\":\"a1b2c3d4-5\",\"stage\":\"ResponseComplete\",\"requestURI\":\"/api/v1/namespaces/default/pods\",\"verb\":\"create\",\"user\":{\"username\":\"system:serviceaccount:default:reader\",\"uid\":\"6f2c1eb0-aaaa-bbbb-cccc-1\"},\"sourceIPs\":[\"10.0.12.34\"],\"objectRef\":{\"resource\":\"pods\",\"namespace\":\"default\",\"name\":\"untrusted\",\"apiVersion\":\"v1\"},\"responseStatus\":{\"metadata\":{},\"code\":403,\"message\":\"forbidden\"},\"requestReceivedTimestamp\":\"2026-05-13T10:01:00.000000Z\",\"stageTimestamp\":\"2026-05-13T10:01:00.000841Z\",\"annotations\":{\"authorization.k8s.io/decision\":\"forbid\",\"authorization.k8s.io/reason\":\"\"}}"
+    },
+    {
+      "logStreamName": "kube-apiserver-audit-7c41a3c2",
+      "timestamp": 1747731600000,
+      "message": "{\"kind\":\"Event\",\"apiVersion\":\"audit.k8s.io/v1\",\"level\":\"Metadata\",\"auditID\":\"a1b2c3d4-6\",\"stage\":\"ResponseComplete\",\"requestURI\":\"/api/v1/nodes\",\"verb\":\"list\",\"user\":{\"username\":\"system:node:ip-10-0-1-23.ec2.internal\",\"uid\":\"control-plane-bbbb\",\"groups\":[\"system:nodes\",\"system:authenticated\"]},\"sourceIPs\":[\"10.0.1.23\"],\"objectRef\":{\"resource\":\"nodes\",\"apiVersion\":\"v1\"},\"responseStatus\":{\"metadata\":{},\"code\":200},\"requestReceivedTimestamp\":\"2026-05-13T11:00:00.000000Z\",\"stageTimestamp\":\"2026-05-13T11:00:00.001234Z\"}"
+    }
+  ],
+  "searchedLogStreams": [
+    {"logStreamName": "kube-apiserver-audit-7c41a3c2", "searchedCompletely": true}
+  ]
+}

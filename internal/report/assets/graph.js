@@ -1,10 +1,16 @@
 
 // --- Tabs / cross-tab helpers (run regardless of graph presence) -----------
 (function() {
-  var validTabs = { overview: 1, attack: 1, findings: 1 };
+  var validTabs = { overview: 1, attack: 1, findings: 1, leastprivilege: 1 };
 
   function activate(name) {
-    if (!validTabs[name]) name = 'attack';
+    if (!validTabs[name]) {
+      // Preserve the server-side default (--least-privilege-only sets it to
+      // "leastprivilege"). Without this, an unknown hash on initial load would
+      // override the focus-mode landing tab.
+      var current = document.body.dataset.activeTab;
+      name = (current && validTabs[current]) ? current : 'attack';
+    }
     document.body.dataset.activeTab = name;
     var btns = document.querySelectorAll('.tab[data-tab]');
     for (var i = 0; i < btns.length; i++) {
@@ -346,21 +352,27 @@
 
   // Initial activation: parse URL hash. #tab-X selects tab X. #finding-XXX implies findings tab.
   // Hash with ?params (filters/search) implies findings tab when no other anchor was given.
-  // Default (no hash, unrecognized hash) is the attack-paths tab — the report's primary view.
+  // Default (no hash, unrecognized hash) honors the server-side data-active-tab on <body> -
+  // --least-privilege-only sets it to "leastprivilege" so focus mode lands there directly.
+  // Falls back to "attack" (the report's primary view) when the server-side value is unset.
   function fromHash() {
     var p = parseHash();
     var h = p.anchor;
+    var serverDefault = document.body.dataset.activeTab;
+    function defaultTab() {
+      return (serverDefault && validTabs[serverDefault]) ? serverDefault : 'attack';
+    }
     if (!h) {
       // No anchor but params present (e.g. "#?q=...") → findings tab.
       if (Object.keys(p.params).length > 0) return 'findings';
-      return 'attack';
+      return defaultTab();
     }
     if (/^tab-(.+)$/.test(h)) return RegExp.$1;
     if (h === 'findings') return 'findings';
     if (/^finding-/.test(h)) return 'findings';
     var modEl = document.getElementById(h);
     if (modEl && modEl.classList.contains('module-section')) return 'findings';
-    return 'attack';
+    return defaultTab();
   }
 
   // Re-scroll to the hash AFTER activation so the target is in the laid-out

@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
 	"github.com/0hardik1/kubesplaining/internal/collector"
 	"github.com/0hardik1/kubesplaining/internal/connection"
 	"github.com/0hardik1/kubesplaining/internal/exclusions"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/report"
+	"github.com/0hardik1/kubesplaining/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -38,6 +41,10 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		admissionMode        string
 		maxFindings          int
 		allFindings          bool
+		auditLogPaths        []string
+		auditSource          string
+		auditWindowDays      int
+		leastPrivilegeOnly   bool
 	)
 
 	cmd := &cobra.Command{
@@ -54,10 +61,47 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				return fmt.Errorf("invalid --admission-mode %q (must be off, attenuate, or suppress)", admissionMode)
 			}
 
+			source, ok := usage.ParseSource(auditSource)
+			if !ok {
+				return fmt.Errorf("invalid --audit-source %q (must be native or eks)", auditSource)
+			}
+			if auditWindowDays < 1 {
+				return fmt.Errorf("invalid --audit-window-days %d (must be >= 1)", auditWindowDays)
+			}
+
+			// Pre-flight: --least-privilege-only without --audit-log would produce a
+			// near-empty tab (only STALE/OVERBROAD findings, no UNUSED-* signal).
+			// Surface the missing input explicitly so the operator knows to point us
+			// at an audit log.
+			if leastPrivilegeOnly && len(auditLogPaths) == 0 {
+				return fmt.Errorf("--least-privilege-only requires --audit-log <path>; see docs/audit-logs.md for how to obtain one")
+			}
+
+			// --least-privilege-only is a "focus mode" shortcut. It overrides --only-modules
+			// to the modules that produce least-privilege findings (rbac for the existing
+			// STALE/OVERBROAD rules + leastprivilege for the new UNUSED/WILDCARD rules),
+			// then applies a rule-ID post-filter so other rbac findings (privesc-related)
+			// don't leak through. The HTML report's default tab is also flipped to
+			// "leastprivilege" so the focus mode lands the operator there directly.
+			if leastPrivilegeOnly {
+				onlyModules = []string{"rbac", "leastprivilege"}
+			}
+
 			snapshot, err := loadOrCollectSnapshot(cmd, build, connFlags, inputFile, namespaces, excludeNamespaces, includeManagedFields, parallelism)
 			if err != nil {
 				return err
 			}
+
+			usageIdx, usageWarnings, err := usage.LoadAuditLog(
+				auditLogPaths,
+				source,
+				time.Duration(auditWindowDays)*24*time.Hour,
+				time.Now().UTC(),
+			)
+			if err != nil {
+				return fmt.Errorf("load audit log: %w", err)
+			}
+			snapshot.Metadata.CollectionWarnings = append(snapshot.Metadata.CollectionWarnings, usageWarnings...)
 
 			engine := analyzer.NewWithConfig(analyzer.Config{MaxPrivescDepth: maxPrivescDepth})
 			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
@@ -65,6 +109,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				SkipModules:   skipModules,
 				Threshold:     threshold,
 				AdmissionMode: mode,
+				UsageIndex:    usageIdx,
 			})
 			if err != nil {
 				return err
@@ -77,13 +122,26 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 			findings, _ = exclusions.Apply(cfg, findings)
 
+			// Apply the rule-ID prefix filter for --least-privilege-only. We do this
+			// after exclusions so user-supplied exclusions still apply normally; before
+			// truncation so the diversity sampler operates over the focused set.
+			if leastPrivilegeOnly {
+				findings = filterLeastPrivilege(findings)
+			}
+
 			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
 
 			if outputDir == "" {
 				outputDir = filepath.Join(".", "kubesplaining-report")
 			}
 
-			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, findings, result.Admission, truncation)
+			reportOpts := report.Options{
+				DefaultTab:         defaultTabFor(leastPrivilegeOnly),
+				LeastPrivilegeOnly: leastPrivilegeOnly,
+				UsageInfo:          report.UsageInfoFrom(usageIdx),
+			}
+
+			written, err := report.WriteWithOptions(outputDir, outputFormats, snapshot, findings, result.Admission, truncation, reportOpts)
 			if err != nil {
 				return err
 			}
@@ -127,8 +185,35 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringVar(&admissionMode, "admission-mode", string(analyzer.AdmissionModeSuppress), "How to react to namespace PSA labels: off|attenuate|suppress")
 	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the report to the top N findings by severity/score; 0 disables. CI thresholds evaluate against the truncated list — pass --all-findings in CI mode to evaluate all.")
 	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the report; overrides --max-findings")
+	cmd.Flags().StringSliceVar(&auditLogPaths, "audit-log", nil, "Path to a kube-apiserver audit log file or directory (repeatable). See docs/audit-logs.md for how to obtain one.")
+	cmd.Flags().StringVar(&auditSource, "audit-source", "native", "Audit-log format: native (kube-apiserver JSON-lines) or eks (CloudWatch export from filter-log-events)")
+	cmd.Flags().IntVar(&auditWindowDays, "audit-window-days", 30, "How many days of audit history to consider when computing unused-permission findings")
+	cmd.Flags().BoolVar(&leastPrivilegeOnly, "least-privilege-only", false, "Focus mode: only emit least-privilege findings (UNUSED-*, WILDCARD-USED-PARTIAL-*, STALE-*, OVERBROAD-*) and open the Least Privilege tab by default. Requires --audit-log.")
 
 	return cmd
+}
+
+// filterLeastPrivilege keeps only rule-IDs that surface in the Least Privilege tab.
+// Used when --least-privilege-only is set so the operator's report does not include
+// privesc/podsec/network findings they are not focused on right now.
+func filterLeastPrivilege(findings []models.Finding) []models.Finding {
+	out := findings[:0]
+	for _, f := range findings {
+		if leastprivilege.IsLeastPrivilegeRule(f.RuleID) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// defaultTabFor returns the HTML report's initial-active tab name. --least-privilege-only
+// lands the operator on the Least Privilege tab directly; otherwise the report keeps its
+// existing default (Attack Paths) by returning "".
+func defaultTabFor(leastPrivilegeOnly bool) string {
+	if leastPrivilegeOnly {
+		return "leastprivilege"
+	}
+	return ""
 }
 
 // loadOrCollectSnapshot returns a snapshot loaded from inputFile when set, or freshly collected from the live cluster otherwise.
