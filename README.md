@@ -103,7 +103,7 @@ Coming as a post-release fast-follow: `brew install 0hardik1/tap/kubesplaining` 
 | **secrets** | 4 | legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering |
 | **serviceaccount** | 4 | privileged SAs, default-SA RBAC, DaemonSet token blast-radius |
 | **privesc** | 4 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets |
-| **leastprivilege** | 4 | granted-but-unused RBAC verbs from audit-log diff; see [docs/audit-logs.md](docs/audit-logs.md) |
+| **leastprivilege** | 4 | granted-but-unused RBAC verbs from audit-log diff; opt-in via `--audit-log`. See [docs/audit-logs.md](docs/audit-logs.md) for setup and the [Least-Privilege analyzer section](#least-privilege-analyzer-audit-log-driven) for the behavior matrix |
 
 Every finding is tagged with a `RiskCategory` (`privilege_escalation`, `data_exfiltration`, `lateral_movement`, `infrastructure_modification`, `defense_evasion`) so the HTML report can group by impact lane.
 
@@ -230,6 +230,61 @@ Useful for:
 - **Air-gapped review**: analyze a production cluster without bringing kubeconfig off the jumphost.
 - **Manifest scans**: `kubesplaining scan-resource --input-file deployment.yaml` runs the same analyzers against a single YAML, no cluster needed.
 
+## Least-Privilege analyzer (audit-log driven)
+
+The `leastprivilege` module compares the RBAC permissions a ServiceAccount **has** (from the snapshot) against the ones it has **actually exercised** (from a kube-apiserver audit log) and flags the delta. It's the analog of AWS IAM Access Advisor for Kubernetes RBAC.
+
+It emits four rule IDs:
+
+- `KUBE-RBAC-UNUSED-ROLE-001` — Role bound to a mounted SA with zero observed events in the audit window.
+- `KUBE-RBAC-UNUSED-RULE-001` — Every (verb, resource) triple in a Role rule is unused.
+- `KUBE-RBAC-UNUSED-VERB-001` — Some verbs in a Role rule are unused; suggests a narrower verb list.
+- `KUBE-RBAC-WILDCARD-USED-PARTIAL-001` — `verbs: ["*"]` is granted but the SA only used a subset.
+
+The pre-existing `KUBE-RBAC-STALE-*` and `KUBE-RBAC-OVERBROAD-001` rules surface alongside in the Least Privilege HTML tab so every "this grant is broader than needed" signal lives in one view.
+
+### When does it fire?
+
+The module is **opt-in via `--audit-log`**. A plain `kubesplaining scan` (no audit log) silently skips it — no LP findings ship and existing CI baselines stay unchanged.
+
+| Command | Audit log required? | What you get |
+| --- | --- | --- |
+| `kubesplaining scan` / `make scan` | No | Same behavior as before — module silently no-ops. |
+| `scan --audit-log <path>` | Used if supplied | LP findings appear alongside the regular findings. |
+| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Attack Paths / Risk Overview / Findings tabs are hidden. |
+| `make scan-lp AUDIT_LOG=<path>` | **Yes** (Makefile errors if missing) | Same as the focused mode above; convenience target. |
+
+### Quick start
+
+```bash
+# 1. Capture audit logs from your cluster - see docs/audit-logs.md for
+#    kubeadm / kind / EKS setup. Audit policy level "Metadata" is enough.
+
+# 2. Run the focused mode against a snapshot (or live cluster) + your audit log:
+make scan-lp AUDIT_LOG=./audit.log ARGS="--input-file snapshot.json"
+
+# or directly:
+kubesplaining scan \
+  --input-file snapshot.json \
+  --audit-log ./audit.log \
+  --audit-source native \
+  --audit-window-days 30 \
+  --least-privilege-only
+```
+
+### What's in the report
+
+The Least Privilege tab carries two summary tables on top, each row spelling out the exact action:
+
+- **Unused RBAC resources** — Roles/ClusterRoles/Bindings that look like delete candidates. Each row names the binding to remove (e.g. `Delete ClusterRoleBinding/dashboard-admin (scope down to a narrower ClusterRole)`).
+- **Role to verb activity** — Verb-level narrowing opportunities with side-by-side **Used** vs **Unused** verb lists grouped by verb (`get: deployments|pods`), plus a "what to do" action and the suggested narrower-Role YAML on the per-finding card below.
+
+When the audit log contains non-ServiceAccount callers (humans, groups, kubelets), the tab shows a one-line note explaining they're out of scope — kubesplaining only correlates ServiceAccount-bound RBAC; human users belong in IdP / SSO group review.
+
+### Audit log details
+
+`docs/audit-logs.md` walks through enabling audit logging on **self-managed / kubeadm**, **kind**, and **EKS** clusters, what audit-policy level is needed, and how to export from CloudWatch. The privacy posture is preserved: audit `Metadata` level does **not** include request bodies, so secrets and ConfigMap values are still never read.
+
 ## CI integration
 
 The SARIF output integrates with [GitHub code scanning](https://docs.github.com/en/code-security/code-scanning) so findings appear as PR annotations. Until the dedicated GitHub Action ships (post-release fast-follow), the `docker run` form works directly:
@@ -309,7 +364,7 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--output-dir` | `./kubesplaining-report` | Where reports are written. |
 | `--only-modules` / `--skip-modules` | — | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`). |
 | `--least-privilege-only` | `false` | Focus mode: hide everything except RBAC tightening opportunities and land on the **Least Privilege** tab. Requires `--audit-log`. |
-| `--audit-log` | — | Path to a kube-apiserver audit log (file or directory; repeatable). See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
+| `--audit-log` | — | Path to a kube-apiserver audit log (file or directory; repeatable). Opt-in: without it the `leastprivilege` module is a no-op. See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
 | `--audit-source` | `native` | Audit-log format: `native` (kube-apiserver JSON-lines) or `eks` (CloudWatch `filter-log-events` export). |
 | `--audit-window-days` | `30` | How many days of audit history to consider. Widen for monthly cron jobs. |
 | `--max-privesc-depth` | `5` | BFS depth cap for the escalation graph. |

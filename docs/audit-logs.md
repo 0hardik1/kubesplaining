@@ -13,6 +13,39 @@ authoritative source. This document covers how to obtain one on the three
 environments kubesplaining supports out of the box: **self-managed / kubeadm**,
 **kind**, and **EKS**.
 
+## When does the module fire?
+
+The `leastprivilege` module is **opt-in via `--audit-log`**. A plain `scan` with
+no audit log silently skips the module — no `KUBE-RBAC-UNUSED-*` /
+`KUBE-RBAC-WILDCARD-USED-PARTIAL-*` findings ship, existing CI baselines are
+unchanged, and the report's Least Privilege tab shows a help block pointing
+back at this doc.
+
+| Command | Audit log required? | LP findings emitted? |
+| --- | --- | --- |
+| `kubesplaining scan` / `make scan` | No | **None** — module no-ops |
+| `scan --audit-log <path>` | Used if supplied | Yes, mixed in with other findings |
+| `scan --least-privilege-only --audit-log <path>` | **Yes** — CLI pre-flight errors if missing | Yes, only LP findings; report lands on LP tab |
+| `make scan-lp AUDIT_LOG=<path>` | **Yes** — Makefile errors if missing | Same as the focused mode above |
+
+The `--least-privilege-only` pre-flight is deliberate: the audit-driven rules
+literally cannot fire without an audit log, so silently returning an
+empty-looking Least Privilege tab would be a worse UX than an explicit error
+with a pointer to this doc.
+
+The Makefile convenience target wraps the same invocation:
+
+```bash
+# Live cluster scan (kubeconfig points at the target):
+make scan-lp AUDIT_LOG=./audit.log
+
+# Offline scan against a previously-collected snapshot:
+make scan-lp AUDIT_LOG=./audit.log ARGS="--input-file snapshot.json"
+
+# EKS source, 60-day window:
+make scan-lp AUDIT_LOG=./eks-export.json AUDIT_SOURCE=eks AUDIT_WINDOW_DAYS=60
+```
+
 ## What kubesplaining needs
 
 Audit-policy level **`Metadata`** is sufficient. `Request` / `RequestResponse`
