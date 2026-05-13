@@ -413,3 +413,8 @@ The `standard` preset suppresses control-plane noise (kube-system, system:*, kub
 - **Security disclosure**: [SECURITY.md](SECURITY.md) (GitHub Private Vulnerability Reporting only)
 - **License**: [Apache-2.0](LICENSE)
 - **End-to-end verification**: `make e2e` provisions a local kind cluster with intentionally risky manifests in `testdata/` and asserts expected findings
+
+## Credits
+
+- [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) — for the tool idea. His [Cloudsplaining](https://github.com/salesforce/cloudsplaining) inspired this project.
+- [Ramesh Ramani](https://www.linkedin.com/in/rameshdotramani/) ([@secmesh](https://github.com/secmesh)) — the least-privilege mode was inspired by his idea.
