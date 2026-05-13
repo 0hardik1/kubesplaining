@@ -227,6 +227,28 @@ func TestNilIndex_NoFindings(t *testing.T) {
 	}
 }
 
+// TestEmptyIndex_NoFindings covers the bug we'd otherwise ship: a plain `kubesplaining
+// scan` (no --audit-log) wires a non-nil but zero-event UsageIndex through to this
+// module. Without the EventsProcessed guard, every mounted SA would falsely look
+// "unused" since the empty index reports zero observed events for everyone. Lock in the
+// no-op behavior so this regression can't sneak back in.
+func TestEmptyIndex_NoFindings(t *testing.T) {
+	rules := []rbacv1.PolicyRule{{
+		APIGroups: []string{""},
+		Resources: []string{"pods"},
+		Verbs:     []string{"get", "list"},
+	}}
+	snap := snapshotWithBinding("pod-reader", "default", "builder", rules, true)
+	idx := usage.EmptyIndex()
+	got, err := New(idx).Analyze(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("empty index (no audit events) should produce no findings, got %+v", ruleIDs(got))
+	}
+}
+
 func ruleIDs(fs []models.Finding) []string {
 	out := make([]string, len(fs))
 	for i, f := range fs {

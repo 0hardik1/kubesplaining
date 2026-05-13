@@ -44,8 +44,15 @@ func (a *Analyzer) Name() string {
 // (subject, SourceRole) for each least-privilege opportunity detected. Grouping per Role
 // (not per (verb,resource) triple) keeps the report scannable - a Role with five unused
 // verbs becomes one finding listing those verbs, not five separate findings.
+//
+// No-ops when no audit data was supplied. The CLI wires LoadAuditLog with an empty path
+// list to a non-nil but zero-event index (it carries the window metadata for the report
+// header even when empty), so we must check EventsProcessed - not just idx == nil - to
+// avoid emitting "every mounted SA looks unused!" findings on a plain `scan` without
+// `--audit-log`. The pre-flight in scan.go rejects `--least-privilege-only` without an
+// audit log, so a zero-event index here means "user wanted other analyzers, not us".
 func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]models.Finding, error) {
-	if a.idx == nil {
+	if a.idx == nil || a.idx.EventsProcessed == 0 {
 		return nil, nil
 	}
 	perms := permissions.Aggregate(snapshot)
