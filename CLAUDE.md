@@ -26,6 +26,12 @@ make install-hooks   # activate .githooks/ pre-commit + commit-msg hooks (one-ti
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) — the `commit-msg` hook enforces it once `make install-hooks` has run. The `pre-commit` hook runs `gofmt -l` and `golangci-lint` over the packages of staged `.go` files; install the linter once with `./bin/hermit install golangci-lint`. See `.githooks/README.md` for details and bypass.
 
+**CI gates not exercised by `make lint`.** The `lint.yml` workflow runs three checks the Makefile does not. Hit each one locally before pushing or opening a PR:
+
+- **`./bin/golangci-lint run ./...`** — repo-wide staticcheck/govet/etc. `make lint` only runs `gofmt -l` + `go vet`, so issues like `S1039` (unnecessary `fmt.Sprintf` without format args), unused returns, or staticcheck deprecations slip through `make lint` and fail in CI. The `pre-commit` hook covers this only when (a) hooks are installed and (b) the offending file is staged — neither is guaranteed.
+- **PR title ≤ 72 chars** and matching the Conventional Commits regex in `.githooks/_conventional_commits_pattern.txt`. The check is in `.github/workflows/lint.yml` (`if [ "${#PR_TITLE}" -gt 72 ]`). Em-dashes count as one character. Use `gh pr edit <number> --title "..."` to fix an over-long title without amending commits.
+- **`go vet` repo-wide** runs in its own job in addition to the one inside `make lint`; usually redundant, but means a packaging slip in one of them still trips.
+
 Single-package or single-test runs (use the same `GOCACHE` / `GOMODCACHE` env so you do not redownload modules):
 
 ```bash
