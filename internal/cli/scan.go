@@ -70,19 +70,19 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 
 			// Pre-flight: --least-privilege-only without --audit-log would produce a
-			// near-empty tab (only STALE/OVERBROAD findings, no UNUSED-* signal).
-			// Surface the missing input explicitly so the operator knows to point us
-			// at an audit log.
+			// near-empty tab (only STALE findings, no UNUSED-* signal). Surface the
+			// missing input explicitly so the operator knows to point us at an audit log.
 			if leastPrivilegeOnly && len(auditLogPaths) == 0 {
 				return fmt.Errorf("--least-privilege-only requires --audit-log <path>; see docs/audit-logs.md for how to obtain one")
 			}
 
 			// --least-privilege-only is a "focus mode" shortcut. It overrides --only-modules
-			// to the modules that produce least-privilege findings (rbac for the existing
-			// STALE/OVERBROAD rules + leastprivilege for the new UNUSED/WILDCARD rules),
-			// then applies a rule-ID post-filter so other rbac findings (privesc-related)
-			// don't leak through. The HTML report's default tab is also flipped to
-			// "leastprivilege" so the focus mode lands the operator there directly.
+			// to the modules that produce least-privilege findings (rbac for STALE rules +
+			// leastprivilege for the UNUSED/WILDCARD rules), then applies a rule-ID
+			// post-filter so other rbac findings (privesc-related, OVERBROAD) don't leak
+			// through — the LP tab's dedicated cluster-admin inventory table covers the
+			// "who has cluster-admin" picture. The HTML report's default tab is also
+			// flipped to "leastprivilege" so the focus mode lands the operator there.
 			if leastPrivilegeOnly {
 				onlyModules = []string{"rbac", "leastprivilege"}
 			}
@@ -188,7 +188,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringSliceVar(&auditLogPaths, "audit-log", nil, "Path to a kube-apiserver audit log file or directory (repeatable). See docs/audit-logs.md for how to obtain one.")
 	cmd.Flags().StringVar(&auditSource, "audit-source", "native", "Audit-log format: native (kube-apiserver JSON-lines) or eks (CloudWatch export from filter-log-events)")
 	cmd.Flags().IntVar(&auditWindowDays, "audit-window-days", 30, "How many days of audit history to consider when computing unused-permission findings")
-	cmd.Flags().BoolVar(&leastPrivilegeOnly, "least-privilege-only", false, "Focus mode: only emit least-privilege findings (UNUSED-*, WILDCARD-USED-PARTIAL-*, STALE-*, OVERBROAD-*) and open the Least Privilege tab by default. Requires --audit-log.")
+	cmd.Flags().BoolVar(&leastPrivilegeOnly, "least-privilege-only", false, "Focus mode: only emit least-privilege findings (UNUSED-*, WILDCARD-USED-PARTIAL-*, STALE-*) and open the Least Privilege tab by default. Requires --audit-log. Cluster-admin bindings are listed for review in the LP tab's inventory table instead of firing as findings.")
 
 	return cmd
 }

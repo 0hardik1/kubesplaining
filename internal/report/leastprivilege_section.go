@@ -19,7 +19,7 @@ import (
 // verbs mapping), and groups the same findings per-subject for the detailed cards. The
 // tables and cards share the same underlying finding slice; the tables are a denser view
 // for triage, the cards carry the full prose + remediation YAML.
-func buildLeastPrivilegeSection(findings []models.Finding, usageInfo *UsageInfo) LeastPrivilegeSection {
+func buildLeastPrivilegeSection(snapshot models.Snapshot, findings []models.Finding, usageInfo *UsageInfo) LeastPrivilegeSection {
 	section := LeastPrivilegeSection{}
 	if usageInfo != nil {
 		section.HasAuditData = true
@@ -29,6 +29,7 @@ func buildLeastPrivilegeSection(findings []models.Finding, usageInfo *UsageInfo)
 		section.EventsProcessed = usageInfo.EventsProcessed
 		section.NonSAUsernames = usageInfo.NonSAUsernames
 	}
+	section.ClusterAdminInventory = buildClusterAdminInventory(snapshot)
 
 	bySubject := map[string]*LeastPrivilegeGroup{}
 	order := []string{}
@@ -128,9 +129,8 @@ func newCard(f models.Finding) LeastPrivilegeFindingCard {
 // ok=false for findings that don't fit this table (per-verb narrowing, wildcard).
 //
 // Resource is rendered as "<Kind>/<name>" so the table doesn't need a separate Kind
-// column. For OVERBROAD-001 the rbac analyzer sets Resource.Kind to the synthetic
-// "RBACRule" label (not a real k8s kind), so we override with "ClusterRole" - the rule
-// only fires on ClusterRoleBinding -> cluster-admin grants.
+// column. cluster-admin bindings are handled by the dedicated inventory table built
+// from the snapshot, not this row builder, so OVERBROAD-001 is intentionally absent.
 //
 // Action carries the concrete "what to delete" instruction with the binding name pulled
 // from evidence so an operator can act on the row without expanding the card. The
@@ -157,13 +157,6 @@ func unusedResourceRowFor(f models.Finding) (LPUnusedResourceRow, bool) {
 	case "KUBE-RBAC-STALE-002":
 		row.Why = "Binding lists a ServiceAccount subject that does not exist"
 		row.Action = actionDeleteBinding(ev, "subject missing")
-	case "KUBE-RBAC-OVERBROAD-001":
-		row.Why = "Direct binding to cluster-admin"
-		// findingFromContent labels the resource as "RBACRule" - a placeholder, not a
-		// real Kind. cluster-admin is always a ClusterRole, so override here rather
-		// than across the rbac analyzer where other reports rely on the existing shape.
-		kind = "ClusterRole"
-		row.Action = actionDeleteBinding(ev, "scope down to a narrower ClusterRole")
 	default:
 		return LPUnusedResourceRow{}, false
 	}
@@ -285,10 +278,15 @@ func roleVerbRowFor(f models.Finding) (LPRoleVerbRow, bool) {
 		// The wildcard rule fires because verbs: ["*"] grants the entire standard verb
 		// set, of which the SA only exercised a few. Showing both sides lets the
 		// operator see "here's what's actually used; here's the over-grant" without
-		// having to reason about what `*` means on this resource.
+		// having to reason about what `*` means on this resource. The unused side is
+		// synthetic — (standard verbs) x (resources on the rule) — so it gets capped
+		// per-verb with a footnote that names the wildcard as the source of the bloat.
 		used, unused := wildcardTriples(f.Evidence)
 		row.UsedVerbs = renderVerbsGrouped(used)
-		row.UnusedVerbs = renderVerbsGrouped(unused)
+		row.UnusedVerbs = renderVerbsGroupedOpts(unused, verbRenderOpts{
+			ResourceCapPerVerb: 4,
+			FootNote:           `Truncated — verbs: ["*"] expands to every standard verb the wildcard covers, multiplied by every resource on the matching rule.`,
+		})
 		row.Action = actionNarrowWildcard(roleLabel)
 	default:
 		return LPRoleVerbRow{}, false
@@ -297,6 +295,48 @@ func roleVerbRowFor(f models.Finding) (LPRoleVerbRow, bool) {
 		return LPRoleVerbRow{}, false
 	}
 	return row, true
+}
+
+// buildClusterAdminInventory walks every ClusterRoleBinding that targets the built-in
+// cluster-admin ClusterRole and emits one row per subject. system:* subjects are kept
+// because the inventory exists for visibility, not narrowing — operators need to see the
+// built-in grants alongside the discretionary ones to recognize "what's expected" vs.
+// "what someone added". Sorting puts non-system rows first so the entries operators
+// actually act on surface at the top of the table.
+func buildClusterAdminInventory(snapshot models.Snapshot) []LPClusterAdminRow {
+	var rows []LPClusterAdminRow
+	for _, binding := range snapshot.Resources.ClusterRoleBindings {
+		if binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != "cluster-admin" {
+			continue
+		}
+		for _, subject := range binding.Subjects {
+			isSystem := strings.HasPrefix(subject.Name, "system:") ||
+				(subject.Kind == "Group" && strings.HasPrefix(subject.Name, "system:"))
+			rows = append(rows, LPClusterAdminRow{
+				Binding:     binding.Name,
+				SubjectKind: subject.Kind,
+				SubjectNs:   subject.Namespace,
+				SubjectName: subject.Name,
+				IsSystem:    isSystem,
+			})
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].IsSystem != rows[j].IsSystem {
+			return !rows[i].IsSystem
+		}
+		if rows[i].SubjectKind != rows[j].SubjectKind {
+			return rows[i].SubjectKind < rows[j].SubjectKind
+		}
+		if rows[i].SubjectNs != rows[j].SubjectNs {
+			return rows[i].SubjectNs < rows[j].SubjectNs
+		}
+		if rows[i].SubjectName != rows[j].SubjectName {
+			return rows[i].SubjectName < rows[j].SubjectName
+		}
+		return rows[i].Binding < rows[j].Binding
+	})
+	return rows
 }
 
 // formatVerbsNone renders the empty-state for the Used column when every granted verb is
@@ -450,12 +490,30 @@ func triplesToVR(triples []map[string]string) []verbResource {
 	return out
 }
 
-// renderVerbsGrouped renders verb/resource pairs grouped by verb: one row per verb with
-// the resources it applies to stacked vertically inside a single resource chip. The
-// "one chip per verb" shape keeps each verb's blast radius visually grouped instead of
-// scattered across many separate chips. Caps at 8 verbs with "+N more" overflow; empty
-// input returns the "none" placeholder so the column never goes blank.
+// verbRenderOpts controls optional sizing and explanatory copy for renderVerbsGroupedOpts.
+// The zero value reproduces the original uncapped, footnote-less rendering.
+type verbRenderOpts struct {
+	// ResourceCapPerVerb truncates each chip to its first N resources with a
+	// "+M more resources" tail. 0 means unlimited.
+	ResourceCapPerVerb int
+	// FootNote renders once below the chip list when at least one chip was capped.
+	FootNote string
+}
+
+// renderVerbsGrouped is the unoptioned form: every resource shown, no footnote. Used by
+// formatVerbList (UNUSED-VERB / UNUSED-RULE) and by the Used side of WILDCARD-USED-PARTIAL.
 func renderVerbsGrouped(items []verbResource) template.HTML {
+	return renderVerbsGroupedOpts(items, verbRenderOpts{})
+}
+
+// renderVerbsGroupedOpts groups (verb, resource) pairs by verb into one bordered chip per
+// verb. Single-resource verbs render inline ("list: pods") so the common case stays on one
+// line; verbs with 2+ resources stack each resource on its own block-level line beneath
+// the label so a wildcard-expanded list does not force the cell to scroll horizontally.
+// opts.ResourceCapPerVerb caps each chip with a "+M more resources" tail; opts.FootNote,
+// if set, is rendered once under the chip list when any chip got capped. Caps at 8 verbs
+// total with a "+N more verbs" overflow; empty input returns the "none" placeholder.
+func renderVerbsGroupedOpts(items []verbResource, opts verbRenderOpts) template.HTML {
 	if len(items) == 0 {
 		return formatVerbsNone()
 	}
@@ -475,28 +533,42 @@ func renderVerbsGrouped(items []verbResource) template.HTML {
 	}
 	var b strings.Builder
 	b.WriteString(`<ul class="lp-verb-list">`)
+	anyCapped := false
 	for i := 0; i < limit; i++ {
 		verb := order[i]
 		resources := dedupeStrings(byVerb[verb])
 		sort.Strings(resources)
-		// Single chip per verb: the verb label leads, the resources stack below.
-		// Keeping them in one bordered <code> visually anchors each verb's blast
-		// radius to one cell rather than two adjacent chips that could be mistaken
-		// for unrelated grants.
 		b.WriteString(`<li><code class="lp-verb-chip"><span class="lp-verb-label">`)
 		b.WriteString(template.HTMLEscapeString(verb))
 		b.WriteString(`:</span>`)
-		for j, r := range resources {
-			if j > 0 {
-				b.WriteString(`<span class="lp-resource-sep">|</span>`)
+		if len(resources) == 1 {
+			b.WriteString(` `)
+			b.WriteString(template.HTMLEscapeString(resources[0]))
+		} else {
+			show := len(resources)
+			if opts.ResourceCapPerVerb > 0 && show > opts.ResourceCapPerVerb {
+				show = opts.ResourceCapPerVerb
 			}
-			b.WriteString(template.HTMLEscapeString(r))
+			for j := 0; j < show; j++ {
+				b.WriteString(`<span class="lp-verb-resource">`)
+				b.WriteString(template.HTMLEscapeString(resources[j]))
+				b.WriteString(`</span>`)
+			}
+			if show < len(resources) {
+				fmt.Fprintf(&b, `<span class="lp-verb-resource-more">+%d more resources</span>`, len(resources)-show)
+				anyCapped = true
+			}
 		}
 		b.WriteString(`</code></li>`)
 	}
 	b.WriteString(`</ul>`)
 	if len(order) > limit {
 		fmt.Fprintf(&b, `<div class="lp-verb-more">+%d more verbs</div>`, len(order)-limit)
+	}
+	if anyCapped && opts.FootNote != "" {
+		b.WriteString(`<div class="lp-verb-foot-note">`)
+		b.WriteString(template.HTMLEscapeString(opts.FootNote))
+		b.WriteString(`</div>`)
 	}
 	return template.HTML(b.String())
 }
