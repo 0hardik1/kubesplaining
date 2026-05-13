@@ -664,11 +664,11 @@ func contentRBACStale002(ctx staleContext) ruleContent {
 			fmt.Sprintf("Attacker creates a pod with `spec.serviceAccountName: %s` (or projects a TokenRequest for the new SA into a pod they control).", ctx.Subject.Name),
 			fmt.Sprintf("The mounted token authenticates as ServiceAccount `%s`, which now resolves through %s into the role's permissions.", saKey, ctx.BindingRef),
 		},
-		Remediation: fmt.Sprintf("Remove the stale ServiceAccount subject from the binding, or delete the binding entirely if it's obsolete. If the SA was deleted in error, restore it from version control."),
+		Remediation: "Remove the stale ServiceAccount subject from the binding, or delete the binding entirely if it's obsolete. If the SA was deleted in error, restore it from version control.",
 		RemediationSteps: []string{
 			fmt.Sprintf("Confirm no workloads still depend on this SA: `kubectl get all -n %s -o yaml | rg 'serviceAccountName:\\s*%s'`.", ctx.Subject.Namespace, ctx.Subject.Name),
 			"Edit the binding to drop the stale subject, or delete the binding outright if it is obsolete.",
-			fmt.Sprintf("If the SA was deleted by mistake, restore it (`kubectl apply -f <sa.yaml>`) and re-review whether the binding's grant is still appropriate."),
+			"If the SA was deleted by mistake, restore it (`kubectl apply -f <sa.yaml>`) and re-review whether the binding's grant is still appropriate.",
 			"Add a CI lint that rejects bindings whose `ServiceAccount` subjects do not resolve to an existing SA in the named namespace.",
 		},
 		LearnMore: []models.Reference{
