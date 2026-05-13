@@ -242,16 +242,31 @@ type HopView struct {
 // operator can scan "what's unused" and "what verbs to drop" without expanding every
 // card; the cards carry the full prose and remediation YAML for the picked target.
 type LeastPrivilegeSection struct {
-	Total           int
-	WindowStart     string // pre-formatted "YYYY-MM-DD", empty when no audit data
-	WindowEnd       string
-	WindowDays      int
-	EventsProcessed int
-	NonSAUsernames  int // unique non-ServiceAccount callers in the window (humans, groups, system:node:*); surfaces an explicit "out of scope" note in the tab
-	HasAuditData    bool
-	UnusedResources []LPUnusedResourceRow
-	RoleVerbMap     []LPRoleVerbRow
-	Groups          []LeastPrivilegeGroup
+	Total                 int
+	WindowStart           string // pre-formatted "YYYY-MM-DD", empty when no audit data
+	WindowEnd             string
+	WindowDays            int
+	EventsProcessed       int
+	NonSAUsernames        int // unique non-ServiceAccount callers in the window (humans, groups, system:node:*); surfaces an explicit "out of scope" note in the tab
+	HasAuditData          bool
+	UnusedResources       []LPUnusedResourceRow
+	RoleVerbMap           []LPRoleVerbRow
+	ClusterAdminInventory []LPClusterAdminRow // inventory of every subject bound to the built-in cluster-admin ClusterRole
+	Groups                []LeastPrivilegeGroup
+}
+
+// LPClusterAdminRow is one subject directly bound to the built-in cluster-admin
+// ClusterRole. The "Subjects bound to cluster-admin" table is an inventory view sitting
+// alongside the actionable narrowing tables: operators get a single scannable list of
+// every identity that holds full cluster control so they can decide which entries are
+// legitimate (built-in system:* subjects, the break-glass group) and which need to be
+// pared back. IsSystem drives a softer visual treatment for the rows that are expected.
+type LPClusterAdminRow struct {
+	Binding     string
+	SubjectKind string
+	SubjectNs   string
+	SubjectName string
+	IsSystem    bool
 }
 
 // LPUnusedResourceRow is a single row in the "Unused RBAC resources" summary table at the

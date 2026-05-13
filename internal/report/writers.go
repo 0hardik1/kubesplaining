@@ -282,7 +282,7 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 	// Re-build the Least Privilege section with the UsageInfo from opts so the tab can
 	// show the audit-log window header. BuildHTMLData itself builds it with nil
 	// usageInfo (the legacy path) — overwriting here keeps both call paths working.
-	data.LeastPrivilege = buildLeastPrivilegeSection(findings, opts.UsageInfo)
+	data.LeastPrivilege = buildLeastPrivilegeSection(snapshot, findings, opts.UsageInfo)
 	data.DefaultTab = opts.DefaultTab
 	data.UsageInfo = opts.UsageInfo
 	data.LeastPrivilegeOnly = opts.LeastPrivilegeOnly

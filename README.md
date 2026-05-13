@@ -241,7 +241,7 @@ It emits four rule IDs:
 - `KUBE-RBAC-UNUSED-VERB-001` — Some verbs in a Role rule are unused; suggests a narrower verb list.
 - `KUBE-RBAC-WILDCARD-USED-PARTIAL-001` — `verbs: ["*"]` is granted but the SA only used a subset.
 
-The pre-existing `KUBE-RBAC-STALE-*` and `KUBE-RBAC-OVERBROAD-001` rules surface alongside in the Least Privilege HTML tab so every "this grant is broader than needed" signal lives in one view.
+The pre-existing `KUBE-RBAC-STALE-*` rules surface alongside in the Least Privilege HTML tab so dangling-binding cleanup and verb-level narrowing live in one view. Cluster-admin grants live in their own "Subjects bound to cluster-admin" inventory table on the same tab — directly bound subjects are listed for review rather than each one being flagged CRITICAL, because cluster-admin has legitimate uses (`system:masters`, break-glass groups) that vary by cluster. The standalone `KUBE-RBAC-OVERBROAD-001` finding still fires from the rbac module and shows up in the main Findings tab (and in JSON/CSV/SARIF output) for operators who want the per-binding alert.
 
 ### When does it fire?
 
