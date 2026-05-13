@@ -30,6 +30,13 @@ func Write(outputDir string, formats []string, snapshot models.Snapshot, finding
 // written so `kubesplaining report` can re-render the banner without re-running
 // analysis. When false (the zero value), nothing is rendered.
 func WriteWithAdmission(outputDir string, formats []string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo) ([]string, error) {
+	return WriteWithOptions(outputDir, formats, snapshot, findings, admission, truncation, Options{})
+}
+
+// WriteWithOptions extends WriteWithAdmission with Options that control which HTML tab
+// loads by default (used by --least-privilege-only) and the audit-log window summary
+// rendered into the Least Privilege tab header.
+func WriteWithOptions(outputDir string, formats []string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo, opts Options) ([]string, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output directory: %w", err)
 	}
@@ -67,7 +74,7 @@ func WriteWithAdmission(outputDir string, formats []string, snapshot models.Snap
 			written = append(written, path)
 		case "html":
 			path := filepath.Join(outputDir, "report.html")
-			if err := writeHTML(path, snapshot, findings, admission, truncation); err != nil {
+			if err := writeHTMLWithOptions(path, snapshot, findings, admission, truncation, opts); err != nil {
 				return written, err
 			}
 			written = append(written, path)

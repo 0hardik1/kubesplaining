@@ -458,13 +458,14 @@ func appendFinding(findings []models.Finding, seen map[string]struct{}, finding 
 // existing consumers continue to work.
 func findingFromContent(subject models.SubjectRef, rule effectiveRule, ruleID string, severity models.Severity, category models.RiskCategory, score float64, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(map[string]any{
-		"source_role":    rule.SourceRole,
-		"source_binding": rule.SourceBinding,
-		"api_groups":     rule.APIGroups,
-		"resources":      rule.Resources,
-		"verbs":          rule.Verbs,
-		"namespace":      rule.Namespace,
-		"scope":          string(content.Scope.Level),
+		"source_role":         rule.SourceRole,
+		"source_binding":      rule.SourceBinding,
+		"source_binding_kind": rule.SourceBindingKind,
+		"api_groups":          rule.APIGroups,
+		"resources":           rule.Resources,
+		"verbs":               rule.Verbs,
+		"namespace":           rule.Namespace,
+		"scope":               string(content.Scope.Level),
 	})
 
 	resource := &models.ResourceRef{

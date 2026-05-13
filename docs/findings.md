@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **43 distinct rule IDs across 7 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **47 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Findings Library — Implemented
 
@@ -24,6 +24,17 @@ Each rule produces zero or more findings against a given snapshot.
 | KUBE-RBAC-OVERBROAD-001 | CRITICAL | Non-system subject bound to cluster-admin | Direct binding of human/SA to the `cluster-admin` ClusterRole | Replace with a least-privilege custom role |
 | KUBE-RBAC-STALE-001 | MEDIUM | Binding references missing Role/ClusterRole | (Cluster)RoleBinding whose `roleRef` points at a Role/ClusterRole absent from the snapshot (built-in `cluster-admin`/`admin`/`edit`/`view` are allowlisted) | Delete the binding or restore the role from version control |
 | KUBE-RBAC-STALE-002 | LOW | Binding lists non-existent ServiceAccount subject | Binding subject is a ServiceAccount that does not exist in the cluster (User/Group subjects are not checked — Kubernetes has no User/Group inventory) | Delete the binding or restore the ServiceAccount |
+
+### Least Privilege ([internal/analyzer/leastprivilege/analyzer.go](../internal/analyzer/leastprivilege/analyzer.go))
+
+These rules compare granted RBAC permissions against observed usage from a kube-apiserver audit log. They fire only when `--audit-log` is supplied — see [`docs/audit-logs.md`](audit-logs.md) for how to obtain one on self-managed, kind, and EKS clusters. Findings are advisory recommendations (Medium / Low severity) and bypass the privesc chain-amplification pass.
+
+| Rule ID | Sev | Title | What it detects | Remediation |
+| --- | --- | --- | --- | --- |
+| KUBE-RBAC-UNUSED-ROLE-001 | MEDIUM | Role granted to mounted SA but never exercised | A workload's ServiceAccount has zero observed API calls in the audit window — the entire Role binding is latent privesc surface | Remove the binding (or replace with a no-op until the workload is retired) |
+| KUBE-RBAC-UNUSED-RULE-001 | LOW | Every rule in a Role is unused | The SA is active elsewhere but no observed call matches any (verb, resource) triple in this particular Role | Drop the binding that links the SA to the Role |
+| KUBE-RBAC-UNUSED-VERB-001 | LOW | Some verbs in a Role are unused | A subset of granted verbs were never exercised; the Role can be narrowed | Replace with a Role that lists only the observed verbs |
+| KUBE-RBAC-WILDCARD-USED-PARTIAL-001 | MEDIUM | Wildcard `verbs: ["*"]` only partially exercised | The Role grants `*` on a resource, but the SA only uses a small subset of verbs there | Replace `*` with the explicit observed verb list |
 
 ### Pod Security ([internal/analyzer/podsec/analyzer.go](../internal/analyzer/podsec/analyzer.go))
 

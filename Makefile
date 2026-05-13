@@ -22,7 +22,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: setup build test lint e2e scan delete clean install-hooks uninstall-hooks
+.PHONY: setup build test lint e2e scan scan-lp delete clean install-hooks uninstall-hooks
 
 setup:
 	$(GOENV) go mod download
@@ -55,6 +55,27 @@ e2e: build
 # via ARGS, e.g. `make scan ARGS="--threshold high --only-modules privesc"`.
 scan: build
 	$(BINARY) scan $(ARGS)
+
+# Least-privilege focus mode. Requires an audit log: pass its path (file or dir)
+# via AUDIT_LOG, plus AUDIT_SOURCE (native|eks, default native) and
+# AUDIT_WINDOW_DAYS (default 30). Extra flags ride on ARGS as with `make scan`.
+# Example:
+#   make scan-lp AUDIT_LOG=./audit.log
+#   make scan-lp AUDIT_LOG=./eks-export.json AUDIT_SOURCE=eks AUDIT_WINDOW_DAYS=60 \
+#       ARGS="--input-file snapshot.json"
+AUDIT_SOURCE ?= native
+AUDIT_WINDOW_DAYS ?= 30
+scan-lp: build
+	@if [ -z "$(AUDIT_LOG)" ]; then \
+		echo "AUDIT_LOG is required. Example: make scan-lp AUDIT_LOG=./audit.log"; \
+		echo "See docs/audit-logs.md for how to obtain one."; \
+		exit 2; \
+	fi
+	$(BINARY) scan --least-privilege-only \
+		--audit-log $(AUDIT_LOG) \
+		--audit-source $(AUDIT_SOURCE) \
+		--audit-window-days $(AUDIT_WINDOW_DAYS) \
+		$(ARGS)
 
 delete:
 	kind delete cluster --name $(KIND_CLUSTER_NAME)

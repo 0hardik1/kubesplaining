@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer/admission"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/podsec"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/privesc"
@@ -19,6 +20,7 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/analyzer/serviceaccount"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
+	"github.com/0hardik1/kubesplaining/internal/usage"
 )
 
 // Module is the contract each analysis module implements.
@@ -28,7 +30,8 @@ type Module interface {
 }
 
 // Options selects which modules run, sets a severity floor, tunes privesc path depth,
-// and chooses how the engine reacts to namespace-level admission controls.
+// chooses how the engine reacts to namespace-level admission controls, and threads the
+// audit-log-derived usage index into the leastprivilege module.
 type Options struct {
 	OnlyModules     []string
 	SkipModules     []string
@@ -36,6 +39,11 @@ type Options struct {
 	MaxPrivescDepth int
 	// AdmissionMode controls the admission-aware reweight stage. Empty defaults to suppress.
 	AdmissionMode AdmissionMode
+	// UsageIndex carries the audit-log observations consumed by the leastprivilege
+	// module. nil disables the module (it emits nothing); the CLI pre-flight in
+	// scan.go errors out before we get here when --least-privilege-only is set
+	// without --audit-log.
+	UsageIndex *usage.UsageIndex
 }
 
 // Engine holds the set of registered analysis modules to run.
@@ -53,7 +61,10 @@ type Config struct {
 	MaxPrivescDepth int
 }
 
-// NewWithConfig constructs an Engine with the default module set, applying cfg to tunable modules.
+// NewWithConfig constructs an Engine with the default module set, applying cfg to tunable
+// modules. The leastprivilege module is registered with a nil UsageIndex here; Analyze
+// rebinds it from opts.UsageIndex on each invocation so the same engine can serve runs
+// with and without audit data.
 func NewWithConfig(cfg Config) *Engine {
 	privescMod := privesc.New()
 	if cfg.MaxPrivescDepth > 0 {
@@ -68,6 +79,7 @@ func NewWithConfig(cfg Config) *Engine {
 			secrets.New(),
 			serviceaccount.New(),
 			privescMod,
+			leastprivilege.New(nil),
 		},
 	}
 }
@@ -89,6 +101,12 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 		}
 		if slices.Contains(opts.SkipModules, module.Name()) {
 			continue
+		}
+		// Rebind the leastprivilege module with the per-call UsageIndex. The engine
+		// itself is stateless on options; this keeps the module's audit data scoped
+		// to one Analyze call.
+		if module.Name() == "leastprivilege" {
+			module = leastprivilege.New(opts.UsageIndex)
 		}
 		selected = append(selected, module)
 	}

@@ -2,10 +2,31 @@ package analyzer
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 )
+
+// leastPrivilegeAdvisoryPrefixes lists rule-ID prefixes that emit *recommendations*, not
+// exploitable findings. The correlate pass must not bump these via chain amplification -
+// boosting a "consider narrowing this Role" recommendation because the same SA appears
+// in a privesc path would distort the priority ordering operators rely on.
+var leastPrivilegeAdvisoryPrefixes = []string{
+	"KUBE-RBAC-UNUSED-",
+	"KUBE-RBAC-WILDCARD-USED-PARTIAL-",
+}
+
+// isLeastPrivilegeAdvisory reports whether ruleID names an advisory (recommendation)
+// finding that should bypass the chain-amplification bump.
+func isLeastPrivilegeAdvisory(ruleID string) bool {
+	for _, p := range leastPrivilegeAdvisoryPrefixes {
+		if strings.HasPrefix(ruleID, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // correlate applies chain-modifier bumps to non-privesc findings whose Subject appears as a source in a privilege-escalation path.
 // It picks the highest-severity sink reachable from the subject and adds scoring.ChainModifier(sinkSev) to the finding's Score,
@@ -31,6 +52,9 @@ func correlate(findings []models.Finding) []models.Finding {
 		}
 		if findings[i].Subject == nil {
 			continue
+		}
+		if isLeastPrivilegeAdvisory(findings[i].RuleID) {
+			continue // advisory recommendations skip the amplification bump
 		}
 		bump := scoring.ChainModifier(best[findings[i].Subject.Key()])
 		if bump == 0 {

@@ -35,7 +35,7 @@
     a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(106,183,255,0.25); }
     a:hover { border-bottom-color: var(--accent); }
     code, pre, .mono { font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
-    /* Inline <code> baseline — distinguishable from prose on dark surfaces. Per-context
+    /* Inline <code> baseline - distinguishable from prose on dark surfaces. Per-context
        overrides further down may bump this up but should not dim it. Block-level <pre><code>
        overrides this back to transparent (see .kp-cmd pre code, etc.). */
     code { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.06);
@@ -77,12 +77,137 @@
     .tab-count { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(255,255,255,0.05); color: var(--text-mut); font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0; }
     .tab[aria-selected="true"] .tab-count { background: rgba(106,183,255,0.18); color: var(--accent); }
     body[data-active-tab="overview"] main [data-tab="attack"],
-    body[data-active-tab="overview"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="overview"] main [data-tab="findings"],
+    body[data-active-tab="overview"] main [data-tab="leastprivilege"] { display: none; }
     body[data-active-tab="attack"] main [data-tab="overview"],
-    body[data-active-tab="attack"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="attack"] main [data-tab="findings"],
+    body[data-active-tab="attack"] main [data-tab="leastprivilege"] { display: none; }
     body[data-active-tab="findings"] main [data-tab="overview"],
-    body[data-active-tab="findings"] main [data-tab="attack"] { display: none; }
+    body[data-active-tab="findings"] main [data-tab="attack"],
+    body[data-active-tab="findings"] main [data-tab="leastprivilege"] { display: none; }
+    body[data-active-tab="leastprivilege"] main [data-tab="overview"],
+    body[data-active-tab="leastprivilege"] main [data-tab="attack"],
+    body[data-active-tab="leastprivilege"] main [data-tab="findings"] { display: none; }
+    body[data-active-tab="leastprivilege"] details.recon-card { display: none; }
     .tabs-empty { color: var(--text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
+
+    /* --- Least Privilege tab styles --------------------------------------- */
+    .lp-header { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: start;
+      padding: 20px 22px; border: 1px solid var(--border); border-radius: 16px;
+      background: linear-gradient(180deg, rgba(21,28,44,1) 0%, rgba(18,24,38,1) 100%);
+      margin-bottom: 20px; }
+    .lp-header h1 { font-size: 22px; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .lp-header .lp-sub { color: var(--text-mut); font-size: 13.5px; line-height: 1.55; max-width: 720px; }
+    .lp-header .lp-window { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px;
+      color: var(--text-mut); display: flex; flex-direction: column; gap: 6px; min-width: 220px; text-align: right; }
+    .lp-header .lp-window strong { color: var(--text); font-weight: 600; font-size: 13px; }
+    .lp-empty { padding: 20px 22px; border: 1px dashed var(--border-strong); border-radius: 14px;
+      color: var(--text-mut); font-size: 13.5px; line-height: 1.55; }
+    .lp-empty code { background: rgba(106,183,255,0.10); color: var(--accent); border: 1px solid rgba(106,183,255,0.20);
+      padding: 1px 5px; border-radius: 4px; }
+    .lp-empty .lp-emoji { font-size: 18px; margin-right: 8px; }
+    .lp-group { border: 1px solid var(--border); border-radius: 14px; background: var(--surface);
+      margin-bottom: 14px; overflow: hidden; }
+    .lp-group-hd { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
+      border-bottom: 1px solid var(--border-soft); background: var(--surface-2); }
+    .lp-group-hd .lp-subj { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; }
+    .lp-group-hd .lp-subj code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px;
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--text); border: 0; }
+    .lp-group-hd .lp-count { margin-left: auto; font-size: 12px; color: var(--text-mut);
+      display: flex; gap: 8px; align-items: center; }
+    .lp-group-hd .lp-count .sev-pill { padding: 2px 9px; border-radius: 999px; font-weight: 700; font-size: 10.5px;
+      letter-spacing: 0.04em; text-transform: uppercase; }
+    .lp-group-hd .sev-pill.med { background: var(--medium-soft); color: var(--medium); border: 1px solid var(--medium-edge); }
+    .lp-group-hd .sev-pill.low { background: var(--low-soft); color: var(--low); border: 1px solid var(--low-edge); }
+    .lp-group-hd .sev-pill.high { background: var(--high-soft); color: var(--high); border: 1px solid var(--high-edge); }
+    .lp-group-hd .sev-pill.crit { background: var(--critical-soft); color: var(--critical); border: 1px solid var(--critical-edge); }
+    .lp-finding { padding: 14px 18px; border-bottom: 1px solid var(--border-soft); }
+    .lp-finding:last-child { border-bottom: 0; }
+    .lp-finding-hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+    .lp-finding-hd .lp-rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px;
+      color: var(--text-mut); }
+    .lp-finding-hd .lp-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    .lp-finding-hd .sev-tag { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+      letter-spacing: 0.04em; text-transform: uppercase; }
+    .lp-finding-hd .sev-tag.med { background: var(--medium-soft); color: var(--medium); }
+    .lp-finding-hd .sev-tag.low { background: var(--low-soft); color: var(--low); }
+    .lp-finding-hd .sev-tag.high { background: var(--high-soft); color: var(--high); }
+    .lp-finding-hd .sev-tag.crit { background: var(--critical-soft); color: var(--critical); }
+    .lp-finding-desc { color: var(--text-mut); font-size: 13px; line-height: 1.6; }
+    .lp-finding-desc code { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.05);
+      padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12px; }
+    .lp-finding-desc p { margin: 0 0 8px; }
+    .lp-finding-desc p:last-child { margin-bottom: 0; }
+    .lp-finding details { margin-top: 10px; }
+    .lp-finding details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; padding: 4px 0; }
+    .lp-finding details > div { margin-top: 8px; }
+    .lp-finding pre { font-size: 11.5px; }
+    .lp-empty-good { padding: 24px; border: 1px solid var(--low-edge); background: var(--low-soft); border-radius: 14px;
+      color: var(--text); text-align: center; }
+    .lp-empty-good strong { color: var(--low); }
+    .lp-empty-good .lp-emoji { font-size: 32px; display: block; margin-bottom: 8px; }
+
+    .lp-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      padding: 16px 18px 18px; margin-bottom: 18px; overflow-x: auto; }
+    .lp-table-title { font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+    .lp-table-sub { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; margin: 0 0 12px; max-width: 780px; }
+    .lp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .lp-table thead th { text-align: left; font-weight: 600; color: var(--text-mut); font-size: 11px;
+      letter-spacing: 0.08em; text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--border-strong); }
+    .lp-table tbody td { padding: 9px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+    .lp-table tbody tr:last-child td { border-bottom: 0; }
+    .lp-table code { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.05);
+      padding: 1px 5px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; }
+    .lp-table .lp-rule-mini { font-size: 10.5px; color: var(--text-mut); }
+    .lp-table .lp-na { color: var(--text-mut); font-style: italic; font-size: 12px; }
+    .lp-table .sev-tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; letter-spacing: 0.06em; }
+    .lp-table .sev-tag.med { background: var(--medium-soft); color: var(--medium); }
+    .lp-table .sev-tag.low { background: var(--low-soft); color: var(--low); }
+    .lp-table .sev-tag.high { background: var(--high-soft); color: var(--high); }
+    .lp-table .sev-tag.crit { background: var(--critical-soft); color: var(--critical); }
+    .lp-yaml pre { background: rgba(8,12,22,0.85); border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px 14px; margin: 8px 0 0; overflow-x: auto; line-height: 1.5; }
+    .lp-yaml pre code { background: transparent; border: 0; padding: 0; color: var(--text);
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12px; white-space: pre; display: block; }
+    .lp-verb-list { list-style: none; padding: 0; margin: 0;
+      display: flex; flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+    .lp-verb-list li { display: inline-block; line-height: 1.3; }
+    .lp-verb-list code.lp-verb-chip { display: inline-block; vertical-align: top;
+      background: rgba(106,183,255,0.06); color: var(--accent); border: 1px solid rgba(106,183,255,0.20);
+      padding: 2px 7px 3px; border-radius: 5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+      font-size: 11px; line-height: 1.4; min-width: 0; }
+    .lp-verb-list .lp-verb-label { color: #e8b86b; font-weight: 700; letter-spacing: 0.01em;
+      margin-right: 4px; }
+    .lp-verb-list .lp-resource-sep { color: var(--text-mut); opacity: 0.55; margin: 0 4px; }
+    .lp-bind-row { font-size: 12px; line-height: 1.5; white-space: nowrap; }
+    .lp-bind-row + .lp-bind-row { margin-top: 2px; }
+    .lp-bind-label { color: var(--text-mut); font-size: 10.5px; letter-spacing: 0.02em;
+      text-transform: uppercase; margin-right: 4px; }
+    .lp-verb-arrow { color: var(--text-mut); font-size: 11px; }
+    .lp-verb-note { color: var(--text-mut); font-size: 11px; font-style: italic; }
+    .lp-verb-more { color: var(--text-mut); font-size: 11.5px; margin-top: 6px; font-style: italic; }
+    .lp-action { font-size: 12.5px; line-height: 1.45; }
+    .lp-action .lp-action-verb { color: #ff8585; font-weight: 700; letter-spacing: 0.01em; }
+    .lp-action code.lp-action-target { background: rgba(255,180,80,0.10); color: #e8b86b; border: 1px solid rgba(255,180,80,0.22);
+      padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px;
+      font-weight: 600; }
+    .lp-action .lp-action-note { color: var(--text-mut); font-size: 11px; }
+    .lp-action-why { color: var(--text-mut); font-size: 11.5px; margin-top: 3px; line-height: 1.4; }
+    .lp-action code.lp-action-target { background: rgba(255,180,80,0.10); color: #e8b86b; border: 1px solid rgba(255,180,80,0.22);
+      padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px;
+      font-weight: 600; }
+    .lp-action strong { color: var(--text); font-weight: 700; }
+    .sev-rule { margin-top: 5px; font-size: 10px; line-height: 1.2; }
+    .sev-rule code { background: transparent; color: var(--text-mut); border: 0; padding: 0;
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; letter-spacing: 0.01em; word-break: break-all; }
+    .lp-th-hint { font-weight: 400; color: var(--text-mut); font-size: 10px; letter-spacing: 0.02em; text-transform: none; }
+    .lp-note { padding: 12px 16px; margin-bottom: 16px; background: rgba(106,183,255,0.06);
+      border: 1px solid rgba(106,183,255,0.18); border-radius: 10px; color: var(--text-mut);
+      font-size: 12.5px; line-height: 1.55; }
+    .lp-note strong { color: var(--accent); }
+    .lp-cell-used { background: rgba(80,200,150,0.04); }
+    .lp-cell-unused { background: rgba(255,120,120,0.04); }
+    .lp-verb-none { color: var(--text-mut); font-size: 11.5px; font-style: italic; }
 
     main { max-width: 1280px; margin: 0 auto; padding: 24px 28px 80px; }
     section { margin-bottom: 24px; }
@@ -119,7 +244,7 @@
     .truncation-banner strong { color: var(--text); font-weight: 600; }
     .truncation-banner code { color: var(--accent); background: rgba(106,183,255,0.10); padding: 1px 4px; border-radius: 4px; }
 
-    /* Cluster reconnaissance — collapsible top-of-report panel surfacing
+    /* Cluster reconnaissance - collapsible top-of-report panel surfacing
        pentester-relevant snapshot facts. Sits as the first card inside <main>
        (above the executive-summary hero) so the recon view is the first thing
        the reader sees, and stays out of the sticky topbar to avoid the
@@ -377,7 +502,7 @@
     .kp-tt-hint { margin-top: 6px; color: var(--accent); font-size: 11px; opacity: 0.8; }
 
     /* "Attack paths from here" cards inside an entry-point panel. Each card is a button
-       so the whole surface is the tap target — important on phones where users thumb-scroll
+       so the whole surface is the tap target - important on phones where users thumb-scroll
        and a tiny "View" link would be a miss. The left severity stripe (border-left-color)
        carries severity at a glance so users can prioritize without reading the badge. */
     .kp-paths-section { margin-top: 16px; }
@@ -399,7 +524,7 @@
     .kp-path-cta { display: inline-block; font-size: 12px; font-weight: 600; color: var(--accent); letter-spacing: 0.02em; }
 
     /* Back-to-entry breadcrumb. Appears at the top of a capability panel only when the
-       user reached it by tapping a path card from an entry view — direct SVG node clicks
+       user reached it by tapping a path card from an entry view - direct SVG node clicks
        and the close button both clear navStack, so we never show stale breadcrumbs. */
     .kp-back-link { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; color: var(--text-mut); background: transparent; border: 1px dashed var(--border); border-radius: 999px; padding: 5px 11px; margin: 0 0 12px; cursor: pointer; transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease; }
     .kp-back-link:hover { color: var(--text); border-color: var(--border-strong); background: rgba(255,255,255,0.04); }
@@ -420,7 +545,7 @@
     /* Phone bottom-sheet treatment. Below 720px the side panel becomes a true full-screen
        modal: slides up from the bottom, sticky header so close is always thumb-reachable,
        backdrop dims the page, and body scroll is locked so the page underneath doesn't
-       slide while the user reads the sheet. The 720px breakpoint is intentional —
+       slide while the user reads the sheet. The 720px breakpoint is intentional -
        720–1180px (tablets) keep the inline-below-SVG layout where horizontal real estate
        is enough that a sheet would feel heavy. */
     @media (max-width: 720px) {
@@ -443,7 +568,7 @@
     .narrative { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
     .narrative > .badge-sev { align-self: flex-start; margin-bottom: 2px; }
     .narrative h3 { margin: 0; font-size: 16px; line-height: 1.35; }
-    /* Severity badges — outlined pills with translucent fills and bold severity-tinted
+    /* Severity badges - outlined pills with translucent fills and bold severity-tinted
        text. Full-color border (not the soft edge) gives them visual weight while keeping
        the dossier-style appearance the side-panel already uses. Low stays muted because
        a low finding shouldn't compete for attention with a critical. */
@@ -575,7 +700,7 @@
     .modules-nav .mn-title { color: var(--text-mut); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.14em; padding: 6px 8px 6px 2px; border-right: 1px solid var(--border-soft); margin-right: 6px; align-self: center; }
     .module-link { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text); background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
     .module-link:hover { background: var(--surface-hover); border-color: var(--border-strong); }
-    /* Scroll-spy active state — highlights the module currently in view. Driven by the
+    /* Scroll-spy active state - highlights the module currently in view. Driven by the
        IntersectionObserver in graph.js (initModuleScrollSpy). */
     .module-link.active { color: var(--accent); border-color: rgba(106,183,255,0.45); background: rgba(106,183,255,0.10); }
     .module-link.active .mn-count { color: var(--accent); background: rgba(106,183,255,0.16); }
@@ -611,7 +736,7 @@
        Reset code to inherit the row's font so the ref reads as prose. */
     .toc-row-title code { font: inherit; background: transparent; border: 0; padding: 0; border-radius: 0; }
     .toc-row-count { flex: 0 0 auto; font-size: 11px; color: var(--text-mut); background: rgba(255,255,255,0.04); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
-    /* minmax(0, 1fr) — not bare 1fr — so the column track may shrink below its grid
+    /* minmax(0, 1fr) - not bare 1fr - so the column track may shrink below its grid
        item's min-content. Without this, a long unbreakable child token would expand the
        track and punch the panel out past the viewport on phones. */
     @media (max-width: 720px) { .toc-rows { grid-template-columns: minmax(0, 1fr); } }
@@ -637,7 +762,7 @@
     .rule-group { border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); border-left: 4px solid var(--border); transition: border-color 0.18s ease; }
     /* Surrounding 1px border is tinted by severity so a column of critical cards reads as
        a column of critical cards even before you focus on the badge. Subtle so it doesn't
-       shout — the 4px left rail and the badge do the loud work. */
+       shout - the 4px left rail and the badge do the loud work. */
     .rule-group.crit { border-left-color: var(--critical); border-color: rgba(255,85,104,0.24); }
     .rule-group.high { border-left-color: var(--high); border-color: rgba(255,154,60,0.20); }
     .rule-group.med  { border-left-color: var(--medium); border-color: rgba(255,210,76,0.16); }
@@ -675,11 +800,11 @@
     .instance-title code { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; background: rgba(255,255,255,0.10); padding: 1px 2px; border-radius: 4px; color: var(--text); }
     /* Mobile-overflow guard: long unbreakable identifiers like Deployment/default/risky
        force the title row past the viewport on phones unless we let them wrap. The
-       sweep is intentionally broad — any prose/code descendant of a finding body or
+       sweep is intentionally broad - any prose/code descendant of a finding body or
        the Attack Paths side panel can carry resource paths or API URLs; if any one
        of them stays unbreakable, the document gains horizontal overflow and the
        sticky topbar visibly left-aligns when the user pinch-zooms out. min-width: 0
-       on flex/grid descendants is what actually allows them to shrink — without it
+       on flex/grid descendants is what actually allows them to shrink - without it
        the intrinsic min width is the longest unbreakable child word. */
     .rule-title, .rule-title code,
     .instance-title, .instance-title code,
@@ -705,7 +830,7 @@
     .instance-body { padding: 4px 16px 14px; border-top: 1px solid var(--border-soft); }
     .instance-body .finding-hd-inner { margin: 8px 0 4px; }
     .instance-body .finding-title-inner { font-size: 13.5px; font-weight: 600; color: var(--text); margin: 0; }
-    /* Reuse .finding child selectors for instance bodies — the existing CSS for
+    /* Reuse .finding child selectors for instance bodies - the existing CSS for
        .finding .meta / .desc / .scenario / .evidence already targets descendants. */
     .finding-hd { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
     .finding-hd h3 { font-size: 16px; flex: 1 1 300px; }
@@ -736,7 +861,7 @@
     .finding .scenario ol.attack-narrative li:last-child { margin-bottom: 0; }
     .finding .scenario .attack-chain-wrap { margin-top: 12px; }
 
-    /* Background (glossary/technique educational copy) — surfaces the same definitions
+    /* Background (glossary/technique educational copy) - surfaces the same definitions
        the interactive Attack Graph carries, so a reader does not have to leave the
        Findings tab to learn what a ServiceAccount is or what the impersonate verb does. */
     .finding .education { margin-bottom: 12px; padding: 10px 12px; background: rgba(106,183,255,0.05); border: 1px solid rgba(106,183,255,0.18); border-radius: 8px; }
@@ -772,7 +897,7 @@
     .finding details.refs ul { list-style: none; padding-left: 0; margin: 8px 0 0; display: grid; gap: 4px; }
     .finding details.refs ul li { padding-left: 14px; position: relative; }
     .finding details.refs ul li::before { content: "↗"; position: absolute; left: 0; color: var(--text-dim); }
-    /* MITRE link chip styling — shared by per-finding (.finding .mitre, legacy) and
+    /* MITRE link chip styling - shared by per-finding (.finding .mitre, legacy) and
        per-rule-card (.rule-shared .mitre) contexts. flex + gap gives the links breathing
        room so they don't run together as "T1552.007T1078.004T1098". */
     .mitre { margin: 10px 0 0; font-size: 12.5px; color: var(--text-mut); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -806,7 +931,7 @@
       font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
       box-shadow: 0 0 0 3px var(--bg-1);
     }
-    /* Last step is the terminal sink (cluster-admin / system:masters / node-escape) —
+    /* Last step is the terminal sink (cluster-admin / system:masters / node-escape) -
        tint its marker critical to signal "the chain lands here." */
     .finding .scenario ol.attack-chain li.attack-step:last-child::before {
       border-color: var(--critical); color: var(--critical);
@@ -924,7 +1049,7 @@
     }
   </style>
 </head>
-<body data-active-tab="attack">
+<body data-active-tab="{{ if .DefaultTab }}{{ .DefaultTab }}{{ else }}attack{{ end }}">
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
@@ -939,9 +1064,12 @@
       </div>
     </div>
     <nav class="tabs" role="tablist" aria-label="Report sections">
+      {{ if not .LeastPrivilegeOnly }}
       <button type="button" class="tab" role="tab" id="tabbtn-attack" aria-controls="tab-attack" aria-selected="true" data-tab="attack">Attack paths</button>
       <button type="button" class="tab" role="tab" id="tabbtn-overview" aria-controls="tab-overview" aria-selected="false" data-tab="overview">Risk overview</button>
       <button type="button" class="tab" role="tab" id="tabbtn-findings" aria-controls="tab-findings" aria-selected="false" data-tab="findings">Findings <span class="tab-count">{{ .Summary.Total }}</span></button>
+      {{ end }}
+      <button type="button" class="tab" role="tab" id="tabbtn-leastprivilege" aria-controls="tab-leastprivilege" aria-selected="false" data-tab="leastprivilege">Least Privilege <span class="tab-count">{{ .LeastPrivilege.Total }}</span></button>
     </nav>
   </header>
 
@@ -1106,7 +1234,7 @@
             <summary>Suppressed findings by namespace</summary>
             <ul>
               {{ range $ns, $rules := .Admission.SuppressedByNamespace }}
-              <li><strong>{{ $ns }}</strong>{{ range $rule, $count := $rules }} — <code>{{ $rule }}</code> ×{{ $count }}{{ end }}</li>
+              <li><strong>{{ $ns }}</strong>{{ range $rule, $count := $rules }} - <code>{{ $rule }}</code> ×{{ $count }}{{ end }}</li>
               {{ end }}
             </ul>
           </details>
@@ -1577,6 +1705,169 @@
     </section>
     {{ end }}
     {{ end }}
+
+    <section data-tab="leastprivilege" id="tab-leastprivilege" aria-labelledby="tabbtn-leastprivilege">
+      <div class="lp-header">
+        <div>
+          <h1>Least Privilege Opportunities</h1>
+          <p class="lp-sub">
+            Findings here highlight RBAC grants that look broader than the workloads actually need.
+            Pre-existing rules from the <code>rbac</code> module (stale bindings, over-broad
+            ClusterRole grants) appear alongside new audit-driven rules
+            (<code>KUBE-RBAC-UNUSED-*</code>, <code>KUBE-RBAC-WILDCARD-USED-PARTIAL-*</code>)
+            so you can iterate on tightening in one focused view. Each finding is a recommendation,
+            not an exploit - verify the observation window covers your workloads' full cycle before
+            removing permissions.
+          </p>
+        </div>
+        {{ if .LeastPrivilege.HasAuditData }}
+        <div class="lp-window">
+          <span><strong>Audit window</strong></span>
+          <span>{{ .LeastPrivilege.WindowStart }} → {{ .LeastPrivilege.WindowEnd }}</span>
+          <span>{{ .LeastPrivilege.WindowDays }} days · {{ .LeastPrivilege.EventsProcessed }} events</span>
+        </div>
+        {{ end }}
+      </div>
+
+      {{ if not .LeastPrivilege.HasAuditData }}
+      <div class="lp-empty">
+        <span class="lp-emoji">📜</span>
+        <strong>No audit log supplied.</strong> The audit-driven rules
+        (<code>KUBE-RBAC-UNUSED-*</code>, <code>KUBE-RBAC-WILDCARD-USED-PARTIAL-*</code>)
+        need <code>--audit-log &lt;path&gt;</code> to fire. Without it, only static
+        rbac findings (stale bindings, over-broad ClusterRoles) appear below.
+        See <code>docs/audit-logs.md</code> for setup steps on self-managed, kind, and EKS clusters.
+        Example:
+        <pre><code>kubesplaining scan --input-file snapshot.json \
+  --audit-log ./audit.log \
+  --audit-window-days 30 \
+  --least-privilege-only</code></pre>
+      </div>
+      {{ end }}
+
+      {{ if eq .LeastPrivilege.Total 0 }}
+      <div class="lp-empty-good">
+        <span class="lp-emoji">✅</span>
+        <strong>No least-privilege opportunities detected.</strong>
+        Either your Roles are tightly scoped, or the audit window did not include enough activity
+        to identify unused permissions. Consider widening <code>--audit-window-days</code> to
+        confirm.
+      </div>
+      {{ else }}
+
+      {{ if .LeastPrivilege.HasAuditData }}{{ if gt .LeastPrivilege.NonSAUsernames 0 }}
+      <div class="lp-note">
+        <strong>Note:</strong> {{ .LeastPrivilege.NonSAUsernames }} non-ServiceAccount usernames (humans, groups, kubelets)
+        issued API calls in this window. kubesplaining only analyzes ServiceAccount-bound RBAC, so human
+        users and groups are out of scope here - tighten those via your IdP / SSO group review.
+      </div>
+      {{ end }}{{ end }}
+
+      {{ if .LeastPrivilege.UnusedResources }}
+      <div class="lp-table-wrap">
+        <h2 class="lp-table-title">Unused RBAC resources</h2>
+        <p class="lp-table-sub">Roles, ClusterRoles, and bindings that look like delete candidates. Each row tells you exactly what to remove. Verify the audit window covers a representative slice of your workloads' activity before deleting.</p>
+        <table class="lp-table">
+          <thead>
+            <tr><th>Severity</th><th>Binding<br><span class="lp-th-hint">Role &amp; ServiceAccount</span></th><th>What to do</th></tr>
+          </thead>
+          <tbody>
+            {{ range .LeastPrivilege.UnusedResources }}
+            <tr>
+              <td>
+                <span class="sev-tag {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
+                <div class="sev-rule"><code>{{ .RuleID }}</code></div>
+              </td>
+              <td>
+                <div class="lp-bind-row"><span class="lp-bind-label">Role:</span> <code>{{ .Resource }}</code></div>
+                <div class="lp-bind-row"><span class="lp-bind-label">ServiceAccount:</span> {{ if .Subject }}<code>{{ .Subject }}</code>{{ else }}<span class="lp-na">-</span>{{ end }}</div>
+              </td>
+              <td>
+                <div class="lp-action">{{ .Action }}</div>
+                <div class="lp-action-why">{{ .Why }}</div>
+              </td>
+            </tr>
+            {{ end }}
+          </tbody>
+        </table>
+      </div>
+      {{ end }}
+
+      {{ if .LeastPrivilege.RoleVerbMap }}
+      <div class="lp-table-wrap">
+        <h2 class="lp-table-title">Role to verb activity</h2>
+        <p class="lp-table-sub">Verb-level narrowing opportunities. The "Used" column lists verbs the workload actually exercised in the audit window; the "Unused" column lists verbs the Role still grants without evidence of need. Each row's action describes the exact edit.</p>
+        <table class="lp-table">
+          <thead>
+            <tr><th>Severity</th><th>Binding<br><span class="lp-th-hint">Role &amp; ServiceAccount</span></th><th>Used verbs</th><th>Unused verbs</th><th>What to do</th></tr>
+          </thead>
+          <tbody>
+            {{ range .LeastPrivilege.RoleVerbMap }}
+            <tr>
+              <td>
+                <span class="sev-tag {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
+                <div class="sev-rule"><code>{{ .RuleID }}</code></div>
+              </td>
+              <td>
+                <div class="lp-bind-row"><span class="lp-bind-label">Role:</span> <code>{{ .Role }}</code></div>
+                <div class="lp-bind-row"><span class="lp-bind-label">ServiceAccount:</span> {{ if .Subject }}<code>{{ .Subject }}</code>{{ else }}<span class="lp-na">-</span>{{ end }}</div>
+              </td>
+              <td class="lp-cell-used">{{ .UsedVerbs }}</td>
+              <td class="lp-cell-unused">{{ .UnusedVerbs }}</td>
+              <td><div class="lp-action">{{ .Action }}</div></td>
+            </tr>
+            {{ end }}
+          </tbody>
+        </table>
+      </div>
+      {{ end }}
+
+      {{ range .LeastPrivilege.Groups }}
+      <div class="lp-group">
+        <div class="lp-group-hd">
+          <div class="lp-subj">
+            {{ .SubjectKind }} <code>{{ if .SubjectNs }}{{ .SubjectNs }}/{{ end }}{{ .SubjectName }}</code>
+          </div>
+          <div class="lp-count">
+            {{ if gt .Summary.Critical 0 }}<span class="sev-pill crit">{{ .Summary.Critical }} crit</span>{{ end }}
+            {{ if gt .Summary.High 0 }}<span class="sev-pill high">{{ .Summary.High }} high</span>{{ end }}
+            {{ if gt .Summary.Medium 0 }}<span class="sev-pill med">{{ .Summary.Medium }} med</span>{{ end }}
+            {{ if gt .Summary.Low 0 }}<span class="sev-pill low">{{ .Summary.Low }} low</span>{{ end }}
+          </div>
+        </div>
+        {{ range .Cards }}
+        <div class="lp-finding">
+          <div class="lp-finding-hd">
+            <span class="sev-tag {{ sevClass .Finding.Severity }}">{{ sevShort .Finding.Severity }}</span>
+            <span class="lp-rule">{{ .Finding.RuleID }}</span>
+            <span class="lp-title">{{ inlineHTML .Finding.Title }}</span>
+          </div>
+          <div class="lp-finding-desc">{{ descriptionHTML .Finding.Description }}</div>
+          {{ if .Finding.RemediationSteps }}
+          <details>
+            <summary>How to fix ({{ len .Finding.RemediationSteps }} steps)</summary>
+            <div>
+              {{ range .Finding.RemediationSteps }}<p>{{ remediationStepHTML . }}</p>{{ end }}
+            </div>
+          </details>
+          {{ else if .Finding.Remediation }}
+          <details>
+            <summary>How to fix</summary>
+            <div><p>{{ inlineHTML .Finding.Remediation }}</p></div>
+          </details>
+          {{ end }}
+          {{ if .SuggestedRoleYAML }}
+          <details class="lp-yaml">
+            <summary>Suggested narrower Role (YAML)</summary>
+            <pre><code>{{ .SuggestedRoleYAML }}</code></pre>
+          </details>
+          {{ end }}
+        </div>
+        {{ end }}
+      </div>
+      {{ end }}
+      {{ end }}
+    </section>
 
     <p class="footer">Kubesplaining · {{ if .Snapshot.Metadata.KubesplainingVersion }}{{ .Snapshot.Metadata.KubesplainingVersion }} · {{ end }}{{ .Summary.Total }} findings · {{ len .Modules }} modules</p>
   </main>

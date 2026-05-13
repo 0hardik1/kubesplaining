@@ -235,18 +235,108 @@ type HopView struct {
 	Gains        string `json:"Gains,omitempty"`
 }
 
+// LeastPrivilegeSection feeds the "Least Privilege" HTML tab. It surfaces every finding
+// whose RuleID is part of leastprivilege.TabRuleIDPrefixes: both the new audit-driven
+// rules (UNUSED-*, WILDCARD-USED-PARTIAL-*) and the pre-existing static cleanup rules
+// (STALE-*, OVERBROAD-*). Two summary tables sit above the per-subject cards so an
+// operator can scan "what's unused" and "what verbs to drop" without expanding every
+// card; the cards carry the full prose and remediation YAML for the picked target.
+type LeastPrivilegeSection struct {
+	Total           int
+	WindowStart     string // pre-formatted "YYYY-MM-DD", empty when no audit data
+	WindowEnd       string
+	WindowDays      int
+	EventsProcessed int
+	NonSAUsernames  int // unique non-ServiceAccount callers in the window (humans, groups, system:node:*); surfaces an explicit "out of scope" note in the tab
+	HasAuditData    bool
+	UnusedResources []LPUnusedResourceRow
+	RoleVerbMap     []LPRoleVerbRow
+	Groups          []LeastPrivilegeGroup
+}
+
+// LPUnusedResourceRow is a single row in the "Unused RBAC resources" summary table at the
+// top of the Least Privilege tab. Built from findings whose RuleID describes a whole
+// Role/Binding as unused or stale (UNUSED-ROLE, UNUSED-RULE, STALE-*, OVERBROAD-*).
+// Resource holds the kind+name display string (e.g. "Role/cleanup-helper") so the table
+// doesn't need a separate Kind column - "RBACRule" is not a real Kubernetes kind, just
+// an internal label the rbac analyzer uses, and surfacing it confused operators.
+//
+// Action is the actionable "what should I delete?" answer rendered as HTML so the
+// binding name can sit inside a <code> chip. The plain-English explanation lives on
+// Why (still a string).
+type LPUnusedResourceRow struct {
+	RuleID    string
+	Severity  models.Severity
+	Resource  string // "<Kind>/<name>" e.g. "ClusterRole/cluster-admin"
+	Subject   string // compact "ns/name" or "name"
+	Action    template.HTML
+	Why       string
+	FindingID string // anchor target for "jump to detail"
+}
+
+// LPRoleVerbRow is a single row in the "Role -> unused verbs" summary table. Built from
+// findings whose RuleID describes verb-level narrowing opportunities (UNUSED-VERB,
+// UNUSED-RULE with verb list, WILDCARD-USED-PARTIAL). UsedVerbs and UnusedVerbs are
+// pre-rendered HTML (one entry per line, verbs/resources wrapped in <code>) so the
+// template can drop them straight into the cells - showing both sides lets the operator
+// sanity-check the narrowing recommendation against what the workload actually does.
+// Action describes the concrete edit ("drop verbs X, Y" / "replace verbs: [*] with...")
+// so the row is actionable without expanding the card.
+type LPRoleVerbRow struct {
+	RuleID      string
+	Severity    models.Severity
+	Role        string // "<Kind>/<name>" e.g. "Role/prod-deployer"
+	Subject     string // compact "ns/name" or "name"
+	UsedVerbs   template.HTML
+	UnusedVerbs template.HTML
+	Action      template.HTML
+	FindingID   string
+}
+
+// LeastPrivilegeGroup is one (subject) bucket inside the Least Privilege tab. Cards
+// are pre-sorted by severity then score so the worst opportunity surfaces first per
+// subject.
+type LeastPrivilegeGroup struct {
+	SubjectLabel string // "ServiceAccount default/builder" or "Group system:masters"
+	SubjectKind  string
+	SubjectName  string
+	SubjectNs    string
+	Summary      Summary
+	Cards        []LeastPrivilegeFindingCard
+}
+
+// LeastPrivilegeFindingCard wraps a single finding with extracted per-tab presentation
+// data. SuggestedRoleYAML is pulled out of Evidence so the template can render it as a
+// proper <pre><code> block instead of inline-code spans bleeding through markdown.
+type LeastPrivilegeFindingCard struct {
+	Finding           models.Finding
+	SuggestedRoleYAML string
+}
+
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
 type htmlReportData struct {
-	Snapshot      models.Snapshot
-	Recon         Recon
-	Summary       Summary
-	Findings      []models.Finding
-	Modules       []ModuleSection
-	Categories    []CategorySection
-	TopNamespaces []Hotspot
-	TopSubjects   []Hotspot
-	TopResources  []Hotspot
-	TopFindings   []models.Finding
+	Snapshot       models.Snapshot
+	Recon          Recon
+	Summary        Summary
+	Findings       []models.Finding
+	Modules        []ModuleSection
+	Categories     []CategorySection
+	TopNamespaces  []Hotspot
+	TopSubjects    []Hotspot
+	TopResources   []Hotspot
+	TopFindings    []models.Finding
+	LeastPrivilege LeastPrivilegeSection
+	// DefaultTab is the data-active-tab attribute on <body> when the report loads.
+	// Empty preserves the legacy default (attack). --least-privilege-only sets
+	// "leastprivilege".
+	DefaultTab string
+	// LeastPrivilegeOnly is set when the CLI ran with --least-privilege-only. The
+	// template uses it to hide the Attack Paths / Risk Overview / Findings tab
+	// buttons and the recon panel, leaving only the Least Privilege tab visible.
+	LeastPrivilegeOnly bool
+	// UsageInfo carries the audit-log window summary rendered into the Least
+	// Privilege tab header. nil when no --audit-log was supplied.
+	UsageInfo *UsageInfo
 
 	// Modern-dashboard fields — all derived from Findings so any cluster renders.
 	RiskIndex   int

@@ -92,7 +92,7 @@ Coming as a post-release fast-follow: `brew install 0hardik1/tap/kubesplaining` 
 
 ## What it checks
 
-41 stable rule IDs across 7 modules today, plus the privilege-escalation graph that chains them. Full per-rule severity, detection logic, and remediation: [docs/findings.md](docs/findings.md).
+45 stable rule IDs across 8 modules today, plus the privilege-escalation graph that chains them. Full per-rule severity, detection logic, and remediation: [docs/findings.md](docs/findings.md).
 
 | Module | Rules | Focus |
 | --- | --- | --- |
@@ -103,6 +103,7 @@ Coming as a post-release fast-follow: `brew install 0hardik1/tap/kubesplaining` 
 | **secrets** | 4 | legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering |
 | **serviceaccount** | 4 | privileged SAs, default-SA RBAC, DaemonSet token blast-radius |
 | **privesc** | 4 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets |
+| **leastprivilege** | 4 | granted-but-unused RBAC verbs from audit-log diff; see [docs/audit-logs.md](docs/audit-logs.md) |
 
 Every finding is tagged with a `RiskCategory` (`privilege_escalation`, `data_exfiltration`, `lateral_movement`, `infrastructure_modification`, `defense_evasion`) so the HTML report can group by impact lane.
 
@@ -306,7 +307,11 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--severity-threshold` | `low` | Hide findings below this severity (`critical` / `high` / `medium` / `low` / `info`). |
 | `--output-format` | `html,json` | Comma-separated list: `html`, `json`, `csv`, `sarif`. |
 | `--output-dir` | `./kubesplaining-report` | Where reports are written. |
-| `--only-modules` / `--skip-modules` | — | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`). |
+| `--only-modules` / `--skip-modules` | — | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`). |
+| `--least-privilege-only` | `false` | Focus mode: hide everything except RBAC tightening opportunities and land on the **Least Privilege** tab. Requires `--audit-log`. |
+| `--audit-log` | — | Path to a kube-apiserver audit log (file or directory; repeatable). See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
+| `--audit-source` | `native` | Audit-log format: `native` (kube-apiserver JSON-lines) or `eks` (CloudWatch `filter-log-events` export). |
+| `--audit-window-days` | `30` | How many days of audit history to consider. Widen for monthly cron jobs. |
 | `--max-privesc-depth` | `5` | BFS depth cap for the escalation graph. |
 | `--ci-mode` | off | Exit non-zero when over thresholds. |
 | `--ci-max-critical` / `--ci-max-high` | `0` / `0` | Max findings allowed at each severity in CI mode. |
