@@ -17,16 +17,24 @@ func TestWouldPSABlock(t *testing.T) {
 		{"restricted_hostIPC", "hostIPC", PSALevelRestricted, true},
 		{"restricted_allowPrivilegeEscalation", "allowPrivilegeEscalation", PSALevelRestricted, true},
 		{"restricted_runAsRoot", "runAsRoot", PSALevelRestricted, true},
+		{"restricted_readOnlyRootFilesystem", "readOnlyRootFilesystem", PSALevelRestricted, true},
+		{"restricted_seccompProfile", "seccompProfile", PSALevelRestricted, true},
+		{"restricted_procMount", "procMount", PSALevelRestricted, true},
 
-		// Baseline blocks the host-namespace + privileged + hostPath family but
-		// not the runAsRoot / allowPrivilegeEscalation hardening checks.
+		// Baseline blocks the host-namespace + privileged + hostPath family +
+		// procMount (Unmasked is forbidden below Privileged), but not the
+		// runAsRoot / allowPrivilegeEscalation / readOnlyRootFilesystem /
+		// seccompProfile hardening checks (those are Restricted-only).
 		{"baseline_privileged", "privileged", PSALevelBaseline, true},
 		{"baseline_hostPath", "hostPath", PSALevelBaseline, true},
 		{"baseline_hostNetwork", "hostNetwork", PSALevelBaseline, true},
 		{"baseline_hostPID", "hostPID", PSALevelBaseline, true},
 		{"baseline_hostIPC", "hostIPC", PSALevelBaseline, true},
+		{"baseline_procMount", "procMount", PSALevelBaseline, true},
 		{"baseline_allowPrivilegeEscalation", "allowPrivilegeEscalation", PSALevelBaseline, false},
 		{"baseline_runAsRoot", "runAsRoot", PSALevelBaseline, false},
+		{"baseline_readOnlyRootFilesystem", "readOnlyRootFilesystem", PSALevelBaseline, false},
+		{"baseline_seccompProfile", "seccompProfile", PSALevelBaseline, false},
 
 		// Privileged level blocks nothing.
 		{"privileged_privileged", "privileged", PSALevelPrivileged, false},

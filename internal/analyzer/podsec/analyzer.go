@@ -141,6 +141,27 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					models.SeverityLow, models.CategoryDefenseEvasion, scoring.Clamp(2.5),
 					map[string]any{"container": container.Name, "image": container.Image}, "imageTag", content).withSuffix(":"+container.Name))
 			}
+
+			if container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+				content := contentPodSecReadonly001(target.Kind, target.Namespace, target.Name, container.Name)
+				findings = appendFinding(findings, seen, newFindingFromContent(target, "KUBE-PODSEC-READONLY-001",
+					models.SeverityMedium, models.CategoryPrivilegeEscalation, scoring.Clamp(5.5),
+					map[string]any{"container": container.Name}, "readOnlyRootFilesystem", content).withSuffix(":"+container.Name))
+			}
+
+			if seccompUnconfined(target.PodSpec, container) {
+				content := contentPodSecSeccomp001(target.Kind, target.Namespace, target.Name, container.Name)
+				findings = appendFinding(findings, seen, newFindingFromContent(target, "KUBE-PODSEC-SECCOMP-001",
+					models.SeverityMedium, models.CategoryPrivilegeEscalation, scoring.Clamp(5.5),
+					map[string]any{"container": container.Name}, "seccompProfile", content).withSuffix(":"+container.Name))
+			}
+
+			if container.SecurityContext != nil && container.SecurityContext.ProcMount != nil && *container.SecurityContext.ProcMount == corev1.UnmaskedProcMount {
+				content := contentPodSecProcmount001(target.Kind, target.Namespace, target.Name, container.Name)
+				findings = appendFinding(findings, seen, newFindingFromContent(target, "KUBE-PODSEC-PROCMOUNT-001",
+					models.SeverityHigh, models.CategoryPrivilegeEscalation, scoring.Clamp(7.5),
+					map[string]any{"container": container.Name, "procMount": "Unmasked"}, "procMount", content).withSuffix(":"+container.Name))
+			}
 		}
 	}
 
@@ -226,6 +247,20 @@ func runsAsRoot(podSpec corev1.PodSpec, container corev1.Container) bool {
 	}
 
 	return false
+}
+
+// seccompUnconfined reports whether the container is running without a seccomp filter.
+// True when both container- and pod-level SecurityContext omit SeccompProfile (kernel runs
+// unfiltered), or when either explicitly sets Type=Unconfined. Container-level overrides
+// take precedence over pod-level; PSS Restricted only accepts RuntimeDefault or Localhost.
+func seccompUnconfined(podSpec corev1.PodSpec, container corev1.Container) bool {
+	if container.SecurityContext != nil && container.SecurityContext.SeccompProfile != nil {
+		return container.SecurityContext.SeccompProfile.Type == corev1.SeccompProfileTypeUnconfined
+	}
+	if podSpec.SecurityContext != nil && podSpec.SecurityContext.SeccompProfile != nil {
+		return podSpec.SecurityContext.SeccompProfile.Type == corev1.SeccompProfileTypeUnconfined
+	}
+	return true
 }
 
 // usesLatestTag reports whether image uses a mutable tag such as :latest or no tag at all (digest references are considered immutable).

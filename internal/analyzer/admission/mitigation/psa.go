@@ -69,10 +69,13 @@ func WouldPSABlock(check, level string) bool {
 		"hostPath",
 		"hostNetwork",
 		"hostPID",
-		"hostIPC":
+		"hostIPC",
+		"procMount":
 		return level == PSALevelBaseline || level == PSALevelRestricted
 	case "allowPrivilegeEscalation",
-		"runAsRoot":
+		"runAsRoot",
+		"readOnlyRootFilesystem",
+		"seccompProfile":
 		return level == PSALevelRestricted
 	default:
 		return false
