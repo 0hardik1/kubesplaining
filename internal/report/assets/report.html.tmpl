@@ -133,7 +133,8 @@
     .lp-group-hd .sev-pill.crit { background: var(--critical-soft); color: var(--critical); border: 1px solid var(--critical-edge); }
     .lp-group-hd .lp-group-count { font-size: 11.5px; color: var(--text-mut); font-weight: 500;
       letter-spacing: 0.02em; padding-left: 4px; }
-    .lp-finding { padding: 14px 18px; border-bottom: 1px solid var(--border-soft); }
+    .lp-finding { padding: 14px 18px; border-bottom: 1px solid var(--border-soft);
+      font-size: 13px; line-height: 1.6; }
     .lp-finding:last-child { border-bottom: 0; }
     .lp-finding-hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
     .lp-finding-hd .lp-rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px;
@@ -152,7 +153,11 @@
     .lp-finding-desc p:last-child { margin-bottom: 0; }
     .lp-finding details { margin-top: 10px; }
     .lp-finding details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; padding: 4px 0; }
-    .lp-finding details > div { margin-top: 8px; }
+    .lp-finding details > div { margin-top: 8px; color: var(--text-mut); }
+    .lp-finding details > div p { font-size: 13px; line-height: 1.6; margin: 0 0 8px; }
+    .lp-finding details > div p:last-child { margin-bottom: 0; }
+    .lp-finding details > div code { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.05);
+      padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12px; }
     .lp-finding pre { font-size: 11.5px; }
     .lp-empty-good { padding: 24px; border: 1px solid var(--low-edge); background: var(--low-soft); border-radius: 14px;
       color: var(--text); text-align: center; }
