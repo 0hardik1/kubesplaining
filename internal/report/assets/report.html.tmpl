@@ -108,8 +108,18 @@
     .lp-empty .lp-emoji { font-size: 18px; margin-right: 8px; }
     .lp-group { border: 1px solid var(--border); border-radius: 14px; background: var(--surface);
       margin-bottom: 14px; overflow: hidden; }
+    details.lp-group > summary.lp-group-hd { cursor: pointer; list-style: none; user-select: none; }
+    details.lp-group > summary.lp-group-hd::-webkit-details-marker { display: none; }
+    details.lp-group[open] > summary.lp-group-hd { border-bottom: 1px solid var(--border-soft); }
+    details.lp-group:not([open]) > summary.lp-group-hd { border-bottom: 0; }
     .lp-group-hd { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
       border-bottom: 1px solid var(--border-soft); background: var(--surface-2); }
+    .lp-group-hd::before { content: '\25B6'; font-size: 14px; color: var(--accent);
+      transition: transform 0.18s ease; display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 6px; background: rgba(106,183,255,0.12);
+      border: 1px solid rgba(106,183,255,0.30); line-height: 1; flex-shrink: 0; }
+    details.lp-group > summary.lp-group-hd:hover::before { background: rgba(106,183,255,0.22); border-color: rgba(106,183,255,0.50); }
+    details.lp-group[open] > summary.lp-group-hd::before { transform: rotate(90deg); }
     .lp-group-hd .lp-subj { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; }
     .lp-group-hd .lp-subj code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px;
       font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--text); border: 0; }
@@ -121,6 +131,8 @@
     .lp-group-hd .sev-pill.low { background: var(--low-soft); color: var(--low); border: 1px solid var(--low-edge); }
     .lp-group-hd .sev-pill.high { background: var(--high-soft); color: var(--high); border: 1px solid var(--high-edge); }
     .lp-group-hd .sev-pill.crit { background: var(--critical-soft); color: var(--critical); border: 1px solid var(--critical-edge); }
+    .lp-group-hd .lp-group-count { font-size: 11.5px; color: var(--text-mut); font-weight: 500;
+      letter-spacing: 0.02em; padding-left: 4px; }
     .lp-finding { padding: 14px 18px; border-bottom: 1px solid var(--border-soft); }
     .lp-finding:last-child { border-bottom: 0; }
     .lp-finding-hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
@@ -150,11 +162,14 @@
     .lp-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
       padding: 16px 18px 18px; margin-bottom: 18px; overflow-x: auto; }
     details.lp-table-wrap[open] { padding-bottom: 18px; }
-    .lp-table-summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px;
+    .lp-table-summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 12px;
       user-select: none; }
     .lp-table-summary::-webkit-details-marker { display: none; }
-    .lp-table-summary::before { content: '\25B8'; font-size: 11px; color: var(--text-mut);
-      transition: transform 0.15s ease; display: inline-block; line-height: 1; transform-origin: 50% 55%; }
+    .lp-table-summary::before { content: '\25B6'; font-size: 14px; color: var(--accent);
+      transition: transform 0.18s ease; display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 6px; background: rgba(106,183,255,0.12);
+      border: 1px solid rgba(106,183,255,0.30); line-height: 1; flex-shrink: 0; }
+    .lp-table-summary:hover::before { background: rgba(106,183,255,0.22); border-color: rgba(106,183,255,0.50); }
     details.lp-table-wrap[open] > .lp-table-summary::before { transform: rotate(90deg); }
     details.lp-table-wrap[open] > .lp-table-summary { margin-bottom: 4px; }
     .lp-table-summary .lp-table-count { color: var(--text-mut); font-size: 12px; font-weight: 500;
@@ -1889,8 +1904,8 @@
       {{ end }}
 
       {{ range .LeastPrivilege.Groups }}
-      <div class="lp-group">
-        <div class="lp-group-hd">
+      <details class="lp-group">
+        <summary class="lp-group-hd">
           <div class="lp-subj">
             {{ .SubjectKind }} <code>{{ if .SubjectNs }}{{ .SubjectNs }}/{{ end }}{{ .SubjectName }}</code>
           </div>
@@ -1899,8 +1914,9 @@
             {{ if gt .Summary.High 0 }}<span class="sev-pill high">{{ .Summary.High }} high</span>{{ end }}
             {{ if gt .Summary.Medium 0 }}<span class="sev-pill med">{{ .Summary.Medium }} med</span>{{ end }}
             {{ if gt .Summary.Low 0 }}<span class="sev-pill low">{{ .Summary.Low }} low</span>{{ end }}
+            <span class="lp-group-count">{{ len .Cards }} {{ if eq (len .Cards) 1 }}finding{{ else }}findings{{ end }}</span>
           </div>
-        </div>
+        </summary>
         {{ range .Cards }}
         <div class="lp-finding">
           <div class="lp-finding-hd">
@@ -1930,7 +1946,7 @@
           {{ end }}
         </div>
         {{ end }}
-      </div>
+      </details>
       {{ end }}
       {{ end }}
     </section>
