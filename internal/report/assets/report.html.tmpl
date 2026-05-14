@@ -149,7 +149,18 @@
 
     .lp-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
       padding: 16px 18px 18px; margin-bottom: 18px; overflow-x: auto; }
+    details.lp-table-wrap[open] { padding-bottom: 18px; }
+    .lp-table-summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px;
+      user-select: none; }
+    .lp-table-summary::-webkit-details-marker { display: none; }
+    .lp-table-summary::before { content: '\25B8'; font-size: 11px; color: var(--text-mut);
+      transition: transform 0.15s ease; display: inline-block; line-height: 1; transform-origin: 50% 55%; }
+    details.lp-table-wrap[open] > .lp-table-summary::before { transform: rotate(90deg); }
+    details.lp-table-wrap[open] > .lp-table-summary { margin-bottom: 4px; }
+    .lp-table-summary .lp-table-count { color: var(--text-mut); font-size: 12px; font-weight: 500;
+      letter-spacing: 0.02em; }
     .lp-table-title { font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+    .lp-table-summary .lp-table-title { margin: 0; }
     .lp-table-sub { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; margin: 0 0 12px; max-width: 780px; }
     .lp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .lp-table thead th { text-align: left; font-weight: 600; color: var(--text-mut); font-size: 11px;
@@ -1780,8 +1791,11 @@
       {{ end }}{{ end }}
 
       {{ if .LeastPrivilege.UnusedResources }}
-      <div class="lp-table-wrap">
-        <h2 class="lp-table-title">Unused RBAC resources</h2>
+      <details class="lp-table-wrap">
+        <summary class="lp-table-summary">
+          <span class="lp-table-title">Unused RBAC resources</span>
+          <span class="lp-table-count">{{ len .LeastPrivilege.UnusedResources }} {{ if eq (len .LeastPrivilege.UnusedResources) 1 }}row{{ else }}rows{{ end }}</span>
+        </summary>
         <p class="lp-table-sub">Roles, ClusterRoles, and bindings that look like delete candidates. Each row tells you exactly what to remove. Verify the audit window covers a representative slice of your workloads' activity before deleting.</p>
         <table class="lp-table">
           <thead>
@@ -1806,12 +1820,15 @@
             {{ end }}
           </tbody>
         </table>
-      </div>
+      </details>
       {{ end }}
 
       {{ if .LeastPrivilege.RoleVerbMap }}
-      <div class="lp-table-wrap">
-        <h2 class="lp-table-title">Role to verb activity</h2>
+      <details class="lp-table-wrap">
+        <summary class="lp-table-summary">
+          <span class="lp-table-title">Role to verb activity</span>
+          <span class="lp-table-count">{{ len .LeastPrivilege.RoleVerbMap }} {{ if eq (len .LeastPrivilege.RoleVerbMap) 1 }}row{{ else }}rows{{ end }}</span>
+        </summary>
         <p class="lp-table-sub">Verb-level narrowing opportunities. The "Used" column lists verbs the workload actually exercised in the audit window; the "Unused" column lists verbs the Role still grants without evidence of need. Each row's action describes the exact edit.</p>
         <table class="lp-table">
           <thead>
@@ -1835,12 +1852,15 @@
             {{ end }}
           </tbody>
         </table>
-      </div>
+      </details>
       {{ end }}
 
       {{ if .LeastPrivilege.ClusterAdminInventory }}
-      <div class="lp-table-wrap">
-        <h2 class="lp-table-title">Subjects bound to cluster-admin</h2>
+      <details class="lp-table-wrap">
+        <summary class="lp-table-summary">
+          <span class="lp-table-title">Subjects bound to cluster-admin</span>
+          <span class="lp-table-count">{{ len .LeastPrivilege.ClusterAdminInventory }} {{ if eq (len .LeastPrivilege.ClusterAdminInventory) 1 }}subject{{ else }}subjects{{ end }}</span>
+        </summary>
         <p class="lp-table-sub">Every identity directly bound to the built-in <code>cluster-admin</code> ClusterRole. This is an inventory view, not a finding list: <span class="lp-tag lp-tag-system">built-in</span> rows are expected (the API server hard-codes <code>system:masters</code>; a handful of control-plane bindings are required), while <span class="lp-tag lp-tag-review">review</span> rows are discretionary grants worth a "is this still legitimate?" check. Cluster-admin has legitimate uses (break-glass groups, JIT admin), so kubesplaining no longer flags each row as <code>CRITICAL</code> in this view — review the list and prune what you don't recognize.</p>
         <table class="lp-table lp-ca-table">
           <thead>
@@ -1865,7 +1885,7 @@
             {{ end }}
           </tbody>
         </table>
-      </div>
+      </details>
       {{ end }}
 
       {{ range .LeastPrivilege.Groups }}
