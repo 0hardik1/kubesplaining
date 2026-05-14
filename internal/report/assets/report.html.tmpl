@@ -108,8 +108,18 @@
     .lp-empty .lp-emoji { font-size: 18px; margin-right: 8px; }
     .lp-group { border: 1px solid var(--border); border-radius: 14px; background: var(--surface);
       margin-bottom: 14px; overflow: hidden; }
+    details.lp-group > summary.lp-group-hd { cursor: pointer; list-style: none; user-select: none; }
+    details.lp-group > summary.lp-group-hd::-webkit-details-marker { display: none; }
+    details.lp-group[open] > summary.lp-group-hd { border-bottom: 1px solid var(--border-soft); }
+    details.lp-group:not([open]) > summary.lp-group-hd { border-bottom: 0; }
     .lp-group-hd { display: flex; align-items: center; gap: 12px; padding: 14px 18px;
       border-bottom: 1px solid var(--border-soft); background: var(--surface-2); }
+    .lp-group-hd::before { content: '\25B6'; font-size: 14px; color: var(--accent);
+      transition: transform 0.18s ease; display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 6px; background: rgba(106,183,255,0.12);
+      border: 1px solid rgba(106,183,255,0.30); line-height: 1; flex-shrink: 0; }
+    details.lp-group > summary.lp-group-hd:hover::before { background: rgba(106,183,255,0.22); border-color: rgba(106,183,255,0.50); }
+    details.lp-group[open] > summary.lp-group-hd::before { transform: rotate(90deg); }
     .lp-group-hd .lp-subj { font-weight: 600; font-size: 14.5px; letter-spacing: -0.01em; }
     .lp-group-hd .lp-subj code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px;
       font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--text); border: 0; }
@@ -121,7 +131,10 @@
     .lp-group-hd .sev-pill.low { background: var(--low-soft); color: var(--low); border: 1px solid var(--low-edge); }
     .lp-group-hd .sev-pill.high { background: var(--high-soft); color: var(--high); border: 1px solid var(--high-edge); }
     .lp-group-hd .sev-pill.crit { background: var(--critical-soft); color: var(--critical); border: 1px solid var(--critical-edge); }
-    .lp-finding { padding: 14px 18px; border-bottom: 1px solid var(--border-soft); }
+    .lp-group-hd .lp-group-count { font-size: 11.5px; color: var(--text-mut); font-weight: 500;
+      letter-spacing: 0.02em; padding-left: 4px; }
+    .lp-finding { padding: 14px 18px; border-bottom: 1px solid var(--border-soft);
+      font-size: 13px; line-height: 1.6; }
     .lp-finding:last-child { border-bottom: 0; }
     .lp-finding-hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
     .lp-finding-hd .lp-rule { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px;
@@ -140,7 +153,11 @@
     .lp-finding-desc p:last-child { margin-bottom: 0; }
     .lp-finding details { margin-top: 10px; }
     .lp-finding details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; padding: 4px 0; }
-    .lp-finding details > div { margin-top: 8px; }
+    .lp-finding details > div { margin-top: 8px; color: var(--text-mut); }
+    .lp-finding details > div p { font-size: 13px; line-height: 1.6; margin: 0 0 8px; }
+    .lp-finding details > div p:last-child { margin-bottom: 0; }
+    .lp-finding details > div code { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.05);
+      padding: 1px 4px; border-radius: 4px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 12px; }
     .lp-finding pre { font-size: 11.5px; }
     .lp-empty-good { padding: 24px; border: 1px solid var(--low-edge); background: var(--low-soft); border-radius: 14px;
       color: var(--text); text-align: center; }
@@ -149,7 +166,21 @@
 
     .lp-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
       padding: 16px 18px 18px; margin-bottom: 18px; overflow-x: auto; }
+    details.lp-table-wrap[open] { padding-bottom: 18px; }
+    .lp-table-summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 12px;
+      user-select: none; }
+    .lp-table-summary::-webkit-details-marker { display: none; }
+    .lp-table-summary::before { content: '\25B6'; font-size: 14px; color: var(--accent);
+      transition: transform 0.18s ease; display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 6px; background: rgba(106,183,255,0.12);
+      border: 1px solid rgba(106,183,255,0.30); line-height: 1; flex-shrink: 0; }
+    .lp-table-summary:hover::before { background: rgba(106,183,255,0.22); border-color: rgba(106,183,255,0.50); }
+    details.lp-table-wrap[open] > .lp-table-summary::before { transform: rotate(90deg); }
+    details.lp-table-wrap[open] > .lp-table-summary { margin-bottom: 4px; }
+    .lp-table-summary .lp-table-count { color: var(--text-mut); font-size: 12px; font-weight: 500;
+      letter-spacing: 0.02em; }
     .lp-table-title { font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+    .lp-table-summary .lp-table-title { margin: 0; }
     .lp-table-sub { color: var(--text-mut); font-size: 12.5px; line-height: 1.55; margin: 0 0 12px; max-width: 780px; }
     .lp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .lp-table thead th { text-align: left; font-weight: 600; color: var(--text-mut); font-size: 11px;
@@ -1780,8 +1811,11 @@
       {{ end }}{{ end }}
 
       {{ if .LeastPrivilege.UnusedResources }}
-      <div class="lp-table-wrap">
-        <h2 class="lp-table-title">Unused RBAC resources</h2>
+      <details class="lp-table-wrap">
+        <summary class="lp-table-summary">
+          <span class="lp-table-title">Unused RBAC resources</span>
+          <span class="lp-table-count">{{ len .LeastPrivilege.UnusedResources }} {{ if eq (len .LeastPrivilege.UnusedResources) 1 }}row{{ else }}rows{{ end }}</span>
+        </summary>
         <p class="lp-table-sub">Roles, ClusterRoles, and bindings that look like delete candidates. Each row tells you exactly what to remove. Verify the audit window covers a representative slice of your workloads' activity before deleting.</p>
         <table class="lp-table">
           <thead>
@@ -1806,12 +1840,15 @@
             {{ end }}
           </tbody>
         </table>
-      </div>
+      </details>
       {{ end }}
 
       {{ if .LeastPrivilege.RoleVerbMap }}
-      <div class="lp-table-wrap">
-        <h2 class="lp-table-title">Role to verb activity</h2>
+      <details class="lp-table-wrap">
+        <summary class="lp-table-summary">
+          <span class="lp-table-title">Role to verb activity</span>
+          <span class="lp-table-count">{{ len .LeastPrivilege.RoleVerbMap }} {{ if eq (len .LeastPrivilege.RoleVerbMap) 1 }}row{{ else }}rows{{ end }}</span>
+        </summary>
         <p class="lp-table-sub">Verb-level narrowing opportunities. The "Used" column lists verbs the workload actually exercised in the audit window; the "Unused" column lists verbs the Role still grants without evidence of need. Each row's action describes the exact edit.</p>
         <table class="lp-table">
           <thead>
@@ -1835,12 +1872,15 @@
             {{ end }}
           </tbody>
         </table>
-      </div>
+      </details>
       {{ end }}
 
       {{ if .LeastPrivilege.ClusterAdminInventory }}
-      <div class="lp-table-wrap">
-        <h2 class="lp-table-title">Subjects bound to cluster-admin</h2>
+      <details class="lp-table-wrap">
+        <summary class="lp-table-summary">
+          <span class="lp-table-title">Subjects bound to cluster-admin</span>
+          <span class="lp-table-count">{{ len .LeastPrivilege.ClusterAdminInventory }} {{ if eq (len .LeastPrivilege.ClusterAdminInventory) 1 }}subject{{ else }}subjects{{ end }}</span>
+        </summary>
         <p class="lp-table-sub">Every identity directly bound to the built-in <code>cluster-admin</code> ClusterRole. This is an inventory view, not a finding list: <span class="lp-tag lp-tag-system">built-in</span> rows are expected (the API server hard-codes <code>system:masters</code>; a handful of control-plane bindings are required), while <span class="lp-tag lp-tag-review">review</span> rows are discretionary grants worth a "is this still legitimate?" check. Cluster-admin has legitimate uses (break-glass groups, JIT admin), so kubesplaining no longer flags each row as <code>CRITICAL</code> in this view — review the list and prune what you don't recognize.</p>
         <table class="lp-table lp-ca-table">
           <thead>
@@ -1865,12 +1905,12 @@
             {{ end }}
           </tbody>
         </table>
-      </div>
+      </details>
       {{ end }}
 
       {{ range .LeastPrivilege.Groups }}
-      <div class="lp-group">
-        <div class="lp-group-hd">
+      <details class="lp-group">
+        <summary class="lp-group-hd">
           <div class="lp-subj">
             {{ .SubjectKind }} <code>{{ if .SubjectNs }}{{ .SubjectNs }}/{{ end }}{{ .SubjectName }}</code>
           </div>
@@ -1879,8 +1919,9 @@
             {{ if gt .Summary.High 0 }}<span class="sev-pill high">{{ .Summary.High }} high</span>{{ end }}
             {{ if gt .Summary.Medium 0 }}<span class="sev-pill med">{{ .Summary.Medium }} med</span>{{ end }}
             {{ if gt .Summary.Low 0 }}<span class="sev-pill low">{{ .Summary.Low }} low</span>{{ end }}
+            <span class="lp-group-count">{{ len .Cards }} {{ if eq (len .Cards) 1 }}finding{{ else }}findings{{ end }}</span>
           </div>
-        </div>
+        </summary>
         {{ range .Cards }}
         <div class="lp-finding">
           <div class="lp-finding-hd">
@@ -1910,7 +1951,7 @@
           {{ end }}
         </div>
         {{ end }}
-      </div>
+      </details>
       {{ end }}
       {{ end }}
     </section>
