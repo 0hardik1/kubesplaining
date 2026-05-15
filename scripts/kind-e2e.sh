@@ -169,7 +169,12 @@ EXPECTED_RULES=(
   KUBE-ESCAPE-006 KUBE-ESCAPE-008
   KUBE-CONTAINERD-SOCKET-001 KUBE-HOSTPATH-001
   KUBE-PODSEC-APE-001 KUBE-PODSEC-ROOT-001 KUBE-IMAGE-LATEST-001
-  KUBE-PODSEC-READONLY-001 KUBE-PODSEC-SECCOMP-001 KUBE-PODSEC-PROCMOUNT-001
+  KUBE-PODSEC-READONLY-001 KUBE-PODSEC-SECCOMP-001
+  # KUBE-PODSEC-PROCMOUNT-001 omitted: K8s 1.32+ requires hostUsers: false to
+  # apply procMount: Unmasked, and pods with hostUsers: false do not start on
+  # kind (mount-product-files.sh hits a permission-denied under the remapped
+  # UID). Detection is covered by analyzer unit tests in
+  # internal/analyzer/podsec/analyzer_test.go.
   KUBE-NETPOL-COVERAGE-001 KUBE-NETPOL-COVERAGE-002 KUBE-NETPOL-COVERAGE-003
   KUBE-NETPOL-WEAKNESS-001 KUBE-NETPOL-WEAKNESS-002
   KUBE-SECRETS-001 KUBE-CONFIGMAP-001
