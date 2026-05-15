@@ -180,7 +180,7 @@ step "Running kubesplaining scan --all-findings (assertion coverage)"
   --audit-log "${AUDIT_LOG}" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report-full" \
   --all-findings \
-  --output-format html,json | prefix_ok
+  --output-format html,json,csv | prefix_ok
 SUMMARY_LINE=$(grep -m1 "^findings:" "${SCAN_LOG}" 2>/dev/null || echo "")
 
 step "Verifying expected rule IDs"
