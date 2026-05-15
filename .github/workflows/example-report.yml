@@ -31,9 +31,13 @@ jobs:
       - name: Stage Pages artifact
         run: |
           mkdir -p _site
-          cp .tmp/e2e-report/report.html   _site/index.html
-          cp .tmp/e2e-report/findings.json _site/findings.json
-          cp .tmp/e2e-report/triage.csv    _site/triage.csv
+          # Publish the uncapped report so the public example shows every
+          # tab populated, including Least Privilege. The default-capped
+          # report drops Medium/Low findings (LP advisories, stale RBAC)
+          # via the top-20 cap, which would otherwise leave that tab empty.
+          cp .tmp/e2e-report-full/report.html   _site/index.html
+          cp .tmp/e2e-report-full/findings.json _site/findings.json
+          cp .tmp/e2e-report-full/triage.csv    _site/triage.csv
 
       - uses: actions/upload-pages-artifact@v5
         with:
