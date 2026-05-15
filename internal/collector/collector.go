@@ -28,6 +28,19 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+// Well-known kube-system ConfigMaps whose payloads must be preserved verbatim:
+//   - aws-auth maps IAM principals to Kubernetes RBAC subjects on EKS clusters; its
+//     mappingRoles/mapUsers contents are needed for accurate impersonation analysis.
+//   - coredns carries the cluster DNS Corefile, which is useful when reasoning about
+//     name-resolution shortcuts an attacker might abuse.
+//
+// Every other ConfigMap goes through redactConfigMapValues so keys (which are searched
+// for credential-looking names) survive but payloads never enter the snapshot.
+const (
+	configMapAWSAuth = "aws-auth"
+	configMapCoreDNS = "coredns"
+)
+
 // Options controls namespace filtering, managedFields retention, and API concurrency for a collection run.
 type Options struct {
 	Namespaces           []string
@@ -70,12 +83,16 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 	snapshot.Metadata.APIServerURL = c.config.Host
 
 	var (
-		mu       sync.Mutex
-		wg       sync.WaitGroup
-		sem      = make(chan struct{}, c.opts.Parallelism)
-		fatals   []error
-		warnings []string
-		missing  []string
+		mu sync.Mutex
+		wg sync.WaitGroup
+		// concurrencyLimiter caps how many list calls run against the apiserver at once.
+		// It's used as a counting semaphore: send into the channel before doing work,
+		// receive when done, so at most `Parallelism` goroutines are inside fn() at any
+		// moment. A buffered channel of struct{} is the idiomatic Go semaphore pattern.
+		concurrencyLimiter = make(chan struct{}, c.opts.Parallelism)
+		fatals             []error
+		warnings           []string
+		missing            []string
 	)
 
 	recordWarning := func(message string) {
@@ -95,8 +112,8 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			concurrencyLimiter <- struct{}{}
+			defer func() { <-concurrencyLimiter }()
 
 			if err := fn(); err != nil {
 				switch {
@@ -394,7 +411,7 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 				Labels:      item.Labels,
 				Annotations: item.Annotations,
 			}
-			if item.Namespace == "kube-system" && (item.Name == "aws-auth" || item.Name == "coredns") {
+			if item.Namespace == "kube-system" && (item.Name == configMapAWSAuth || item.Name == configMapCoreDNS) {
 				snapshotItem.Data = item.Data
 			} else if len(item.Data) > 0 {
 				snapshotItem.Data = redactConfigMapValues(item.Data)
@@ -681,6 +698,11 @@ func redactConfigMapValues(data map[string]string) map[string]string {
 	}
 	return redacted
 }
+
+// The sanitize* helpers below all share one body - drop ManagedFields when the operator
+// didn't ask to keep them - but they exist per concrete type because Go generics cannot
+// access the .ManagedFields struct field by name. Keep them in sync; if you change one,
+// change all of them (or grep for `maybeManagedFields`).
 
 func sanitizeNamespace(obj corev1.Namespace, includeManagedFields bool) corev1.Namespace {
 	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)

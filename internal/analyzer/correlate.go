@@ -69,10 +69,10 @@ func correlate(findings []models.Finding) []models.Finding {
 // dedupe collapses findings that describe the same (RuleID, Subject, Resource) combination across modules,
 // keeping the one with the highest Score and merging tags. Within-module ID collisions are already handled by analyzers.
 func dedupe(findings []models.Finding) []models.Finding {
-	type keyed struct {
-		idx int
-	}
-	seen := map[string]keyed{}
+	// indexByKey maps each dedupe key to the index in `out` where its winning finding lives.
+	// We keep an index (rather than a *models.Finding) because the slice may grow and
+	// reallocate as we append, invalidating any stored pointer.
+	indexByKey := map[string]int{}
 	out := make([]models.Finding, 0, len(findings))
 	for _, finding := range findings {
 		key := dedupeKey(finding)
@@ -80,15 +80,15 @@ func dedupe(findings []models.Finding) []models.Finding {
 			out = append(out, finding)
 			continue
 		}
-		if prev, ok := seen[key]; ok {
-			if finding.Score > out[prev.idx].Score {
-				out[prev.idx].Score = finding.Score
-				out[prev.idx].Severity = finding.Severity
+		if prevIdx, ok := indexByKey[key]; ok {
+			if finding.Score > out[prevIdx].Score {
+				out[prevIdx].Score = finding.Score
+				out[prevIdx].Severity = finding.Severity
 			}
-			out[prev.idx].Tags = mergeTags(out[prev.idx].Tags, finding.Tags)
+			out[prevIdx].Tags = mergeTags(out[prevIdx].Tags, finding.Tags)
 			continue
 		}
-		seen[key] = keyed{idx: len(out)}
+		indexByKey[key] = len(out)
 		out = append(out, finding)
 	}
 	return out

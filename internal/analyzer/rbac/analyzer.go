@@ -134,6 +134,12 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 
 	for _, perms := range subjects {
 		for _, rule := range perms.Rules {
+			// Score multipliers (applied to each rule's base score below):
+			//   blastRadius     - cluster-scoped grants reach every namespace, so we bump them 20%
+			//                     over namespace-scoped grants of the same permission.
+			//   exploitability  - a ServiceAccount that is actually mounted by a pod can be reached
+			//                     by an attacker who lands in that pod; an unused SA is a paper risk
+			//                     until something starts mounting it, so the mounted ones get +20%.
 			blastRadius := 1.0
 			if rule.Namespace == "" {
 				blastRadius = 1.2
@@ -142,57 +148,67 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
 				exploitability = 1.2
 			}
+			// scaledScore captures the per-rule multipliers above so each case below
+			// only has to declare its base score - the formula is named once instead of
+			// duplicated nine times.
+			scaledScore := func(base float64) float64 {
+				return scoring.Clamp(base * exploitability * blastRadius)
+			}
 
 			bindingRef := rule.formattedBinding()
 			roleRef := rule.formattedRole()
 
+			// Each case detects one privilege-escalation primitive and emits the matching
+			// finding. switch (not if/else chain) so a rule that matches several cases
+			// only fires the first - we prefer the most specific framing and let dedupe
+			// merge cross-module overlaps later.
 			switch {
 			case hasWildcard(rule.Verbs) && hasWildcard(rule.Resources) && hasWildcard(rule.APIGroups):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-017", models.SeverityCritical, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(9.8*exploitability*blastRadius),
+					scaledScore(9.8),
 					contentPrivesc017(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get", "list", "watch"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-005", models.SeverityHigh, models.CategoryDataExfiltration,
-					scoring.Clamp(8.2*exploitability*blastRadius),
+					scaledScore(8.2),
 					contentPrivesc005(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-001", models.SeverityHigh, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(8.4*exploitability*blastRadius),
+					scaledScore(8.4),
 					contentPrivesc001(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasAnyResource(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-003", models.SeverityHigh, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(8.1*exploitability*blastRadius),
+					scaledScore(8.1),
 					contentPrivesc003(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasAnyResource(rule.Resources, []string{"users", "groups", "serviceaccounts"}) && hasAnyVerb(rule.Verbs, "impersonate"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-008", models.SeverityCritical, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(9.4*exploitability*blastRadius),
+					scaledScore(9.4),
 					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasAnyResource(rule.Resources, []string{"roles", "clusterroles"}) && hasAnyVerb(rule.Verbs, "bind", "escalate"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-009", models.SeverityCritical, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(9.2*exploitability*blastRadius),
+					scaledScore(9.2),
 					contentPrivesc009(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasAnyResource(rule.Resources, []string{"rolebindings", "clusterrolebindings"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-010", models.SeverityCritical, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(9.0*exploitability*blastRadius),
+					scaledScore(9.0),
 					contentPrivesc010(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasResource(rule.Resources, "nodes/proxy") && hasAnyVerb(rule.Verbs, "get"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-012", models.SeverityCritical, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(9.3*exploitability*blastRadius),
+					scaledScore(9.3),
 					contentPrivesc012(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			case hasResource(rule.Resources, "serviceaccounts/token") && hasAnyVerb(rule.Verbs, "create"):
 				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-014", models.SeverityHigh, models.CategoryPrivilegeEscalation,
-					scoring.Clamp(8.0*exploitability*blastRadius),
+					scaledScore(8.0),
 					contentPrivesc014(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			}
 		}
