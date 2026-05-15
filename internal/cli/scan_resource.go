@@ -19,13 +19,14 @@ import (
 // single Kubernetes manifest file offline without requiring cluster access.
 func NewScanResourceCmd() *cobra.Command {
 	var (
-		inputFile        string
-		resourceType     string
-		exclusionsFile   string
-		exclusionsPreset string
-		outputFormats    []string
-		maxFindings      int
-		allFindings      bool
+		inputFile         string
+		resourceType      string
+		exclusionsFile    string
+		exclusionsPreset  string
+		outputFormats     []string
+		maxFindings       int
+		allFindings       bool
+		complianceFilters []string
 	)
 
 	cmd := &cobra.Command{
@@ -57,6 +58,12 @@ func NewScanResourceCmd() *cobra.Command {
 			}
 			findings, _ = exclusions.Apply(cfg, findings)
 
+			complianceSlugs, err := parseComplianceFilter(complianceFilters)
+			if err != nil {
+				return err
+			}
+			findings = applyComplianceFilter(findings, complianceSlugs)
+
 			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
 
 			if err := writeScanResourceOutput(cmd, findings, outputFormats); err != nil {
@@ -74,6 +81,7 @@ func NewScanResourceCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&outputFormats, "output-format", []string{"table"}, "Output formats: table,json")
 	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the output to the top N findings by severity/score; 0 disables.")
 	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding; overrides --max-findings")
+	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
 
 	return cmd
 }

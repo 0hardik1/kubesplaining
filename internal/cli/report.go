@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/0hardik1/kubesplaining/internal/compliance"
 	"github.com/0hardik1/kubesplaining/internal/exclusions"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/report"
@@ -25,6 +26,7 @@ func NewReportCmd() *cobra.Command {
 		metadataFile      string
 		maxFindings       int
 		allFindings       bool
+		complianceFilters []string
 	)
 
 	cmd := &cobra.Command{
@@ -57,6 +59,16 @@ func NewReportCmd() *cobra.Command {
 				return err
 			}
 			filtered, _ = exclusions.Apply(cfg, filtered)
+
+			// Re-apply the compliance mapping in case the input JSON pre-dates the
+			// Frameworks field (older scans). compliance.Apply is idempotent so
+			// re-running on already-tagged findings is a no-op.
+			filtered = compliance.Apply(filtered)
+			complianceSlugs, err := parseComplianceFilter(complianceFilters)
+			if err != nil {
+				return err
+			}
+			filtered = applyComplianceFilter(filtered, complianceSlugs)
 
 			filtered, truncation := report.Truncate(filtered, maxFindings, allFindings)
 
@@ -115,6 +127,7 @@ func NewReportCmd() *cobra.Command {
 	cmd.Flags().StringVar(&metadataFile, "metadata-file", "", "Optional path to scan metadata JSON")
 	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the regenerated report to the top N findings by severity/score; 0 disables.")
 	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the regenerated report; overrides --max-findings")
+	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
 
 	return cmd
 }
