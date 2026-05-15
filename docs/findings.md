@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **47 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **50 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Findings Library — Implemented
 
@@ -52,7 +52,10 @@ These rules compare granted RBAC permissions against observed usage from a kube-
 | KUBE-ESCAPE-008 | HIGH | Host log directory mounted | hostPath `/var/log` | Use a log collector sidecar instead |
 | KUBE-HOSTPATH-001 | HIGH | HostPath volume mount | Generic hostPath mount | Prefer ConfigMaps/Secrets/CSI |
 | KUBE-PODSEC-APE-001 | HIGH | Privilege escalation allowed in container | `allowPrivilegeEscalation` missing or `true` | Set `allowPrivilegeEscalation: false` |
+| KUBE-PODSEC-PROCMOUNT-001 | HIGH | Container requests Unmasked /proc | `securityContext.procMount: Unmasked` (explicit opt-in) | Remove the field (default `Default` is safe); enforce PSA `baseline` |
 | KUBE-PODSEC-ROOT-001 | MEDIUM | Container runs as root | UID 0 or `runAsNonRoot: false` | Set a non-zero UID and `runAsNonRoot: true` |
+| KUBE-PODSEC-READONLY-001 | MEDIUM | Container has a writable root filesystem | `readOnlyRootFilesystem` missing or `false` | Set `readOnlyRootFilesystem: true`; mount `emptyDir` for legitimate write paths |
+| KUBE-PODSEC-SECCOMP-001 | MEDIUM | Container runs without a seccomp profile | `seccompProfile` missing or `Unconfined` at both pod and container level | Set `seccompProfile.type: RuntimeDefault` (or `Localhost` with a profile) |
 | KUBE-SA-DEFAULT-001 | MEDIUM | Default service account in use | Workload mounts the namespace `default` SA | Bind a dedicated least-privilege SA |
 | KUBE-IMAGE-LATEST-001 | LOW | Mutable image tag used | `:latest` or no tag | Pin to an immutable tag or digest |
 
@@ -123,7 +126,7 @@ The following rules are on the roadmap but not yet implemented. See [PLAN.md](..
 
 **RBAC** — KUBE-PRIVESC-002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft), -011 (CSR), -013 (ephemeral containers), -015 (portforward), -016 (node drain); stale/dangling bindings.
 
-**Pod Security** — `readOnlyRootFilesystem`, `seccompProfile`, `procMount`, exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, …); PersistentVolume hostPath bypass (KUBE-ESCAPE-011); PSA namespace label checks; legacy PSP permissiveness.
+**Pod Security** — exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, …); PersistentVolume hostPath bypass (KUBE-ESCAPE-011); PSA namespace label checks; legacy PSP permissiveness.
 
 **Network** — cross-namespace communication map; egress to cloud metadata endpoint `169.254.169.254`.
 
