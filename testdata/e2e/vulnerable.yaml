@@ -92,7 +92,6 @@ spec:
           image: nginx:latest
           securityContext:
             privileged: true
-            procMount: Unmasked
           volumeMounts:
             - name: rootfs
               mountPath: /host
