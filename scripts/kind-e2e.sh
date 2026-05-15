@@ -91,6 +91,9 @@ ROLLOUTS=(
   "deploy/unmatched:flat-network"
   "deploy/ingress-app:ingress-only"
   "deploy/psa-priv-app:psa-suppressed"
+  "deploy/lp-narrow-app:lp-fixtures"
+  "deploy/lp-wildcard-app:lp-fixtures"
+  "deploy/lp-orphan-app:lp-fixtures"
 )
 for entry in "${ROLLOUTS[@]}"; do
   obj="${entry%%:*}"
@@ -111,6 +114,24 @@ step "Capturing snapshot"
   --kubeconfig "${KUBECONFIG_PATH}" \
   --output-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" | prefix_ok
 
+step "Synthesizing audit log for least-privilege fixtures"
+# kind does not surface kube-apiserver audit logs by default, so we synthesize a
+# small one with timestamps anchored to "now" - that keeps every event inside the
+# scan's --audit-window-days window regardless of when the e2e is run. The events
+# target three SAs the lp-fixtures namespace mounts:
+#
+#   sa-lp-narrow    - exercises get + list on configmaps (granted 7 verbs) -> UNUSED-VERB
+#   sa-lp-wildcard  - exercises get on secrets (granted verbs:["*"])       -> WILDCARD-USED-PARTIAL
+#   sa-lp-orphan    - no events at all                                     -> UNUSED-ROLE
+AUDIT_LOG="${ROOT_DIR}/.tmp/e2e-audit.log"
+TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+cat > "${AUDIT_LOG}" <<EOF
+{"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"lp-narrow-1","stage":"ResponseComplete","verb":"get","user":{"username":"system:serviceaccount:lp-fixtures:sa-lp-narrow"},"objectRef":{"apiVersion":"v1","resource":"configmaps","namespace":"lp-fixtures"},"responseStatus":{"code":200},"requestReceivedTimestamp":"${TS}","stageTimestamp":"${TS}"}
+{"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"lp-narrow-2","stage":"ResponseComplete","verb":"list","user":{"username":"system:serviceaccount:lp-fixtures:sa-lp-narrow"},"objectRef":{"apiVersion":"v1","resource":"configmaps","namespace":"lp-fixtures"},"responseStatus":{"code":200},"requestReceivedTimestamp":"${TS}","stageTimestamp":"${TS}"}
+{"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"lp-wildcard-1","stage":"ResponseComplete","verb":"get","user":{"username":"system:serviceaccount:lp-fixtures:sa-lp-wildcard"},"objectRef":{"apiVersion":"v1","resource":"secrets","namespace":"lp-fixtures"},"responseStatus":{"code":200},"requestReceivedTimestamp":"${TS}","stageTimestamp":"${TS}"}
+EOF
+ok "wrote ${AUDIT_LOG} (3 events)"
+
 step "Running kubesplaining scan (default --max-findings=20)"
 # Use the default "standard" exclusions preset so the e2e mirrors how users run
 # the tool: built-in kube-system / system:* / kubeadm:* noise is suppressed.
@@ -120,6 +141,7 @@ step "Running kubesplaining scan (default --max-findings=20)"
 SCAN_LOG="${ROOT_DIR}/.tmp/e2e-scan.log"
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --audit-log "${AUDIT_LOG}" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
   --output-format html,json,csv | tee "${SCAN_LOG}" | prefix_ok
 
@@ -155,9 +177,10 @@ step "Running kubesplaining scan --all-findings (assertion coverage)"
 # default-cap scan above already covers the user-visible banner UX.
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --audit-log "${AUDIT_LOG}" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report-full" \
   --all-findings \
-  --output-format json | prefix_ok
+  --output-format html,json | prefix_ok
 SUMMARY_LINE=$(grep -m1 "^findings:" "${SCAN_LOG}" 2>/dev/null || echo "")
 
 step "Verifying expected rule IDs"
@@ -165,6 +188,7 @@ EXPECTED_RULES=(
   KUBE-PRIVESC-001 KUBE-PRIVESC-003 KUBE-PRIVESC-005 KUBE-PRIVESC-008 KUBE-PRIVESC-009
   KUBE-PRIVESC-010 KUBE-PRIVESC-012 KUBE-PRIVESC-014 KUBE-PRIVESC-017
   KUBE-RBAC-OVERBROAD-001 KUBE-RBAC-STALE-001 KUBE-RBAC-STALE-002
+  KUBE-RBAC-UNUSED-VERB-001 KUBE-RBAC-UNUSED-ROLE-001 KUBE-RBAC-WILDCARD-USED-PARTIAL-001
   KUBE-ESCAPE-001 KUBE-ESCAPE-002 KUBE-ESCAPE-003 KUBE-ESCAPE-004 KUBE-ESCAPE-005
   KUBE-ESCAPE-006 KUBE-ESCAPE-008
   KUBE-CONTAINERD-SOCKET-001 KUBE-HOSTPATH-001
@@ -284,6 +308,9 @@ fi
 REPORT_HTML="${ROOT_DIR}/.tmp/e2e-report/report.html"
 REPORT_REL="${REPORT_HTML#"${ROOT_DIR}/"}"
 REPORT_URL="file://${REPORT_HTML}"
+REPORT_FULL_HTML="${ROOT_DIR}/.tmp/e2e-report-full/report.html"
+REPORT_FULL_REL="${REPORT_FULL_HTML#"${ROOT_DIR}/"}"
+REPORT_FULL_URL="file://${REPORT_FULL_HTML}"
 RULE="═══════════════════════════════════════════════════════════════════════"
 
 printf "\n%s%s%s\n" "${C_BOLD}${C_GREEN}" "${RULE}" "${C_RESET}"
@@ -293,9 +320,13 @@ if [[ -n "${SUMMARY_LINE}" ]]; then
 fi
 printf "%s%s%s\n\n" "${C_BOLD}${C_GREEN}" "${RULE}" "${C_RESET}"
 
-printf "  %sOpen the HTML report%s\n" "${C_BOLD}" "${C_RESET}"
+printf "  %sOpen the HTML report (default top-20 cap)%s\n" "${C_BOLD}" "${C_RESET}"
 printf "    %s%s%s\n" "${C_BLUE}" "${REPORT_URL}" "${C_RESET}"
 printf "    %sopen %s%s\n\n" "${C_DIM}" "${REPORT_REL}" "${C_RESET}"
+
+printf "  %sOpen the full report (uncapped, includes Least Privilege tab)%s\n" "${C_BOLD}" "${C_RESET}"
+printf "    %s%s%s\n" "${C_BLUE}" "${REPORT_FULL_URL}" "${C_RESET}"
+printf "    %sopen %s%s\n\n" "${C_DIM}" "${REPORT_FULL_REL}" "${C_RESET}"
 
 printf "  %sPoke at the cluster%s\n" "${C_BOLD}" "${C_RESET}"
 printf "    %skubectl get pods -A%s\n" "${C_DIM}" "${C_RESET}"
