@@ -404,23 +404,12 @@ func compactSubject(s *models.SubjectRef) string {
 	return s.Name
 }
 
-// extractEvidenceString pulls a single string field out of an analyzer-emitted Evidence
-// JSON blob. Returns "" on any miss (malformed JSON, missing key, non-string value) so
-// callers can use the result as a "render this when non-empty" gate.
+// extractEvidenceString is the one-shot form of decodeEvidence + evidenceString for callers
+// that only need one field and don't care to keep the decoded map around. Returns "" on
+// any miss (malformed JSON, missing key, non-string value) so callers can use the result
+// as a "render this when non-empty" gate.
 func extractEvidenceString(raw json.RawMessage, key string) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return ""
-	}
-	v, ok := obj[key]
-	if !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
+	return evidenceString(decodeEvidence(raw), key)
 }
 
 // extractEvidenceTriples decodes the analyzer's "unused_triples" array into a flat

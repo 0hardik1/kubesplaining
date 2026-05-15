@@ -155,6 +155,12 @@ func targetScoring(target models.EscalationTarget, hops int) (models.Severity, f
 	default:
 		base, severity, ruleID = 7.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-GENERIC"
 	}
+	// Attenuate by chain length so shorter, more directly-exploitable paths outrank
+	// longer ones to the same sink. Each extra hop costs 0.5 score points, and chains
+	// of 3+ hops drop one severity bucket - long chains usually require operator
+	// missteps at every step, so they're real but lower-priority than a 1- or 2-hop
+	// path. Scores stay in [1, 10] so even a deeply attenuated path is still
+	// flagged rather than disappearing under the threshold.
 	score := base
 	if hops > 1 {
 		score -= 0.5 * float64(hops-1)

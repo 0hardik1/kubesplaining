@@ -23,7 +23,7 @@ import (
 // LoadSnapshot reads a YAML or JSON manifest file (possibly containing multiple documents) and returns a synthetic Snapshot.
 // resourceTypeHint is used when a document lacks an explicit "kind" field (e.g. a headerless YAML fragment).
 func LoadSnapshot(path string, resourceTypeHint string) (models.Snapshot, error) {
-	bytesData, err := os.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return models.Snapshot{}, fmt.Errorf("read manifest file: %w", err)
 	}
@@ -31,7 +31,7 @@ func LoadSnapshot(path string, resourceTypeHint string) (models.Snapshot, error)
 	snapshot := models.NewSnapshot()
 	snapshot.Metadata.ClusterName = "manifest-scan"
 
-	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(bytesData), 4096)
+	decoder := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
 	for {
 		var raw map[string]any
 		if err := decoder.Decode(&raw); err != nil {
