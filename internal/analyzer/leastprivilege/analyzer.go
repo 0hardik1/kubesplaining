@@ -59,34 +59,34 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	mounted := mountedServiceAccounts(snapshot)
 
 	findings := make([]models.Finding, 0)
-	for _, p := range perms {
+	for _, subjectPerms := range perms {
 		// Skip built-in / control-plane subjects. The standard exclusions preset drops
 		// these later too, but skipping here avoids producing the findings at all so
 		// the leastprivilege tab's count badge stays accurate.
-		if strings.HasPrefix(p.Subject.Name, "system:") || p.Subject.Kind != "ServiceAccount" {
+		if strings.HasPrefix(subjectPerms.Subject.Name, "system:") || subjectPerms.Subject.Kind != "ServiceAccount" {
 			continue
 		}
 
 		// Only analyze SAs a workload actually mounts. Unmounted SAs are a separate
 		// concern handled by KUBE-RBAC-STALE-* in the rbac module - firing here would
 		// duplicate that signal without adding usage-aware data.
-		if !mounted[p.Subject.Key()] {
+		if !mounted[subjectPerms.Subject.Key()] {
 			continue
 		}
 
 		// Whole-role dead grant: mounted subject with zero observed events anywhere in
 		// the window. Emit one finding per distinct SourceRole.
-		if !a.idx.HasAnyEventsFor(p.Subject) {
-			roles := distinctSourceRoles(p.Rules)
+		if !a.idx.HasAnyEventsFor(subjectPerms.Subject) {
+			roles := distinctSourceRoles(subjectPerms.Rules)
 			for _, role := range roles {
-				findings = append(findings, a.findingForRole(p.Subject, role, p.Rules))
+				findings = append(findings, a.findingForRole(subjectPerms.Subject, role, subjectPerms.Rules))
 			}
 			continue
 		}
 
 		// Per-role narrowing: group rules by SourceRole, compute granted vs observed
 		// triples per group, emit one finding when the diff is non-empty.
-		byRole := groupRulesByRole(p.Rules)
+		byRole := groupRulesByRole(subjectPerms.Rules)
 		roleNames := make([]string, 0, len(byRole))
 		for name := range byRole {
 			roleNames = append(roleNames, name)
@@ -95,7 +95,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 
 		for _, roleName := range roleNames {
 			rules := byRole[roleName]
-			unused, used, allUnused, wildcardObserved := a.analyzeRoleForSubject(p.Subject, rules)
+			unused, used, allUnused, wildcardObserved := a.analyzeRoleForSubject(subjectPerms.Subject, rules)
 			if len(unused) == 0 && len(wildcardObserved) == 0 {
 				continue
 			}
@@ -103,11 +103,11 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			case allUnused:
 				// Every (verb, resource) triple in this Role is unused → suggest
 				// removing the whole Rule block, not just trimming verbs.
-				findings = append(findings, a.findingForUnusedRule(p.Subject, roleName, rules, unused))
+				findings = append(findings, a.findingForUnusedRule(subjectPerms.Subject, roleName, rules, unused))
 			case len(wildcardObserved) > 0:
-				findings = append(findings, a.findingForWildcardNarrowing(p.Subject, roleName, rules, wildcardObserved))
+				findings = append(findings, a.findingForWildcardNarrowing(subjectPerms.Subject, roleName, rules, wildcardObserved))
 			default:
-				findings = append(findings, a.findingForUnusedVerbs(p.Subject, roleName, rules, unused, used))
+				findings = append(findings, a.findingForUnusedVerbs(subjectPerms.Subject, roleName, rules, unused, used))
 			}
 		}
 	}
@@ -230,17 +230,32 @@ func (a *Analyzer) analyzeRoleForSubject(subj models.SubjectRef, rules []permiss
 	return keptUnused, keptUsed, allUnused, wildcards
 }
 
+// windowEvidence returns a base evidence map containing the four fields every
+// least-privilege finding needs (source_role + the audit-window context), with any
+// extras merged in. Callers append rule-specific fields like unused_triples or
+// suggested_role_yaml via `extras`. encoding/json sorts map keys alphabetically, so
+// the resulting JSON output is independent of insertion order.
+func (a *Analyzer) windowEvidence(roleName string, extras map[string]any) json.RawMessage {
+	out := map[string]any{
+		"source_role":      roleName,
+		"window_start":     a.idx.WindowStart,
+		"window_end":       a.idx.WindowEnd,
+		"events_processed": a.idx.EventsProcessed,
+	}
+	for k, v := range extras {
+		out[k] = v
+	}
+	encoded, _ := json.Marshal(out)
+	return encoded
+}
+
 // findingForRole emits KUBE-RBAC-UNUSED-ROLE-001 - the strongest signal, fired when the
 // subject has zero observed events in the window and a workload still references it.
 func (a *Analyzer) findingForRole(subj models.SubjectRef, roleName string, rules []permissions.EffectiveRule) models.Finding {
 	c := contentUnusedRole(subj, roleName, a.idx)
 	res := &models.ResourceRef{Kind: roleKindFor(rules, roleName), Name: roleName, APIGroup: "rbac.authorization.k8s.io"}
-	evidence, _ := json.Marshal(map[string]any{
-		"source_role":      roleName,
-		"window_start":     a.idx.WindowStart,
-		"window_end":       a.idx.WindowEnd,
-		"events_processed": a.idx.EventsProcessed,
-		"signal":           "no_observed_events_for_subject",
+	evidence := a.windowEvidence(roleName, map[string]any{
+		"signal": "no_observed_events_for_subject",
 	})
 	return buildFinding(
 		"KUBE-RBAC-UNUSED-ROLE-001",
@@ -259,12 +274,8 @@ func (a *Analyzer) findingForRole(subj models.SubjectRef, roleName string, rules
 func (a *Analyzer) findingForUnusedRule(subj models.SubjectRef, roleName string, rules []permissions.EffectiveRule, unused []triple) models.Finding {
 	c := contentUnusedRule(subj, roleName, unused, a.idx)
 	res := &models.ResourceRef{Kind: roleKindFor(rules, roleName), Name: roleName, APIGroup: "rbac.authorization.k8s.io"}
-	evidence, _ := json.Marshal(map[string]any{
-		"source_role":      roleName,
-		"unused_triples":   tripleListJSON(unused),
-		"window_start":     a.idx.WindowStart,
-		"window_end":       a.idx.WindowEnd,
-		"events_processed": a.idx.EventsProcessed,
+	evidence := a.windowEvidence(roleName, map[string]any{
+		"unused_triples": tripleListJSON(unused),
 	})
 	return buildFinding(
 		"KUBE-RBAC-UNUSED-RULE-001",
@@ -286,13 +297,9 @@ func (a *Analyzer) findingForUnusedRule(subj models.SubjectRef, roleName string,
 func (a *Analyzer) findingForUnusedVerbs(subj models.SubjectRef, roleName string, rules []permissions.EffectiveRule, unused, used []triple) models.Finding {
 	c := contentUnusedVerbs(subj, roleName, unused, a.idx)
 	res := &models.ResourceRef{Kind: roleKindFor(rules, roleName), Name: roleName, APIGroup: "rbac.authorization.k8s.io"}
-	evidence, _ := json.Marshal(map[string]any{
-		"source_role":         roleName,
+	evidence := a.windowEvidence(roleName, map[string]any{
 		"unused_triples":      tripleListJSON(unused),
 		"used_triples":        tripleListJSON(used),
-		"window_start":        a.idx.WindowStart,
-		"window_end":          a.idx.WindowEnd,
-		"events_processed":    a.idx.EventsProcessed,
 		"suggested_role_yaml": c.SuggestedRoleYAML,
 	})
 	return buildFinding(
@@ -319,12 +326,8 @@ func (a *Analyzer) findingForWildcardNarrowing(subj models.SubjectRef, roleName 
 			"observed_verbs": w.ObservedVerbs,
 		})
 	}
-	evidence, _ := json.Marshal(map[string]any{
-		"source_role":         roleName,
+	evidence := a.windowEvidence(roleName, map[string]any{
 		"wildcards":           wildcardsJSON,
-		"window_start":        a.idx.WindowStart,
-		"window_end":          a.idx.WindowEnd,
-		"events_processed":    a.idx.EventsProcessed,
 		"suggested_role_yaml": c.SuggestedRoleYAML,
 	})
 	return buildFinding(

@@ -88,12 +88,35 @@ func NewWithConfig(cfg Config) *Engine {
 // correlates and dedupes the results, filters at or above the severity threshold, and
 // returns them sorted by severity then score along with an AdmissionSummary describing
 // what the reweight stage did.
+//
+// The pipeline is broken into four named stages below so a first-time reader can follow
+// the data flow: snapshot → selected modules → raw findings → reweighted/correlated/
+// deduped findings → sorted slice ready for the report writer.
 func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Options) (AnalyzeResult, error) {
 	mode := opts.AdmissionMode
 	if mode == "" {
 		mode = AdmissionModeSuppress
 	}
 
+	selected, err := e.selectModules(opts)
+	if err != nil {
+		return AnalyzeResult{}, err
+	}
+
+	findings, firstErr := runModulesInParallel(ctx, snapshot, selected)
+
+	findings, admissionSummary := postProcess(findings, snapshot, mode)
+
+	filtered := filterByThreshold(findings, opts.Threshold)
+	sortFindings(filtered)
+
+	return AnalyzeResult{Findings: filtered, Admission: admissionSummary}, firstErr
+}
+
+// selectModules applies the --only-modules / --skip-modules filters and rebinds the
+// leastprivilege module with the per-call UsageIndex. The engine itself is stateless on
+// options; rebinding here keeps the module's audit data scoped to one Analyze call.
+func (e *Engine) selectModules(opts Options) ([]Module, error) {
 	selected := make([]Module, 0, len(e.modules))
 	for _, module := range e.modules {
 		if len(opts.OnlyModules) > 0 && !slices.Contains(opts.OnlyModules, module.Name()) {
@@ -102,27 +125,29 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 		if slices.Contains(opts.SkipModules, module.Name()) {
 			continue
 		}
-		// Rebind the leastprivilege module with the per-call UsageIndex. The engine
-		// itself is stateless on options; this keeps the module's audit data scoped
-		// to one Analyze call.
 		if module.Name() == "leastprivilege" {
 			module = leastprivilege.New(opts.UsageIndex)
 		}
 		selected = append(selected, module)
 	}
-
 	if len(selected) == 0 {
-		return AnalyzeResult{}, fmt.Errorf("no analysis modules selected")
+		return nil, fmt.Errorf("no analysis modules selected")
 	}
+	return selected, nil
+}
 
+// runModulesInParallel fans out each module to its own goroutine, waits for all of them,
+// and returns the merged findings slice. If any module returns an error, only the first
+// one is reported; the other modules' findings still come back so a single misbehaving
+// analyzer can't blank the whole report.
+func runModulesInParallel(ctx context.Context, snapshot models.Snapshot, modules []Module) ([]models.Finding, error) {
 	var (
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		findings []models.Finding
 		firstErr error
 	)
-
-	for _, module := range selected {
+	for _, module := range modules {
 		module := module
 		wg.Add(1)
 		go func() {
@@ -136,33 +161,50 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 			findings = append(findings, moduleFindings...)
 		}()
 	}
-
 	wg.Wait()
+	return findings, firstErr
+}
 
+// postProcess runs the cross-module passes that need every module's output in one place:
+// admission-aware reweighting, policy-engine presence tagging, chain-amplification
+// correlation, and cross-module deduplication. Returns the surviving findings and the
+// AdmissionSummary describing what the reweight stage did.
+func postProcess(findings []models.Finding, snapshot models.Snapshot, mode AdmissionMode) ([]models.Finding, models.AdmissionSummary) {
 	findings, admissionSummary := applyAdmissionMitigations(findings, snapshot, mode)
 	findings, admissionSummary = applyPolicyEnginePresenceTags(findings, snapshot, admissionSummary, mode)
 	findings = correlate(findings)
 	findings = dedupe(findings)
+	return findings, admissionSummary
+}
 
+// filterByThreshold drops findings whose severity falls below the operator-supplied
+// threshold. We reuse the input slice's backing array (findings[:0]) because the input
+// is no longer needed after this point - this avoids an allocation but is only safe
+// because no later code reads the pre-filter slice.
+func filterByThreshold(findings []models.Finding, threshold models.Severity) []models.Finding {
 	filtered := findings[:0]
 	for _, finding := range findings {
-		if scoring.AboveThreshold(finding, opts.Threshold) {
+		if scoring.AboveThreshold(finding, threshold) {
 			filtered = append(filtered, finding)
 		}
 	}
+	return filtered
+}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].Severity.Rank() != filtered[j].Severity.Rank() {
-			return filtered[i].Severity.Rank() > filtered[j].Severity.Rank()
+// sortFindings sorts in place by severity (descending), then score (descending), then
+// rule ID (ascending), then title (ascending). Stable ordering matters: tests, golden
+// files, and SARIF consumers all depend on the same input yielding the same output.
+func sortFindings(findings []models.Finding) {
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].Severity.Rank() != findings[j].Severity.Rank() {
+			return findings[i].Severity.Rank() > findings[j].Severity.Rank()
 		}
-		if filtered[i].Score != filtered[j].Score {
-			return filtered[i].Score > filtered[j].Score
+		if findings[i].Score != findings[j].Score {
+			return findings[i].Score > findings[j].Score
 		}
-		if filtered[i].RuleID != filtered[j].RuleID {
-			return filtered[i].RuleID < filtered[j].RuleID
+		if findings[i].RuleID != findings[j].RuleID {
+			return findings[i].RuleID < findings[j].RuleID
 		}
-		return filtered[i].Title < filtered[j].Title
+		return findings[i].Title < findings[j].Title
 	})
-
-	return AnalyzeResult{Findings: filtered, Admission: admissionSummary}, firstErr
 }

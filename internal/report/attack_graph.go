@@ -14,6 +14,25 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
+// entryInfo accumulates display metadata for a single "Entry point" node in the attack
+// graph: the subject/resource that owns one or more abused-capability findings. We use
+// a pointer-valued map (map[string]*entryInfo) so each Finding can mutate the same
+// accumulator in place as it gets attributed.
+//
+// representative remembers a sample finding so we can later resolve a Glossary key from
+// its Subject/Resource without re-walking the candidate set.
+type entryInfo struct {
+	Key            string
+	Title          string
+	Subtitle       string
+	Meta           string
+	SevClass       string
+	topScore       float64
+	representative models.Finding
+	hasRep         bool
+	entryKind      string // "Subject" | "Resource" — used by the JS filter chips.
+}
+
 // buildAttackGraph composes a 3-column flow diagram (entries → capabilities → impacts) from findings.
 // Coordinates are deterministic so the template only emits SVG, no layout computation.
 // Returns the cosmetic AttackGraph (for the SVG template) and a detail GraphPayload (for the
@@ -111,19 +130,6 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 
 	// Select entry points: the resource/subject each capability is about, deduplicated.
 	// Entry key = subject.Key() when present, else resource.Key(). Label reflects source.
-	// representative remembers a sample finding so we can later resolve a GlossaryKey from
-	// its Subject/Resource without re-walking findings.
-	type entryInfo struct {
-		Key            string
-		Title          string
-		Subtitle       string
-		Meta           string
-		SevClass       string
-		topScore       float64
-		representative models.Finding
-		hasRep         bool
-		entryKind      string // "Subject" | "Resource" — used by the JS filter chips.
-	}
 	entries := map[string]*entryInfo{}
 	entryForCap := make([]string, len(caps))
 	for i, f := range caps {

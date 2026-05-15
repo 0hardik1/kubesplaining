@@ -557,6 +557,12 @@ func makeResourceList(items []string) ReconResourceList {
 	}
 }
 
+// buildReconGuardrails populates the "is anything stopping an attacker here?" panel of
+// the Recon tab. It summarizes four defenses: NetworkPolicies (per-namespace coverage),
+// Pod Security Admission enforce-level labels, third-party policy engines (Kyverno,
+// Gatekeeper, VAP), and the count of pods still mounting the default ServiceAccount
+// token. Counts feed the operator-friendly summary; missing data means "we didn't see
+// any" rather than "everything is fine".
 func buildReconGuardrails(s models.Snapshot) ReconGuardrails {
 	g := ReconGuardrails{
 		NetworkPolicies: len(s.Resources.NetworkPolicies),

@@ -261,6 +261,12 @@ func scoreForRules(rules []permissions.EffectiveRule, defaultSA bool) float64 {
 }
 
 // severityForRules maps the numeric scoreForRules result to a Severity bucket.
+//
+// This intentionally duplicates the bucket cutoffs from scoring.SeverityForScore rather
+// than calling that helper, so the ServiceAccount module can tune them independently if
+// SA-specific heuristics ever drift from the global scale. If you change scoreForRules,
+// re-check the boundaries here so a small numeric shift doesn't accidentally drop a SA
+// from "high" to "medium".
 func severityForRules(rules []permissions.EffectiveRule, defaultSA bool) models.Severity {
 	score := scoreForRules(rules, defaultSA)
 	switch {
