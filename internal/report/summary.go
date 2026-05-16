@@ -150,6 +150,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		GraphScript:    template.JS(kpGraphScript),
 		AnchorByID:     anchorByID,
 		LeastPrivilege: buildLeastPrivilegeSection(snapshot, findings, nil),
+		Compliance:     buildComplianceSection(findings),
 	}
 	if len(findings) > 5 {
 		data.TopFindings = append([]models.Finding(nil), findings[:5]...)

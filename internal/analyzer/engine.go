@@ -18,6 +18,7 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/analyzer/rbac"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/secrets"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/serviceaccount"
+	"github.com/0hardik1/kubesplaining/internal/compliance"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	"github.com/0hardik1/kubesplaining/internal/usage"
@@ -174,6 +175,7 @@ func postProcess(findings []models.Finding, snapshot models.Snapshot, mode Admis
 	findings, admissionSummary = applyPolicyEnginePresenceTags(findings, snapshot, admissionSummary, mode)
 	findings = correlate(findings)
 	findings = dedupe(findings)
+	findings = compliance.Apply(findings)
 	return findings, admissionSummary
 }
 

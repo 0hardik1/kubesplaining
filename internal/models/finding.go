@@ -36,9 +36,20 @@ type Finding struct {
 	LearnMore        []Reference      `json:"learn_more,omitempty"`       // structured references (Title + URL)
 	MitreTechniques  []MitreTechnique `json:"mitre_techniques,omitempty"` // ATT&CK technique IDs for Containers / Kubernetes
 	EscalationPath   []EscalationHop  `json:"escalation_path,omitempty"`  // populated by the privesc module
+	Frameworks       []FrameworkRef   `json:"frameworks,omitempty"`       // compliance/hardening controls this rule maps to (CIS, NSA, …); populated post-analysis from the static mapping table
 	Excluded         bool             `json:"excluded"`                   // set post-analysis by the exclusions matcher
 	ExclusionReason  string           `json:"exclusion_reason,omitempty"`
 	Tags             []string         `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
+}
+
+// FrameworkRef cites one control in an external compliance or hardening framework that a finding maps to.
+// Decoupled from MitreTechnique because MITRE is an attacker-technique taxonomy whereas Frameworks are
+// auditor-facing compliance claims (CIS Kubernetes Benchmark, NSA/CISA Kubernetes Hardening Guide, …).
+type FrameworkRef struct {
+	Framework string `json:"framework"`       // canonical framework slug, e.g. "CIS-1.9" or "NSA-CISA-1.2"
+	Control   string `json:"control"`         // control identifier within the framework, e.g. "5.1.3"
+	Title     string `json:"title,omitempty"` // human-readable title of the control
+	URL       string `json:"url,omitempty"`   // optional deep link to the control description
 }
 
 // Reference is a structured external citation (e.g. CIS benchmark, MITRE ATT&CK technique, K8s docs).

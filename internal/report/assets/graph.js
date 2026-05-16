@@ -1,7 +1,7 @@
 
 // --- Tabs / cross-tab helpers (run regardless of graph presence) -----------
 (function() {
-  var validTabs = { overview: 1, attack: 1, findings: 1, leastprivilege: 1 };
+  var validTabs = { overview: 1, attack: 1, findings: 1, leastprivilege: 1, compliance: 1 };
 
   function activate(name) {
     if (!validTabs[name]) {

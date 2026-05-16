@@ -78,18 +78,263 @@
     .tab[aria-selected="true"] .tab-count { background: rgba(106,183,255,0.18); color: var(--accent); }
     body[data-active-tab="overview"] main [data-tab="attack"],
     body[data-active-tab="overview"] main [data-tab="findings"],
-    body[data-active-tab="overview"] main [data-tab="leastprivilege"] { display: none; }
+    body[data-active-tab="overview"] main [data-tab="leastprivilege"],
+    body[data-active-tab="overview"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="attack"] main [data-tab="overview"],
     body[data-active-tab="attack"] main [data-tab="findings"],
-    body[data-active-tab="attack"] main [data-tab="leastprivilege"] { display: none; }
+    body[data-active-tab="attack"] main [data-tab="leastprivilege"],
+    body[data-active-tab="attack"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="findings"] main [data-tab="overview"],
     body[data-active-tab="findings"] main [data-tab="attack"],
-    body[data-active-tab="findings"] main [data-tab="leastprivilege"] { display: none; }
+    body[data-active-tab="findings"] main [data-tab="leastprivilege"],
+    body[data-active-tab="findings"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="leastprivilege"] main [data-tab="overview"],
     body[data-active-tab="leastprivilege"] main [data-tab="attack"],
-    body[data-active-tab="leastprivilege"] main [data-tab="findings"] { display: none; }
-    body[data-active-tab="leastprivilege"] details.recon-card { display: none; }
+    body[data-active-tab="leastprivilege"] main [data-tab="findings"],
+    body[data-active-tab="leastprivilege"] main [data-tab="compliance"] { display: none; }
+    body[data-active-tab="compliance"] main [data-tab="overview"],
+    body[data-active-tab="compliance"] main [data-tab="attack"],
+    body[data-active-tab="compliance"] main [data-tab="findings"],
+    body[data-active-tab="compliance"] main [data-tab="leastprivilege"] { display: none; }
+    body[data-active-tab="leastprivilege"] details.recon-card,
+    body[data-active-tab="compliance"] details.recon-card { display: none; }
     .tabs-empty { color: var(--text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
+
+    /* --- Compliance Coverage tab styles ----------------------------------- */
+    /* The tab is a stack of: hero (intro + KPI strip) → framework cards.
+       Each framework card has its own accent color (CIS blue, NSA purple) that
+       cascades to its badge, control-ID chips, and KPI tile borders so a reader
+       can tell at a glance which framework's controls they're scanning. */
+    :root {
+      --cf-cis-accent: #6ab7ff;
+      --cf-cis-tint: rgba(106,183,255,0.12);
+      --cf-cis-wash: rgba(106,183,255,0.06);
+      --cf-nsa-accent: #c094ff;
+      --cf-nsa-tint: rgba(192,148,255,0.12);
+      --cf-nsa-wash: rgba(192,148,255,0.06);
+      --cf-other-accent: #a0a8b8;
+      --cf-other-tint: rgba(160,168,184,0.12);
+      --cf-other-wash: rgba(160,168,184,0.06);
+      --cf-sev-crit: #ff6b6b;
+      --cf-sev-high: #ff9f43;
+      --cf-sev-med: #ffd64a;
+      --cf-sev-low: #6bd66b;
+      --cf-sev-info: #8aa0bf;
+    }
+
+    .compliance-hero {
+      padding: 28px 32px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background:
+        radial-gradient(circle at 100% 0%, rgba(106,183,255,0.06), transparent 50%),
+        radial-gradient(circle at 0% 100%, rgba(192,148,255,0.05), transparent 50%),
+        linear-gradient(180deg, rgba(24,32,50,1) 0%, rgba(18,24,38,1) 100%);
+      margin-bottom: 22px;
+      position: relative;
+      overflow: hidden;
+    }
+    .compliance-hero h1 {
+      font-size: 26px; letter-spacing: -0.02em; margin: 0 0 10px;
+      background: linear-gradient(90deg, var(--text) 0%, var(--cf-cis-accent) 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .compliance-hero p.compliance-sub {
+      color: var(--text-mut); font-size: 13.5px; line-height: 1.6; max-width: 720px; margin: 0;
+    }
+    .compliance-unmapped {
+      margin-top: 18px; padding: 12px 16px;
+      border: 1px solid var(--border); border-left: 3px solid var(--cf-sev-med);
+      border-radius: 8px; background: rgba(255,214,74,0.04);
+      color: var(--text-mut); font-size: 12.5px; line-height: 1.5;
+    }
+    .compliance-unmapped strong { color: var(--text); font-weight: 600; }
+    .compliance-kpis {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px; margin-top: 22px;
+    }
+    .cf-kpi {
+      padding: 14px 16px; border-radius: 12px;
+      background: rgba(255,255,255,0.025);
+      border: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 4px;
+      position: relative;
+    }
+    .cf-kpi-value {
+      font-size: 28px; font-weight: 700; color: var(--text);
+      font-feature-settings: "tnum"; letter-spacing: -0.02em; line-height: 1;
+    }
+    .cf-kpi-label {
+      font-size: 10.5px; color: var(--text-mut);
+      text-transform: uppercase; letter-spacing: 0.09em; font-weight: 600;
+    }
+    .cf-kpi.crit .cf-kpi-value { color: var(--cf-sev-crit); }
+    .cf-kpi.high .cf-kpi-value { color: var(--cf-sev-high); }
+    .cf-kpi.crit { border-left: 3px solid var(--cf-sev-crit); }
+    .cf-kpi.high { border-left: 3px solid var(--cf-sev-high); }
+    .cf-kpi.cis { border-left: 3px solid var(--cf-cis-accent); }
+    .cf-kpi.nsa { border-left: 3px solid var(--cf-nsa-accent); }
+
+    /* Framework block: header + control cards. */
+    .cf-framework { margin-bottom: 26px; }
+    .cf-framework-hd {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 18px; padding: 16px 20px; flex-wrap: wrap;
+      background: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01));
+      border: 1px solid var(--border); border-bottom: 0;
+      border-radius: 14px 14px 0 0;
+    }
+    .cf-framework.cf-cis .cf-framework-hd {
+      background:
+        linear-gradient(90deg, var(--cf-cis-wash), transparent 70%),
+        linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01));
+    }
+    .cf-framework.cf-nsa .cf-framework-hd {
+      background:
+        linear-gradient(90deg, var(--cf-nsa-wash), transparent 70%),
+        linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0.01));
+    }
+    .cf-framework-name { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .cf-framework-badge {
+      font-size: 10.5px; font-weight: 700; padding: 5px 11px;
+      border-radius: 999px; letter-spacing: 0.07em; text-transform: uppercase;
+      flex: 0 0 auto; white-space: nowrap;
+    }
+    .cf-framework.cf-cis .cf-framework-badge { background: var(--cf-cis-tint); color: var(--cf-cis-accent); }
+    .cf-framework.cf-nsa .cf-framework-badge { background: var(--cf-nsa-tint); color: var(--cf-nsa-accent); }
+    .cf-framework.cf-other .cf-framework-badge { background: var(--cf-other-tint); color: var(--cf-other-accent); }
+    .cf-framework-name h2 {
+      font-size: 15.5px; margin: 0; font-weight: 600; letter-spacing: -0.01em;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .cf-framework-meta {
+      display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap;
+      font-size: 12px;
+    }
+    .cf-framework-meta .cf-stat { color: var(--text-mut); white-space: nowrap; }
+    .cf-framework-meta .cf-stat strong { color: var(--text); font-weight: 700; }
+    .cf-framework-meta a.cf-doc-link {
+      color: var(--text-mut); text-decoration: none; font-size: 11.5px;
+      padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .cf-framework.cf-cis .cf-framework-meta a.cf-doc-link:hover { color: var(--cf-cis-accent); border-color: var(--cf-cis-accent); background: var(--cf-cis-tint); }
+    .cf-framework.cf-nsa .cf-framework-meta a.cf-doc-link:hover { color: var(--cf-nsa-accent); border-color: var(--cf-nsa-accent); background: var(--cf-nsa-tint); }
+
+    .cf-controls {
+      border: 1px solid var(--border); border-radius: 0 0 14px 14px;
+      background: rgba(20,26,40,0.5);
+      overflow: hidden;
+    }
+    .cf-control {
+      /* First track grows from 96px (enough for "5.1.1") up to 180px so longer NSA
+         section names like "Network Separation and Hardening" can wrap into 2 lines
+         without horizontal overflow. */
+      display: grid; grid-template-columns: minmax(96px, 180px) 1fr auto;
+      gap: 18px; align-items: start;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      transition: background 0.15s;
+    }
+    .cf-control:last-child { border-bottom: 0; }
+    .cf-control:hover { background: rgba(255,255,255,0.018); }
+    .cf-control::before {
+      content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+      background: transparent;
+      transition: background 0.2s;
+    }
+    .cf-control.cf-sev-crit::before { background: var(--cf-sev-crit); }
+    .cf-control.cf-sev-high::before { background: var(--cf-sev-high); }
+    .cf-control.cf-sev-med::before { background: var(--cf-sev-med); }
+    .cf-control.cf-sev-low::before { background: var(--cf-sev-low); }
+    .cf-control.cf-sev-info::before { background: var(--cf-sev-info); }
+
+    .cf-control-id {
+      display: flex; align-items: center; justify-content: center;
+      font-family: "JetBrains Mono","SF Mono",Menlo,monospace;
+      font-size: 13px; font-weight: 600;
+      padding: 6px 12px; border-radius: 8px;
+      max-width: 100%;
+      white-space: normal; word-break: break-word; line-height: 1.35;
+      text-align: center;
+    }
+    /* CIS controls are numeric ("5.1.1") — keep the monospace badge tight.
+       NSA "controls" are descriptive section names ("Authorization",
+       "Network Separation and Hardening") — drop monospace and shrink the
+       font so prose reads naturally and longer names fit on 2 lines. */
+    .cf-framework.cf-cis .cf-control-id { color: var(--cf-cis-accent); background: var(--cf-cis-tint); }
+    .cf-framework.cf-nsa .cf-control-id {
+      color: var(--cf-nsa-accent); background: var(--cf-nsa-tint);
+      font-family: inherit; font-size: 12px; letter-spacing: 0;
+    }
+    .cf-framework.cf-other .cf-control-id { color: var(--cf-other-accent); background: var(--cf-other-tint); }
+
+    .cf-control-main { min-width: 0; }
+    .cf-control-title {
+      font-size: 14px; line-height: 1.45; font-weight: 600;
+      color: var(--text); margin: 0 0 8px;
+    }
+    .cf-control-pills {
+      display: inline-flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+    }
+    .cf-control-findings {
+      list-style: none; padding: 0; margin: 0;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .cf-finding {
+      display: grid;
+      grid-template-columns: 72px 220px 1fr;
+      gap: 14px;
+      align-items: baseline;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.015);
+      transition: background 0.12s;
+      font-size: 12.5px;
+    }
+    .cf-finding:hover { background: rgba(255,255,255,0.04); }
+    .cf-finding-sev {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+      padding: 3px 9px; border-radius: 5px;
+      text-align: center;
+      white-space: nowrap; width: fit-content;
+    }
+    .cf-finding-sev.crit { color: var(--cf-sev-crit); background: rgba(255,107,107,0.13); }
+    .cf-finding-sev.high { color: var(--cf-sev-high); background: rgba(255,159,67,0.13); }
+    .cf-finding-sev.med  { color: var(--cf-sev-med);  background: rgba(255,214,74,0.13); }
+    .cf-finding-sev.low  { color: var(--cf-sev-low);  background: rgba(107,214,107,0.13); }
+    .cf-finding-sev.info { color: var(--cf-sev-info); background: rgba(138,160,191,0.13); }
+    .cf-finding-rule {
+      font-family: "JetBrains Mono","SF Mono",Menlo,monospace;
+      font-size: 11.5px; font-weight: 500; color: var(--text);
+      text-decoration: none;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      border-bottom: 1px dashed transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .cf-finding-rule:hover { color: var(--accent); border-bottom-color: var(--accent); }
+    .cf-finding-title { color: var(--text-mut); line-height: 1.5; min-width: 0; }
+    .cf-finding-title code {
+      background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px;
+      font-size: 11px; color: var(--text);
+    }
+    .cf-control-count {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--text-mut);
+      padding: 4px 10px; border-radius: 999px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      white-space: nowrap; flex: 0 0 auto;
+    }
+    .cf-control-count strong { color: var(--text); font-weight: 700; font-feature-settings: "tnum"; }
+
+    @media (max-width: 820px) {
+      .cf-control { grid-template-columns: 1fr; }
+      .cf-control-count { justify-self: start; }
+      .cf-finding { grid-template-columns: 60px 1fr; }
+      .cf-finding-title { grid-column: 1 / -1; padding-left: 74px; }
+    }
 
     /* --- Least Privilege tab styles --------------------------------------- */
     .lp-header { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: start;
@@ -1117,6 +1362,9 @@
       <button type="button" class="tab" role="tab" id="tabbtn-findings" aria-controls="tab-findings" aria-selected="false" data-tab="findings">Findings <span class="tab-count">{{ .Summary.Total }}</span></button>
       {{ end }}
       <button type="button" class="tab" role="tab" id="tabbtn-leastprivilege" aria-controls="tab-leastprivilege" aria-selected="false" data-tab="leastprivilege">Least Privilege <span class="tab-count">{{ .LeastPrivilege.Total }}</span></button>
+      {{ if and (not .LeastPrivilegeOnly) (gt (len .Compliance.Frameworks) 0) }}
+      <button type="button" class="tab" role="tab" id="tabbtn-compliance" aria-controls="tab-compliance" aria-selected="false" data-tab="compliance">Compliance <span class="tab-count">{{ .Compliance.Total }}</span></button>
+      {{ end }}
     </nav>
   </header>
 
@@ -1955,6 +2203,104 @@
       {{ end }}
       {{ end }}
     </section>
+
+    {{ if gt (len .Compliance.Frameworks) 0 }}
+    <section data-tab="compliance" id="tab-compliance" aria-labelledby="tabbtn-compliance">
+      <div class="compliance-hero">
+        <h1>Compliance Coverage</h1>
+        <p class="compliance-sub">
+          Findings mapped to controls in the <strong>CIS Kubernetes Benchmark v1.9</strong> and the
+          <strong>NSA/CISA Kubernetes Hardening Guide v1.2</strong>. Use this view to answer auditor
+          questions like &ldquo;which findings touch CIS 5.1 (RBAC)?&rdquo; without re-reading every
+          finding&rsquo;s remediation. One finding can map to multiple controls; the same finding
+          appears under every control it satisfies.
+        </p>
+        <div class="compliance-kpis">
+          <div class="cf-kpi">
+            <span class="cf-kpi-value">{{ .Compliance.Total }}</span>
+            <span class="cf-kpi-label">Findings mapped</span>
+          </div>
+          <div class="cf-kpi">
+            <span class="cf-kpi-value">{{ len .Compliance.Frameworks }}</span>
+            <span class="cf-kpi-label">Frameworks</span>
+          </div>
+          {{ range .Compliance.Frameworks }}
+          <div class="cf-kpi {{ .CSSKey }}">
+            <span class="cf-kpi-value">{{ len .Controls }}</span>
+            <span class="cf-kpi-label">{{ .ShortName }} controls hit</span>
+          </div>
+          {{ end }}
+          {{ if gt .Summary.Critical 0 }}
+          <div class="cf-kpi crit">
+            <span class="cf-kpi-value">{{ .Summary.Critical }}</span>
+            <span class="cf-kpi-label">Critical findings</span>
+          </div>
+          {{ else if gt .Summary.High 0 }}
+          <div class="cf-kpi high">
+            <span class="cf-kpi-value">{{ .Summary.High }}</span>
+            <span class="cf-kpi-label">High findings</span>
+          </div>
+          {{ end }}
+        </div>
+        {{ if gt .Compliance.UnmappedCount 0 }}
+        <p class="compliance-unmapped">
+          <strong>{{ .Compliance.UnmappedCount }}</strong> finding{{ if ne .Compliance.UnmappedCount 1 }}s{{ end }} in this report
+          {{ if eq .Compliance.UnmappedCount 1 }}is{{ else }}are{{ end }} not yet mapped to any external framework control.
+          They remain visible in every other tab; only the Compliance view excludes them.
+        </p>
+        {{ end }}
+      </div>
+
+      {{ range .Compliance.Frameworks }}
+      <section class="cf-framework cf-{{ .CSSKey }}">
+        <div class="cf-framework-hd">
+          <div class="cf-framework-name">
+            <span class="cf-framework-badge">{{ .ShortName }}</span>
+            <h2>{{ .Name }}</h2>
+          </div>
+          <div class="cf-framework-meta">
+            <span class="cf-stat"><strong>{{ len .Controls }}</strong> {{ if eq (len .Controls) 1 }}control{{ else }}controls{{ end }}</span>
+            <span class="cf-stat"><strong>{{ .Summary.Total }}</strong> {{ if eq .Summary.Total 1 }}finding{{ else }}findings{{ end }}</span>
+            {{ if gt .Summary.Critical 0 }}<span class="sev-pill crit">{{ .Summary.Critical }} crit</span>{{ end }}
+            {{ if gt .Summary.High 0 }}<span class="sev-pill high">{{ .Summary.High }} high</span>{{ end }}
+            {{ if gt .Summary.Medium 0 }}<span class="sev-pill med">{{ .Summary.Medium }} med</span>{{ end }}
+            {{ if gt .Summary.Low 0 }}<span class="sev-pill low">{{ .Summary.Low }} low</span>{{ end }}
+            {{ if .URL }}<a href="{{ .URL }}" target="_blank" rel="noopener" class="cf-doc-link">View framework &rarr;</a>{{ end }}
+          </div>
+        </div>
+        <div class="cf-controls">
+          {{ range .Controls }}
+          <div class="cf-control cf-sev-{{ sevClass .TopSeverity }}">
+            <div class="cf-control-id">{{ .Control }}</div>
+            <div class="cf-control-main">
+              <h3 class="cf-control-title">{{ .Title }}</h3>
+              <div class="cf-control-pills">
+                {{ if gt .Summary.Critical 0 }}<span class="sev-pill crit">{{ .Summary.Critical }} crit</span>{{ end }}
+                {{ if gt .Summary.High 0 }}<span class="sev-pill high">{{ .Summary.High }} high</span>{{ end }}
+                {{ if gt .Summary.Medium 0 }}<span class="sev-pill med">{{ .Summary.Medium }} med</span>{{ end }}
+                {{ if gt .Summary.Low 0 }}<span class="sev-pill low">{{ .Summary.Low }} low</span>{{ end }}
+                {{ if gt .Summary.Info 0 }}<span class="sev-pill low">{{ .Summary.Info }} info</span>{{ end }}
+              </div>
+              <ul class="cf-control-findings">
+                {{ range .Findings }}
+                <li class="cf-finding">
+                  <span class="cf-finding-sev {{ sevClass .Severity }}">{{ sevShort .Severity }}</span>
+                  <a class="cf-finding-rule" href="#finding-{{ .RuleID }}">{{ .RuleID }}</a>
+                  <span class="cf-finding-title">{{ inlineHTML .Title }}</span>
+                </li>
+                {{ end }}
+              </ul>
+            </div>
+            <span class="cf-control-count">
+              <strong>{{ .Summary.Total }}</strong> {{ if eq .Summary.Total 1 }}finding{{ else }}findings{{ end }}
+            </span>
+          </div>
+          {{ end }}
+        </div>
+      </section>
+      {{ end }}
+    </section>
+    {{ end }}
 
     <p class="footer">Kubesplaining · {{ if .Snapshot.Metadata.KubesplainingVersion }}{{ .Snapshot.Metadata.KubesplainingVersion }} · {{ end }}{{ .Summary.Total }} findings · {{ len .Modules }} modules</p>
   </main>

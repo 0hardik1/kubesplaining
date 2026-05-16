@@ -328,6 +328,46 @@ type LeastPrivilegeFindingCard struct {
 	SuggestedRoleYAML string
 }
 
+// ComplianceSection feeds the "Compliance Coverage" HTML tab. One ComplianceFrameworkView per
+// registered framework, grouped by control. Rendered from compliance.Apply'd findings; if no
+// findings carry the framework, the view is omitted from Frameworks. UnmappedCount is informational
+// — how many findings in the report have no compliance mapping at all (e.g. internal-only rules).
+type ComplianceSection struct {
+	Total         int                       // findings with at least one framework tag
+	UnmappedCount int                       // findings with zero framework tags
+	Frameworks    []ComplianceFrameworkView // one per framework that has at least one control hit
+}
+
+// ComplianceFrameworkView is one framework's rollup — top-line counts plus the per-control rows.
+type ComplianceFrameworkView struct {
+	Slug      string
+	Name      string
+	ShortName string
+	URL       string
+	// CSSKey is a short kebab-case identifier ("cis" / "nsa") that the template uses to
+	// switch framework-specific accent colors. Kept separate from Slug so the slug can
+	// stay as the public API identifier ("CIS-1.9") even if we tweak CSS classes.
+	CSSKey   string
+	Summary  Summary                // severity tally across all findings tagged with this framework
+	Controls []ComplianceControlRow // one row per (framework, control) pair, sorted by severity then count
+}
+
+// ComplianceControlRow is one control's rollup inside a framework view. Findings is the deduped
+// list (no duplicate Finding.IDs) of every finding tagged with this control, sorted by severity
+// then score for display.
+type ComplianceControlRow struct {
+	Control string
+	Title   string
+	URL     string
+	// TopSeverity is the most-severe severity across the control's findings — drives the
+	// left-stripe color on the control card. The Summary fields would let the template
+	// re-derive this, but exposing it explicitly keeps the template free of nested
+	// conditionals.
+	TopSeverity models.Severity
+	Summary     Summary
+	Findings    []models.Finding
+}
+
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
 type htmlReportData struct {
 	Snapshot       models.Snapshot
@@ -341,6 +381,7 @@ type htmlReportData struct {
 	TopResources   []Hotspot
 	TopFindings    []models.Finding
 	LeastPrivilege LeastPrivilegeSection
+	Compliance     ComplianceSection
 	// DefaultTab is the data-active-tab attribute on <body> when the report loads.
 	// Empty preserves the legacy default (attack). --least-privilege-only sets
 	// "leastprivilege".

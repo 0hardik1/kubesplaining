@@ -45,6 +45,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		auditSource          string
 		auditWindowDays      int
 		leastPrivilegeOnly   bool
+		complianceFilters    []string
 	)
 
 	cmd := &cobra.Command{
@@ -129,6 +130,12 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				findings = filterLeastPrivilege(findings)
 			}
 
+			complianceSlugs, err := parseComplianceFilter(complianceFilters)
+			if err != nil {
+				return err
+			}
+			findings = applyComplianceFilter(findings, complianceSlugs)
+
 			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
 
 			if outputDir == "" {
@@ -189,6 +196,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringVar(&auditSource, "audit-source", "native", "Audit-log format: native (kube-apiserver JSON-lines) or eks (CloudWatch export from filter-log-events)")
 	cmd.Flags().IntVar(&auditWindowDays, "audit-window-days", 30, "How many days of audit history to consider when computing unused-permission findings")
 	cmd.Flags().BoolVar(&leastPrivilegeOnly, "least-privilege-only", false, "Focus mode: only emit least-privilege findings (UNUSED-*, WILDCARD-USED-PARTIAL-*, STALE-*) and open the Least Privilege tab by default. Requires --audit-log. Cluster-admin bindings are listed for review in the LP tab's inventory table instead of firing as findings.")
+	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa. Empty = no filter; the Compliance tab still renders all controls.")
 
 	return cmd
 }
