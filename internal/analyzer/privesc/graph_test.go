@@ -1,0 +1,242 @@
+package privesc
+
+import (
+	"context"
+	"testing"
+
+	"github.com/0hardik1/kubesplaining/internal/models"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+)
+
+// TestCSRApproveEdgeRequiresBothHalves checks the post-pass: a subject must
+// hold cluster-scoped `create csr` AND cluster-scoped `update csr/approval`
+// before the graph emits an edge to the system:masters sink. Each verb in
+// isolation must NOT emit the edge.
+func TestCSRApproveEdgeRequiresBothHalves(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		rules      []rbacv1.PolicyRule
+		expectEdge bool
+	}{
+		{
+			name: "only create — no edge",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+			},
+			expectEdge: false,
+		},
+		{
+			name: "only approve — no edge",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+			},
+			expectEdge: false,
+		},
+		{
+			name: "both halves — edge fires",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+			},
+			expectEdge: true,
+		},
+		{
+			name: "both halves via patch verb — edge fires",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"patch"}},
+			},
+			expectEdge: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := models.Snapshot{
+				Resources: models.SnapshotResources{
+					ClusterRoles: []rbacv1.ClusterRole{
+						{ObjectMeta: objectMeta("csr-role", ""), Rules: tc.rules},
+					},
+					ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+						{
+							ObjectMeta: objectMeta("csr-binding", ""),
+							RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "csr-role"},
+							Subjects: []rbacv1.Subject{
+								{Kind: "ServiceAccount", Name: "csr-sa", Namespace: "default"},
+							},
+						},
+					},
+				},
+			}
+			graph := BuildGraph(snapshot)
+			const subjectID = "subject:ServiceAccount/default/csr-sa"
+			var sawEdge bool
+			for _, edge := range graph.Edges {
+				if edge.From != subjectID {
+					continue
+				}
+				if edge.Action == "csr_approve" && edge.To == sinkSystemMasters {
+					sawEdge = true
+					if edge.Technique != "KUBE-PRIVESC-011" {
+						t.Errorf("expected csr_approve edge to carry Technique=KUBE-PRIVESC-011, got %q", edge.Technique)
+					}
+				}
+			}
+			if sawEdge != tc.expectEdge {
+				t.Fatalf("expectEdge=%v, sawEdge=%v; edges=%+v", tc.expectEdge, sawEdge, graph.Edges)
+			}
+		})
+	}
+}
+
+// TestCSRApproveEdgeRequiresClusterScope guards that namespace-scoped grants
+// (impossible in practice for CSRs, which are cluster-scoped, but worth a
+// regression test) do NOT count toward either half.
+func TestCSRApproveEdgeRequiresClusterScope(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Roles: []rbacv1.Role{
+				{
+					ObjectMeta: objectMeta("csr-role-ns", "team-a"),
+					Rules: []rbacv1.PolicyRule{
+						{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+						{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+					},
+				},
+			},
+			RoleBindings: []rbacv1.RoleBinding{
+				{
+					ObjectMeta: objectMeta("csr-rb", "team-a"),
+					RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "csr-role-ns"},
+					Subjects: []rbacv1.Subject{
+						{Kind: "ServiceAccount", Name: "csr-sa-ns", Namespace: "team-a"},
+					},
+				},
+			},
+		},
+	}
+	graph := BuildGraph(snapshot)
+	for _, edge := range graph.Edges {
+		if edge.Action == "csr_approve" {
+			t.Fatalf("namespace-scoped grant produced unexpected csr_approve edge: %+v", *edge)
+		}
+	}
+}
+
+// TestImpersonateSystemMastersEdgeFires confirms the existing system:masters
+// edge still emits when a subject holds cluster-scoped `impersonate groups`
+// (which covers impersonating system:masters). The edge predates the CSR work;
+// this test locks in its presence so future refactors don't drop it.
+func TestImpersonateSystemMastersEdgeFires(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			ClusterRoles: []rbacv1.ClusterRole{
+				{
+					ObjectMeta: objectMeta("imp-groups", ""),
+					Rules: []rbacv1.PolicyRule{
+						{APIGroups: []string{""}, Resources: []string{"groups"}, Verbs: []string{"impersonate"}},
+					},
+				},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: objectMeta("imp-groups-binding", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "imp-groups"},
+					Subjects: []rbacv1.Subject{
+						{Kind: "ServiceAccount", Name: "imp-sa", Namespace: "default"},
+					},
+				},
+			},
+		},
+	}
+	graph := BuildGraph(snapshot)
+	const subjectID = "subject:ServiceAccount/default/imp-sa"
+	var sawEdge bool
+	for _, edge := range graph.Edges {
+		if edge.From != subjectID {
+			continue
+		}
+		if edge.To == sinkSystemMasters && edge.Action == "impersonate_system_masters" {
+			sawEdge = true
+			break
+		}
+	}
+	if !sawEdge {
+		var dump []string
+		for _, e := range graph.Edges {
+			dump = append(dump, e.Action+"/"+e.From+"→"+e.To)
+		}
+		t.Fatalf("expected impersonate_system_masters edge from %s to %s; got edges=%v", subjectID, sinkSystemMasters, dump)
+	}
+}
+
+// TestCSRApprovePathReachesSystemMasters wires the per-edge check above into a
+// full BFS run: the analyzer must emit a KUBE-PRIVESC-PATH-SYSTEM-MASTERS
+// finding for a subject that holds both CSR halves.
+func TestCSRApprovePathReachesSystemMasters(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Namespaces: []corev1.Namespace{
+				{ObjectMeta: objectMeta("default", "")},
+			},
+			ClusterRoles: []rbacv1.ClusterRole{
+				{
+					ObjectMeta: objectMeta("csr-takeover", ""),
+					Rules: []rbacv1.PolicyRule{
+						{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+						{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+					},
+				},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: objectMeta("csr-takeover-binding", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "csr-takeover"},
+					Subjects: []rbacv1.Subject{
+						{Kind: "ServiceAccount", Name: "csr-attacker", Namespace: "default"},
+					},
+				},
+			},
+		},
+	}
+
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	var sawSystemMasters bool
+	for _, f := range findings {
+		if f.RuleID != "KUBE-PRIVESC-PATH-SYSTEM-MASTERS" {
+			continue
+		}
+		if f.Subject == nil || f.Subject.Name != "csr-attacker" {
+			continue
+		}
+		sawSystemMasters = true
+		var sawCSRHop bool
+		for _, h := range f.EscalationPath {
+			if h.Action == "csr_approve" {
+				sawCSRHop = true
+				break
+			}
+		}
+		if !sawCSRHop {
+			t.Errorf("KUBE-PRIVESC-PATH-SYSTEM-MASTERS for csr-attacker missing csr_approve hop: %+v", f.EscalationPath)
+		}
+	}
+	if !sawSystemMasters {
+		t.Fatalf("expected KUBE-PRIVESC-PATH-SYSTEM-MASTERS finding for csr-attacker, got %d findings", len(findings))
+	}
+}

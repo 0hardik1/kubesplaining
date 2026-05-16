@@ -27,6 +27,7 @@ func NewScanResourceCmd() *cobra.Command {
 		maxFindings       int
 		allFindings       bool
 		complianceFilters []string
+		customRulesDir    string
 	)
 
 	cmd := &cobra.Command{
@@ -42,7 +43,7 @@ func NewScanResourceCmd() *cobra.Command {
 				return err
 			}
 
-			engine := analyzer.New()
+			engine := analyzer.NewWithConfig(analyzer.Config{CustomRulesDir: customRulesDir})
 			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
 				Threshold:     models.SeverityLow,
 				AdmissionMode: analyzer.AdmissionModeOff,
@@ -82,6 +83,7 @@ func NewScanResourceCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the output to the top N findings by severity/score; 0 disables.")
 	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding; overrides --max-findings")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
+	cmd.Flags().StringVar(&customRulesDir, "custom-rules", "", "Directory of user-supplied *.cel.yaml rules to evaluate alongside the built-in modules. See examples/custom-rules/ for the wire format.")
 
 	return cmd
 }

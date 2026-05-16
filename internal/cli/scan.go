@@ -47,6 +47,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		auditWindowDays      int
 		leastPrivilegeOnly   bool
 		complianceFilters    []string
+		customRulesDir       string
 		baselineFile         string
 		baselineFormat       string
 	)
@@ -107,7 +108,10 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 			snapshot.Metadata.CollectionWarnings = append(snapshot.Metadata.CollectionWarnings, usageWarnings...)
 
-			engine := analyzer.NewWithConfig(analyzer.Config{MaxPrivescDepth: maxPrivescDepth})
+			engine := analyzer.NewWithConfig(analyzer.Config{
+				MaxPrivescDepth: maxPrivescDepth,
+				CustomRulesDir:  customRulesDir,
+			})
 			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
 				OnlyModules:   onlyModules,
 				SkipModules:   skipModules,
@@ -249,6 +253,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().IntVar(&auditWindowDays, "audit-window-days", 30, "How many days of audit history to consider when computing unused-permission findings")
 	cmd.Flags().BoolVar(&leastPrivilegeOnly, "least-privilege-only", false, "Focus mode: only emit least-privilege findings (UNUSED-*, WILDCARD-USED-PARTIAL-*, STALE-*) and open the Least Privilege tab by default. Requires --audit-log. Cluster-admin bindings are listed for review in the LP tab's inventory table instead of firing as findings.")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa. Empty = no filter; the Compliance tab still renders all controls.")
+	cmd.Flags().StringVar(&customRulesDir, "custom-rules", "", "Directory of user-supplied *.cel.yaml rules to evaluate alongside the built-in modules. See examples/custom-rules/ for the wire format.")
 	cmd.Flags().StringVar(&baselineFile, "baseline", "", "Path to a previous findings JSON file. When set, a diff.{txt,md,sarif} is written alongside the report and (in --ci-mode) ci-max-* gates count Added findings only, not the absolute scan tally.")
 	cmd.Flags().StringVar(&baselineFormat, "baseline-format", "text", "Format for the baseline diff sidecar: text|markdown|sarif")
 

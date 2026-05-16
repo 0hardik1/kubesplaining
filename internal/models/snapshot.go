@@ -59,10 +59,16 @@ type SnapshotResources struct {
 	// hostPath (`/`, `/etc`, `/var/run/docker.sock`, `/var/lib/kubelet`, ...). PSA cannot
 	// see through PVCs, so this is a real Baseline bypass. Both fields are populated by
 	// the collector; missing-permission errors degrade them to empty (warning, not fatal).
-	PersistentVolumes        []corev1.PersistentVolume                                `json:"persistent_volumes,omitempty"`
-	PersistentVolumeClaims   []corev1.PersistentVolumeClaim                           `json:"persistent_volume_claims,omitempty"`
-	ValidatingWebhookConfigs []admissionregistrationv1.ValidatingWebhookConfiguration `json:"validating_webhook_configs,omitempty"`
-	MutatingWebhookConfigs   []admissionregistrationv1.MutatingWebhookConfiguration   `json:"mutating_webhook_configs,omitempty"`
+	PersistentVolumes      []corev1.PersistentVolume      `json:"persistent_volumes,omitempty"`
+	PersistentVolumeClaims []corev1.PersistentVolumeClaim `json:"persistent_volume_claims,omitempty"`
+	// CertificateSigningRequests are the cluster's pending / approved CSRs. They drive
+	// the KUBE-PRIVESC-011 detection (a subject that can both create CSRs and approve
+	// them at the `certificatesigningrequests/approval` subresource can mint a
+	// kubelet-signed client cert carrying any Subject / Organization, including
+	// `O=system:masters` which the apiserver hard-codes as cluster-admin).
+	CertificateSigningRequests []CSR                                                    `json:"certificate_signing_requests,omitempty"`
+	ValidatingWebhookConfigs   []admissionregistrationv1.ValidatingWebhookConfiguration `json:"validating_webhook_configs,omitempty"`
+	MutatingWebhookConfigs     []admissionregistrationv1.MutatingWebhookConfiguration   `json:"mutating_webhook_configs,omitempty"`
 	// ValidatingAdmissionPolicies and ValidatingAdmissionPolicyBindings are the in-tree
 	// CEL-based admission policies (GA in Kubernetes v1.30). Phase 2 collects them for
 	// presence detection; Phase 3 will evaluate the CEL expressions offline.
@@ -95,6 +101,31 @@ type ConfigMapSnapshot struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
 	Data        map[string]string `json:"data,omitempty"`
+}
+
+// CSR is the minimal projection of a certificates.k8s.io/v1 CertificateSigningRequest the
+// analyzers need. The raw CSR PEM is omitted (we never inspect signing-request payloads),
+// but SignerName + Usages + the approval Conditions are kept so detectors can identify
+// the kube-apiserver-client signers that lead to cluster-admin via system:masters.
+type CSR struct {
+	Name        string            `json:"name"`
+	SignerName  string            `json:"signer_name,omitempty"`
+	Username    string            `json:"username,omitempty"`   // identity that submitted the CSR
+	Usages      []string          `json:"usages,omitempty"`     // x509 key usages requested
+	Groups      []string          `json:"groups,omitempty"`     // groups asserted by the submitting identity
+	Conditions  []CSRCondition    `json:"conditions,omitempty"` // status conditions: Approved / Denied / Failed
+	Approved    bool              `json:"approved,omitempty"`   // convenience: true when any Approved condition is present
+	Annotations map[string]string `json:"annotations,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// CSRCondition mirrors certificatesv1.CertificateSigningRequestCondition for the
+// minimal CSR snapshot view: type, status, and optional reason / message.
+type CSRCondition struct {
+	Type    string `json:"type"`             // "Approved", "Denied", "Failed"
+	Status  string `json:"status,omitempty"` // "True", "False", "Unknown"
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // NewSnapshot returns a Snapshot seeded with the current UTC timestamp and a neutral CloudProvider default.
