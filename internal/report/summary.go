@@ -151,6 +151,12 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		AnchorByID:     anchorByID,
 		LeastPrivilege: buildLeastPrivilegeSection(snapshot, findings, nil),
 		Compliance:     buildComplianceSection(findings),
+		// Wave 0 stubs for new report sections. Each builder returns nil today;
+		// the corresponding {{ if .HeroChains }} / {{ if .TopFixes }} / etc.
+		// template gates ensure no markup renders until Wave 1 populates them.
+		HeroChains:      buildHeroChains(findings),
+		TopFixes:        buildTopFixes(findings),
+		SubjectCapCards: buildPerSubjectCapabilities(snapshot, findings),
 	}
 	if len(findings) > 5 {
 		data.TopFindings = append([]models.Finding(nil), findings[:5]...)
@@ -223,9 +229,60 @@ func moduleLabel(key string) string {
 		return "Secrets & ConfigMaps"
 	case "admission":
 		return "Admission Webhooks"
+	case "containersec":
+		return "Container Security"
 	default:
 		return titleCaseWords(strings.ReplaceAll(key, "_", " "))
 	}
+}
+
+// buildHeroChains is the Wave 0 stub for the "Critical attack chains" hero
+// panel at the top of the HTML report (STRATEGY.md:151, plan slot W1 #4).
+// Returns nil so the {{ if .HeroChains }} template gate suppresses the section
+// until Wave 1 populates it.
+func buildHeroChains(_ []models.Finding) []HeroChainCard {
+	return nil
+}
+
+// buildTopFixes is the Wave 0 stub for the "Top 5 fixes" panel
+// (STRATEGY.md:162, plan slot W1 #5). Wave 1 will group findings by Subject,
+// sum scores, and surface the top binding / role deletions ranked by
+// score-reduction. Returns nil for now so the {{ if .TopFixes }} template gate
+// suppresses the section.
+func buildTopFixes(_ []models.Finding) []TopFix {
+	return nil
+}
+
+// buildPerSubjectCapabilities is the Wave 0 stub for the per-ServiceAccount
+// "what can this principal actually do" capability cards
+// (STRATEGY.md:32, plan slot W1 #7). Wave 1 will read aggregated EffectiveRules
+// from internal/permissions/aggregate.go plus the privesc paths originating
+// from each subject. Returns nil for now so the {{ if .SubjectCapCards }}
+// template gate suppresses the section.
+func buildPerSubjectCapabilities(_ models.Snapshot, _ []models.Finding) []SubjectCapabilityCard {
+	return nil
+}
+
+// BuildScoringTooltip is the Wave 0 helper that converts a finding into the
+// ScoringBreakdown surfaced in the HTML score tooltip (STRATEGY.md:155, plan
+// slot W1 #6). When ScoreFactors is nil (the legacy hand-picked-score path),
+// the returned breakdown only carries the final Score and HasFactors is false,
+// so the template degrades gracefully to a plain "score: 7.4" tooltip.
+//
+// Exported so the W1 #6 worktree can wire it from evidence_render.go (or any
+// future package) without re-declaring the conversion logic; today it is only
+// invoked from the template helper map registered in writers.go.
+func BuildScoringTooltip(f models.Finding) ScoringBreakdown {
+	out := ScoringBreakdown{Score: f.Score}
+	if f.ScoreFactors == nil {
+		return out
+	}
+	out.HasFactors = true
+	out.Base = f.ScoreFactors.Base
+	out.Exploitability = f.ScoreFactors.Exploitability
+	out.BlastRadius = f.ScoreFactors.BlastRadius
+	out.ChainModifier = f.ScoreFactors.ChainModifier
+	return out
 }
 
 // categoryLabel maps a RiskCategory to its human-readable display name.

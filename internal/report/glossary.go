@@ -191,6 +191,35 @@ var Glossary = map[string]GlossaryEntry{
 		Short: "Hardcoded as cluster-admin. Membership cannot be revoked through RBAC.",
 		Long:  template.HTML(`<p>The <strong>system:masters</strong> group is special-cased in the API server: members bypass RBAC and act as cluster-admin. The membership comes from the authenticator (typically certificate <code>O=system:masters</code>) and <em>cannot</em> be removed by deleting bindings; it is wired in below the RBAC layer.</p>`),
 	},
+	// Wave 0 stub entries for resource kinds referenced by Wave 1 analyzer rules.
+	// Short copy here so the Background block has *something* to render; the Long
+	// field stays empty for the moment so it is obvious to subsequent reviewers
+	// what still needs filling in.
+	"ResourceQuota": {
+		Title: "ResourceQuota",
+		Short: "Namespace-scoped cap on CPU, memory, and object counts (prevents noisy-neighbor and DoS).",
+		Long:  "",
+	},
+	"LivenessProbe": {
+		Title: "Liveness probe",
+		Short: "Periodic kubelet check that restarts a container when it stops responding.",
+		Long:  "",
+	},
+	"LimitRange": {
+		Title: "LimitRange",
+		Short: "Namespace-scoped default + min/max for pod / container resource requests and limits.",
+		Long:  "",
+	},
+	"CertificateSigningRequest": {
+		Title: "CertificateSigningRequest",
+		Short: "API resource for requesting a signed client / serving certificate from the cluster CA.",
+		Long:  "",
+	},
+	"PersistentVolume": {
+		Title: "PersistentVolume",
+		Short: "Cluster-scoped storage resource backing PVCs (hostPath PVs are a node-escape primitive).",
+		Long:  "",
+	},
 }
 
 // Techniques maps a privesc-action key (matching the Action strings in
@@ -397,6 +426,29 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "wildcard_permission"
 	case f.RuleID == "KUBE-RBAC-OVERBROAD-001":
 		return "bound_to_cluster_admin"
+	// Wave 0 stubs: pre-route new Wave 1 rule prefixes to their best-fit
+	// existing Techniques entry. Each branch can be redirected to a more
+	// specific Techniques key when Wave 1 lands the bespoke explainer.
+	case strings.HasPrefix(f.RuleID, "KUBE-CONTAINER-"):
+		// Container Security rules (W1 #9) describe container-hardening gaps that
+		// most often serve as the final-mile primitive in a host-escape chain.
+		return "pod_host_escape"
+	case strings.HasPrefix(f.RuleID, "KUBE-NETPOL-IMDS-"):
+		return "read_secrets"
+	case strings.HasPrefix(f.RuleID, "KUBE-NETPOL-CROSSNS-"):
+		return "read_secrets"
+	case strings.HasPrefix(f.RuleID, "KUBE-SECRETS-STALE-"):
+		return "read_secrets"
+	case strings.HasPrefix(f.RuleID, "KUBE-SECRETS-CROSSNS-"):
+		return "read_secrets"
+	case strings.HasPrefix(f.RuleID, "KUBE-SECRETS-TLS-EXPIRY-"):
+		return "read_secrets"
+	case strings.HasPrefix(f.RuleID, "KUBE-CONFIGMAP-CREDS-"):
+		return "read_secrets"
+	case strings.HasPrefix(f.RuleID, "KUBE-PV-HOSTPATH-"):
+		return "pod_host_escape"
+	case strings.HasPrefix(f.RuleID, "KUBE-PSA-LABELS-"):
+		return "pod_host_escape"
 	case strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-"):
 		// Fall back to the chain's first hop, already handled above; if no hops, leave empty.
 		return ""

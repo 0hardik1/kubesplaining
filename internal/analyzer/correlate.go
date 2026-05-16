@@ -15,6 +15,13 @@ import (
 var leastPrivilegeAdvisoryPrefixes = []string{
 	"KUBE-RBAC-UNUSED-",
 	"KUBE-RBAC-WILDCARD-USED-PARTIAL-",
+	// Wave 0 stubs: containersec rules that surface workload-hardening
+	// recommendations (missing resource limits, missing probes) rather than
+	// active exploit primitives. Wave 1 slot #9 fills the rules in; pre-listing
+	// the prefixes here keeps chain amplification from inflating their scores
+	// the moment they start emitting.
+	"KUBE-CONTAINER-LIMITS-",
+	"KUBE-CONTAINER-PROBE-",
 }
 
 // isLeastPrivilegeAdvisory reports whether ruleID names an advisory (recommendation)

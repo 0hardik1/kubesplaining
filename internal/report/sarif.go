@@ -171,6 +171,12 @@ func sarifResults(findings []models.Finding) []sarifResult {
 			}
 			result.Properties["mitre_attack"] = ids
 		}
+		if finding.RemediationHint != nil {
+			result.Properties["remediation_hint"] = finding.RemediationHint
+		}
+		if finding.ScoreFactors != nil {
+			result.Properties["score_factors"] = finding.ScoreFactors
+		}
 		if finding.Subject != nil {
 			result.Properties["subject"] = finding.Subject
 		}

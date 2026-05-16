@@ -76,25 +76,30 @@ kind create cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG_PAT
 ok "cluster ready"
 
 step "Applying vulnerable manifests"
-kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f "${ROOT_DIR}/testdata/e2e/vulnerable.yaml" | prefix_ok
+# `kubectl apply -f <dir>` recurses through the directory and applies every
+# YAML/JSON file in lexical order. Each Wave 1 analyzer slot adds its own
+# testdata/e2e/vulnerable/NN-<feature>.yaml shard without editing this script
+# or 00-baseline.yaml — zero merge conflicts at the fixture layer.
+kubectl --kubeconfig "${KUBECONFIG_PATH}" apply -f "${ROOT_DIR}/testdata/e2e/vulnerable/" | prefix_ok
 
 step "Waiting for workloads to roll out"
-ROLLOUTS=(
-  "deploy/risky-app:vulnerable"
-  "deploy/host-ns-app:vulnerable"
-  "deploy/socket-mounts-app:vulnerable"
-  "deploy/generic-hostpath-app:vulnerable"
-  "deploy/root-runner:vulnerable"
-  "deploy/wildcard-app:rbac-fixtures"
-  "deploy/imp-app:rbac-fixtures"
-  "ds/daemon-app:rbac-fixtures"
-  "deploy/unmatched:flat-network"
-  "deploy/ingress-app:ingress-only"
-  "deploy/psa-priv-app:psa-suppressed"
-  "deploy/lp-narrow-app:lp-fixtures"
-  "deploy/lp-wildcard-app:lp-fixtures"
-  "deploy/lp-orphan-app:lp-fixtures"
-)
+# Each *.rollout file under testdata/e2e/expectations/ lists one
+# "<kind>/<name>:<namespace>" entry per line. The baseline file ships the set
+# of workloads applied by 00-baseline.yaml; Wave 1 slots that introduce new
+# workloads drop their own <feature>.rollout alongside the matching
+# <feature>.yaml. Lines starting with '#' and blank lines are skipped.
+ROLLOUTS=()
+shopt -s nullglob
+for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.rollout; do
+  while IFS= read -r line; do
+    line="${line%%#*}"            # strip trailing comments
+    line="${line#"${line%%[![:space:]]*}"}"  # ltrim
+    line="${line%"${line##*[![:space:]]}"}"  # rtrim
+    [[ -z "${line}" ]] && continue
+    ROLLOUTS+=("${line}")
+  done < "${f}"
+done
+shopt -u nullglob
 for entry in "${ROLLOUTS[@]}"; do
   obj="${entry%%:*}"
   ns="${entry##*:}"
@@ -184,31 +189,29 @@ step "Running kubesplaining scan --all-findings (assertion coverage)"
 SUMMARY_LINE=$(grep -m1 "^findings:" "${SCAN_LOG}" 2>/dev/null || echo "")
 
 step "Verifying expected rule IDs"
-EXPECTED_RULES=(
-  KUBE-PRIVESC-001 KUBE-PRIVESC-003 KUBE-PRIVESC-005 KUBE-PRIVESC-008 KUBE-PRIVESC-009
-  KUBE-PRIVESC-010 KUBE-PRIVESC-012 KUBE-PRIVESC-014 KUBE-PRIVESC-017
-  KUBE-RBAC-OVERBROAD-001 KUBE-RBAC-STALE-001 KUBE-RBAC-STALE-002
-  KUBE-RBAC-UNUSED-VERB-001 KUBE-RBAC-UNUSED-ROLE-001 KUBE-RBAC-WILDCARD-USED-PARTIAL-001
-  KUBE-ESCAPE-001 KUBE-ESCAPE-002 KUBE-ESCAPE-003 KUBE-ESCAPE-004 KUBE-ESCAPE-005
-  KUBE-ESCAPE-006 KUBE-ESCAPE-008
-  KUBE-CONTAINERD-SOCKET-001 KUBE-HOSTPATH-001
-  KUBE-PODSEC-APE-001 KUBE-PODSEC-ROOT-001 KUBE-IMAGE-LATEST-001
-  KUBE-PODSEC-READONLY-001 KUBE-PODSEC-SECCOMP-001
-  # KUBE-PODSEC-PROCMOUNT-001 omitted: K8s 1.32+ requires hostUsers: false to
-  # apply procMount: Unmasked, and pods with hostUsers: false do not start on
-  # kind (mount-product-files.sh hits a permission-denied under the remapped
-  # UID). Detection is covered by analyzer unit tests in
-  # internal/analyzer/podsec/analyzer_test.go.
-  KUBE-NETPOL-COVERAGE-001 KUBE-NETPOL-COVERAGE-002 KUBE-NETPOL-COVERAGE-003
-  KUBE-NETPOL-WEAKNESS-001 KUBE-NETPOL-WEAKNESS-002
-  KUBE-SECRETS-001 KUBE-CONFIGMAP-001
-  KUBE-ADMISSION-001 KUBE-ADMISSION-002 KUBE-ADMISSION-003
-  KUBE-SA-DEFAULT-001 KUBE-SA-DEFAULT-002 KUBE-SA-PRIVILEGED-001 KUBE-SA-PRIVILEGED-002
-  KUBE-SA-DAEMONSET-001
-  KUBE-PRIVESC-PATH-CLUSTER-ADMIN KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS
-  KUBE-PRIVESC-PATH-NODE-ESCAPE KUBE-PRIVESC-PATH-SYSTEM-MASTERS
-  KUBE-PRIVESC-PATH-NAMESPACE-ADMIN KUBE-PRIVESC-PATH-GENERIC
-)
+# Each *.expect file under testdata/e2e/expectations/ lists rule IDs one per
+# line. The baseline file carries the set 00-baseline.yaml produces; Wave 1
+# analyzer slots add their own <feature>.expect alongside the workload shard.
+# Lines starting with '#' and blank lines are skipped.
+#
+# Historically excluded by the baseline fixture (kept for reviewers landing
+# new shards): KUBE-PODSEC-PROCMOUNT-001 — K8s 1.32+ requires hostUsers: false
+# to apply procMount: Unmasked, and pods with hostUsers: false do not start
+# on kind (mount-product-files.sh hits a permission-denied under the remapped
+# UID). Detection is covered by analyzer unit tests in
+# internal/analyzer/podsec/analyzer_test.go.
+EXPECTED_RULES=()
+shopt -s nullglob
+for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.expect; do
+  while IFS= read -r line; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line}" ]] && continue
+    EXPECTED_RULES+=("${line}")
+  done < "${f}"
+done
+shopt -u nullglob
 
 missing=()
 for rule in "${EXPECTED_RULES[@]}"; do

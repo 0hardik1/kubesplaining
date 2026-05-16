@@ -1,0 +1,14 @@
+deploy/risky-app:vulnerable
+deploy/host-ns-app:vulnerable
+deploy/socket-mounts-app:vulnerable
+deploy/generic-hostpath-app:vulnerable
+deploy/root-runner:vulnerable
+deploy/wildcard-app:rbac-fixtures
+deploy/imp-app:rbac-fixtures
+ds/daemon-app:rbac-fixtures
+deploy/unmatched:flat-network
+deploy/ingress-app:ingress-only
+deploy/psa-priv-app:psa-suppressed
+deploy/lp-narrow-app:lp-fixtures
+deploy/lp-wildcard-app:lp-fixtures
+deploy/lp-orphan-app:lp-fixtures

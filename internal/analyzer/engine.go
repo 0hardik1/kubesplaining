@@ -10,14 +10,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/0hardik1/kubesplaining/internal/analyzer/admission"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
-	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
-	"github.com/0hardik1/kubesplaining/internal/analyzer/podsec"
-	"github.com/0hardik1/kubesplaining/internal/analyzer/privesc"
-	"github.com/0hardik1/kubesplaining/internal/analyzer/rbac"
-	"github.com/0hardik1/kubesplaining/internal/analyzer/secrets"
-	"github.com/0hardik1/kubesplaining/internal/analyzer/serviceaccount"
 	"github.com/0hardik1/kubesplaining/internal/compliance"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
@@ -66,23 +59,15 @@ type Config struct {
 // modules. The leastprivilege module is registered with a nil UsageIndex here; Analyze
 // rebinds it from opts.UsageIndex on each invocation so the same engine can serve runs
 // with and without audit data.
+//
+// The module set comes from DefaultModules in modules.go — adding a new analyzer requires
+// appending one factory entry there, not editing this constructor.
 func NewWithConfig(cfg Config) *Engine {
-	privescMod := privesc.New()
-	if cfg.MaxPrivescDepth > 0 {
-		privescMod.MaxDepth = cfg.MaxPrivescDepth
+	modules := make([]Module, 0, len(DefaultModules))
+	for _, factory := range DefaultModules {
+		modules = append(modules, factory(cfg))
 	}
-	return &Engine{
-		modules: []Module{
-			rbac.New(),
-			podsec.New(),
-			network.New(),
-			admission.New(),
-			secrets.New(),
-			serviceaccount.New(),
-			privescMod,
-			leastprivilege.New(nil),
-		},
-	}
+	return &Engine{modules: modules}
 }
 
 // Analyze runs the selected modules in parallel, applies admission-aware reweighting,

@@ -106,6 +106,26 @@ func Write(path string, cfg Config) error {
 	return nil
 }
 
+// wave1RulePrefixes lists the rule-ID prefix patterns reserved for Wave 1 analyzer
+// modules. Each entry is included in the standard preset's ExcludeFindingIDs slice
+// today as an empty placeholder — the matcher's matchesPattern helper treats the
+// empty string as a no-match, so a "" pattern silently no-ops. Wave 1 analyzer slots
+// (#9, #11, #12, #13) replace their corresponding entry with the actual pattern
+// (e.g. "KUBE-CONTAINER-LIMITS-*") when they need a specific finding suppressed by
+// default. Reserving the slots here keeps Wave 1 PRs from competing for the same
+// line in config.go.
+var wave1RulePrefixes = []string{
+	// "KUBE-CONTAINER-*",        // W1 #9 Container Security analyzer
+	// "KUBE-NETPOL-IMDS-*",      // W1 #13 NetPol IMDS egress
+	// "KUBE-NETPOL-CROSSNS-*",   // W1 #13 NetPol cross-namespace map
+	// "KUBE-SECRETS-STALE-*",    // W1 #12 Secrets bundle
+	// "KUBE-SECRETS-CROSSNS-*",  // W1 #12 Secrets bundle
+	// "KUBE-SECRETS-TLS-EXPIRY-*", // W1 #12 Secrets bundle
+	// "KUBE-CONFIGMAP-CREDS-*",  // W1 #12 ConfigMap heuristics
+	// "KUBE-PV-HOSTPATH-*",      // W1 #11 PV hostPath bypass
+	// "KUBE-PSA-LABELS-*",       // W1 #11 PSA namespace label assessment
+}
+
 // Preset returns one of the built-in exclusion profiles. "standard" (default) suppresses built-in
 // Kubernetes noise — kube-system / system:* / kubeadm:* — and is auto-applied by scan/scan-resource/report
 // unless the user passes --exclusions-preset=none (or its alias "strict") to opt out. "minimal" only filters
@@ -118,6 +138,11 @@ func Preset(name string) (Config, error) {
 				ExcludeNamespaces:      []string{"kube-system", "kube-public", "kube-node-lease", "gatekeeper-system"},
 				ExcludeServiceAccounts: []string{"system:*", "kube-system:*"},
 				ExcludeClusterRoles:    []string{"system:*", "kubeadm:*"},
+				// Wave 1 modules append their default-mute rule patterns here via
+				// wave1RulePrefixes (see comment above the slice). Today every
+				// entry is commented out, so the slice is effectively empty and
+				// the standard preset is byte-identical to its pre-Wave 0 form.
+				ExcludeFindingIDs: append([]string{}, wave1RulePrefixes...),
 				ExcludeSubjects: []SubjectExclusion{
 					{Kind: "Group", Name: "system:*", Reason: "Built-in Kubernetes group"},
 					{Kind: "User", Name: "system:*", Reason: "Built-in Kubernetes user"},

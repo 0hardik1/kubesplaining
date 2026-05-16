@@ -35,6 +35,32 @@ func Compose(f Factors) float64 {
 	return Clamp(f.Base*exp*blast + f.ChainModifier)
 }
 
+// ComposeWithFactors is the analyzer-side companion to Compose: it returns both the
+// composite score and a pointer to a JSON-serializable models.ScoreFactors snapshot of
+// the inputs (with the same zero-to-1.0 defaulting Compose applies). Analyzers that want
+// the HTML report's scoring tooltip to render a breakdown call this and assign the
+// returned pointer to Finding.ScoreFactors. The score itself is unchanged from Compose.
+//
+// Returns a fresh *models.ScoreFactors on every call so callers can mutate or replace
+// it without worrying about shared state.
+func ComposeWithFactors(f Factors) (float64, *models.ScoreFactors) {
+	exp := f.Exploitability
+	if exp == 0 {
+		exp = 1
+	}
+	blast := f.BlastRadius
+	if blast == 0 {
+		blast = 1
+	}
+	score := Clamp(f.Base*exp*blast + f.ChainModifier)
+	return score, &models.ScoreFactors{
+		Base:           f.Base,
+		Exploitability: exp,
+		BlastRadius:    blast,
+		ChainModifier:  f.ChainModifier,
+	}
+}
+
 // SeverityForScore maps a numeric 0–10 score to the corresponding severity bucket.
 func SeverityForScore(score float64) models.Severity {
 	switch {

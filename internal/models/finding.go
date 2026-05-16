@@ -40,6 +40,78 @@ type Finding struct {
 	Excluded         bool             `json:"excluded"`                   // set post-analysis by the exclusions matcher
 	ExclusionReason  string           `json:"exclusion_reason,omitempty"`
 	Tags             []string         `json:"tags,omitempty"` // free-form labels like "module:rbac", "check:wildcardVerbs"
+	// RemediationHint is the structured fix payload: a kubectl patch and / or equivalent
+	// Kyverno / Gatekeeper policies and / or a minimal RBAC diff. Optional and additive —
+	// nil means the analyzer hasn't supplied a structured fix yet, in which case JSON
+	// consumers and the HTML report fall back to the prose Remediation + RemediationSteps
+	// fields. Populated by the per-analyzer remediation generators landed in Wave 1.
+	RemediationHint *RemediationHint `json:"remediation_hint,omitempty"`
+	// ScoreFactors carries the composite-formula inputs that produced Finding.Score, when
+	// the analyzer chose to populate them. Nil keeps the existing hand-picked-score path
+	// intact; the scoring-tooltip in the HTML report degrades gracefully when nil.
+	ScoreFactors *ScoreFactors `json:"score_factors,omitempty"`
+}
+
+// RemediationHint is the structured fix payload attached to a Finding. Every field is
+// optional so analyzers can fill in whichever surface they support: a kubectl patch (the
+// imperative fix), a Kyverno / Gatekeeper ClusterPolicy (the admission-time prevention),
+// and an RBAC diff (the minimal binding / role edit that breaks a privesc chain). HTML
+// renders these conditionally; JSON serializes them as a single nested object; SARIF
+// surfaces the whole struct as one extra property so downstream tools can parse it.
+type RemediationHint struct {
+	// Patch is a kubectl strategic-merge / merge / JSON patch against a specific target.
+	Patch *KubectlPatch `json:"patch,omitempty"`
+	// KyvernoPolicy is raw YAML for an equivalent Kyverno ClusterPolicy that would have
+	// blocked the offending configuration at admission time.
+	KyvernoPolicy string `json:"kyverno_policy,omitempty"`
+	// GatekeeperPolicy is raw YAML for an OPA Gatekeeper ConstraintTemplate + Constraint
+	// pair equivalent to KyvernoPolicy. Both fields can be populated for the same finding.
+	GatekeeperPolicy string `json:"gatekeeper_policy,omitempty"`
+	// RBACDiff is a unified diff of the smallest (Cluster)RoleBinding / (Cluster)Role edit
+	// that breaks the privilege chain. Used by privesc + rbac findings, where a kubectl
+	// patch is awkward and a "delete subject from binding" change is the right answer.
+	RBACDiff string `json:"rbac_diff,omitempty"`
+}
+
+// KubectlPatch is the structured form of a `kubectl patch <kind> <name> -p <body>`
+// command. Body is the raw JSON patch payload; Command is the pre-rendered shell command
+// for HTML display. Holding both lets the JSON output stay machine-readable while the
+// HTML report shows a copy-pasteable string without re-rendering on the client side.
+type KubectlPatch struct {
+	// Type is the patch strategy: "strategic" (kubectl default), "merge" (RFC 7396), or
+	// "json" (RFC 6902). Mirrors kubectl's --type flag.
+	Type string `json:"type"`
+	// Target identifies the cluster object the patch applies to.
+	Target PatchTarget `json:"target"`
+	// Body is the raw patch payload as JSON. For strategic-merge / merge patches this is
+	// the partial object spec; for JSON patches it is the operation array.
+	Body json.RawMessage `json:"body"`
+	// Command is the pre-rendered shell command (e.g. `kubectl patch deployment foo -n bar
+	// --type=strategic --patch '{...}'`) so the HTML report can render it inside a copy
+	// button without reconstructing it client-side.
+	Command string `json:"command,omitempty"`
+}
+
+// PatchTarget identifies one Kubernetes object by Kind + APIVersion + Name and, when
+// namespaced, Namespace. Used by KubectlPatch to scope the patch to a single resource.
+type PatchTarget struct {
+	Kind       string `json:"kind"`
+	APIVersion string `json:"api_version,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
+	Name       string `json:"name"`
+}
+
+// ScoreFactors is the JSON-serializable companion to scoring.Factors. It carries the
+// four inputs of the composite formula (base × exploitability × blast + chain) so the
+// HTML report's scoring tooltip can show why a finding got the score it got. Decoupled
+// from scoring.Factors to avoid a models→scoring import cycle: the scoring package
+// converts a Factors into a *ScoreFactors when the analyzer asks for both back via
+// scoring.ComposeWithFactors.
+type ScoreFactors struct {
+	Base           float64 `json:"base"`
+	Exploitability float64 `json:"exploitability"`
+	BlastRadius    float64 `json:"blast_radius"`
+	ChainModifier  float64 `json:"chain_modifier"`
 }
 
 // FrameworkRef cites one control in an external compliance or hardening framework that a finding maps to.
