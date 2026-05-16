@@ -265,6 +265,15 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"findingEducationHTML": func(f models.Finding) template.HTML {
 			return renderFindingEducation(f)
 		},
+		// scoringTooltip is the Wave 0 stub helper registered for the W1 #6
+		// scoring-formula tooltip. Templates can call {{ scoringTooltip .Finding }}
+		// today; the returned struct's HasFactors is false on every finding because
+		// no analyzer populates ScoreFactors yet, so the template path that would
+		// render the breakdown stays gated on .HasFactors and contributes nothing
+		// to the rendered HTML until Wave 1 wires it in.
+		"scoringTooltip": func(f models.Finding) ScoringBreakdown {
+			return BuildScoringTooltip(f)
+		},
 		"pluralize": func(n int, singular, plural string) string {
 			if n == 1 {
 				return singular

@@ -368,6 +368,68 @@ type ComplianceControlRow struct {
 	Findings    []models.Finding
 }
 
+// HeroChainCard is one above-the-fold "critical attack chain" entry rendered at the very
+// top of the HTML report (STRATEGY.md:151, plan slot W1 #4). Each card carries the chain's
+// originating Subject, the sink it reaches (cluster_admin, kube_system_secrets, ...), the
+// full hop list, and a one-line plain-English summary. Populated by buildHeroChains in
+// summary.go; the Wave 0 stub returns nil so the {{ if .HeroChains }} template gate keeps
+// the section absent until Wave 1 fills it in.
+type HeroChainCard struct {
+	Title    string
+	Severity models.Severity
+	Score    float64
+	Sink     string // e.g. "cluster_admin", "kube_system_secrets"
+	Summary  string // one-line plain-English narrative
+	Hops     []models.EscalationHop
+	RuleID   string
+	Anchor   string // anchor target inside the Findings tab
+}
+
+// TopFix is one "Top 5 fixes" row computed from finding count × score reduction
+// (STRATEGY.md:162, plan slot W1 #5). Wave 1 will group findings by Subject, sum
+// scores, and pick the highest-impact role / binding deletion. Populated by
+// buildTopFixes in summary.go; Wave 0 stub returns nil so the {{ if .TopFixes }}
+// template gate keeps the section absent.
+type TopFix struct {
+	Rank          int
+	Action        string  // e.g. "Delete ClusterRoleBinding cluster-admin-builder"
+	ScoreImpact   float64 // sum of finding scores that this single fix would resolve
+	FindingsCount int
+	Subjects      []string
+	RuleIDs       []string
+}
+
+// ScoringBreakdown is the per-finding scoring tooltip payload (STRATEGY.md:155,
+// plan slot W1 #6). Returned by buildScoringTooltip in summary.go. When HasFactors
+// is false (the finding's Score was hand-picked by the analyzer rather than
+// composed from Factors), the template falls back to showing just the final Score.
+type ScoringBreakdown struct {
+	Score          float64
+	HasFactors     bool
+	Base           float64
+	Exploitability float64
+	BlastRadius    float64
+	ChainModifier  float64
+}
+
+// SubjectCapabilityCard is one "per-ServiceAccount capability" entry surfacing
+// aggregated EffectiveRules plus any privesc paths originating from that
+// subject (STRATEGY.md:32, plan slot W1 #7). The Cloudsplaining-equivalent
+// "what can this principal actually do" view, scoped to RBAC subjects rather
+// than IAM principals. Populated by buildPerSubjectCapabilities in summary.go;
+// Wave 0 stub returns nil so the {{ if .SubjectCapCards }} template gate keeps
+// the section absent.
+type SubjectCapabilityCard struct {
+	SubjectKind     string
+	SubjectName     string
+	SubjectNs       string
+	SubjectLabel    string // pre-rendered display string e.g. "ServiceAccount/default/builder"
+	EffectiveVerbs  []string
+	EffectiveRules  []string // pre-rendered "verbs on resources@apiGroup" strings
+	PrivescPaths    []string // chain summaries originating from this subject
+	HighestSeverity models.Severity
+}
+
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
 type htmlReportData struct {
 	Snapshot       models.Snapshot
@@ -417,4 +479,12 @@ type htmlReportData struct {
 	// value) means no cap was applied; the template gates the banner on
 	// .Truncation.Truncated.
 	Truncation models.TruncationInfo
+
+	// Wave 0 stub fields for new report sections. Each is empty until Wave 1
+	// fills in the corresponding builder (see plan slots W1 #4, #5, #6, #7).
+	// The HTML template gates each section on its slice being non-empty, so
+	// reports stay byte-identical to pre-Wave 0 until the builders are wired.
+	HeroChains      []HeroChainCard         // "Critical attack chains" hero panel (W1 #4)
+	TopFixes        []TopFix                // "Top 5 fixes" panel (W1 #5)
+	SubjectCapCards []SubjectCapabilityCard // per-Subject capability cards (W1 #7)
 }
