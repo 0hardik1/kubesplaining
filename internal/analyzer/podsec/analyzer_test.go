@@ -251,6 +251,148 @@ func TestPodSecProcMountSkippedWhenDefault(t *testing.T) {
 	assertRuleAbsent(t, findings, "KUBE-PODSEC-PROCMOUNT-001")
 }
 
+// TestPodSecCapsFiresPerDangerousCapability covers every entry in dangerousCapabilities.
+// One container gets exactly one capability added per case; each case expects exactly one
+// KUBE-PODSEC-CAPS-001 finding to appear (no other capabilities should trigger).
+func TestPodSecCapsFiresPerDangerousCapability(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		cap  corev1.Capability
+	}{
+		{"SYS_PTRACE", "SYS_PTRACE"},
+		{"DAC_OVERRIDE", "DAC_OVERRIDE"},
+		{"SYS_MODULE", "SYS_MODULE"},
+		{"SYS_RAWIO", "SYS_RAWIO"},
+		{"MKNOD", "MKNOD"},
+		{"AUDIT_WRITE", "AUDIT_WRITE"},
+		{"SYS_CHROOT", "SYS_CHROOT"},
+		{"NET_RAW", "NET_RAW"},
+		{"BPF", "BPF"},
+		{"SYS_ADMIN", "SYS_ADMIN"},
+		{"NET_ADMIN", "NET_ADMIN"},
+		// Prefix normalization: the kernel and many docs write CAP_<NAME>;
+		// Kubernetes manifests usually omit the prefix. Both should match.
+		{"CAP_SYS_PTRACE (with prefix)", "CAP_SYS_PTRACE"},
+		// Case normalization: lower-case spelling from a sloppy manifest should
+		// still match the dangerous-capabilities list.
+		{"lower-case sys_admin", "sys_admin"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := safeBaseSnapshot("caps-"+tc.name, "default", func(sc *corev1.SecurityContext) {
+				sc.Capabilities = &corev1.Capabilities{Add: []corev1.Capability{tc.cap}}
+			})
+			findings, err := New().Analyze(context.Background(), snapshot)
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			assertRulePresent(t, findings, "KUBE-PODSEC-CAPS-001")
+		})
+	}
+}
+
+// TestPodSecCapsAllExpandsToEveryDangerousCap verifies that capabilities.add: ["ALL"]
+// is treated as if every dangerous capability were added individually. The expected
+// finding count is one per dangerousCapabilities map entry.
+func TestPodSecCapsAllExpandsToEveryDangerousCap(t *testing.T) {
+	t.Parallel()
+
+	snapshot := safeBaseSnapshot("caps-all", "default", func(sc *corev1.SecurityContext) {
+		sc.Capabilities = &corev1.Capabilities{Add: []corev1.Capability{"ALL"}}
+	})
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	count := 0
+	for _, f := range findings {
+		if f.RuleID == "KUBE-PODSEC-CAPS-001" {
+			count++
+		}
+	}
+	if count != len(dangerousCapabilities) {
+		t.Fatalf("expected %d KUBE-PODSEC-CAPS-001 findings for capabilities.add: [ALL], got %d", len(dangerousCapabilities), count)
+	}
+}
+
+// TestPodSecCapsSkipsBenignCapability checks that a capability not on the
+// dangerous list (NET_BIND_SERVICE: bind to ports <1024, explicitly allowed by PSS
+// Restricted) does not produce a finding.
+func TestPodSecCapsSkipsBenignCapability(t *testing.T) {
+	t.Parallel()
+
+	snapshot := safeBaseSnapshot("caps-benign", "default", func(sc *corev1.SecurityContext) {
+		sc.Capabilities = &corev1.Capabilities{Add: []corev1.Capability{"NET_BIND_SERVICE"}}
+	})
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PODSEC-CAPS-001")
+}
+
+// TestPodSecCapsSkipsWhenCapabilitiesNil ensures the rule stays quiet for the
+// (default) case where securityContext.capabilities is unset. A separate
+// container-hardening rule could surface "no explicit drop: [ALL]" advisory,
+// but that's out of scope for CAPS-001.
+func TestPodSecCapsSkipsWhenCapabilitiesNil(t *testing.T) {
+	t.Parallel()
+
+	snapshot := safeBaseSnapshot("caps-nil", "default", nil)
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PODSEC-CAPS-001")
+}
+
+// TestPodSecCapsEmitsOneFindingPerCapability checks that a container adding three
+// dangerous capabilities yields three distinct KUBE-PODSEC-CAPS-001 findings so the
+// report ranks each fix independently.
+func TestPodSecCapsEmitsOneFindingPerCapability(t *testing.T) {
+	t.Parallel()
+
+	snapshot := safeBaseSnapshot("caps-multi", "default", func(sc *corev1.SecurityContext) {
+		sc.Capabilities = &corev1.Capabilities{Add: []corev1.Capability{"SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE"}}
+	})
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	count := 0
+	for _, f := range findings {
+		if f.RuleID == "KUBE-PODSEC-CAPS-001" {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatalf("expected 3 KUBE-PODSEC-CAPS-001 findings for a container adding 3 dangerous caps, got %d", count)
+	}
+}
+
+// TestNormalizeCapability exercises the CAP_ prefix and case-normalization rules
+// used to match manifest spellings against the dangerousCapabilities table.
+func TestNormalizeCapability(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"SYS_ADMIN":     "SYS_ADMIN",
+		"sys_admin":     "SYS_ADMIN",
+		"CAP_SYS_ADMIN": "SYS_ADMIN",
+		"cap_sys_admin": "SYS_ADMIN",
+		"  NET_RAW  ":   "NET_RAW",
+		"":              "",
+	}
+	for in, want := range cases {
+		if got := normalizeCapability(in); got != want {
+			t.Errorf("normalizeCapability(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // safeBaseSnapshot returns a Deployment that satisfies every existing podsec rule (digest-pinned
 // image, non-root, allowPrivilegeEscalation=false, readOnlyRootFilesystem=true, RuntimeDefault
 // seccomp). The mutate callback may flip one field to exercise a specific rule.

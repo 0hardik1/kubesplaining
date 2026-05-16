@@ -561,6 +561,102 @@ func contentPodSecProcmount001(kind, namespace, name, container string) ruleCont
 	}
 }
 
+// contentPodSecCaps001 builds the enriched content for KUBE-PODSEC-CAPS-001, the dangerous
+// Linux-capability rule. The per-capability justification lookup in dangerousCapabilities
+// drives both the per-finding description prefix and the choice of MITRE technique citations.
+func contentPodSecCaps001(kind, namespace, name, container, capName string) ruleContent {
+	scope := scopeForWorkload(kind, namespace, name)
+	risk, ok := dangerousCapabilities[capName]
+	reason := "grants a kernel privilege a typical workload does not need"
+	if ok {
+		reason = risk.Reason
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("Container `%s` adds dangerous capability `CAP_%s` in `%s/%s/%s`", container, capName, kind, namespace, name),
+		Scope: scope,
+		Description: fmt.Sprintf("Container `%s` in `%s/%s/%s` requests `capabilities.add: [%s]` (or `[ALL]`, which is equivalent). `CAP_%s` %s. Linux capabilities split root's powers into roughly 40 buckets; the principle is to drop every capability and add back only the narrow ones the workload actually needs (most apps need none, or only `CAP_NET_BIND_SERVICE` for ports < 1024).\n\n"+
+			"Pod Security Standards Baseline forbids every capability on the dangerous-capability allow-list except `NET_BIND_SERVICE`; Restricted further requires `capabilities.drop: [ALL]` and limits `add` to `NET_BIND_SERVICE`. Adding `SYS_ADMIN`, `SYS_MODULE`, `SYS_RAWIO`, `BPF`, or `NET_ADMIN` is functionally equivalent to `privileged: true` for the relevant attack surface; the remaining caps on the list each unlock a specific class of escape or credential-theft primitive (ptrace memory-read, DAC bypass, mknod-based host-disk read, raw-socket sniffing, chroot escape, audit-log forgery).\n\n"+
+			"This finding is per (container, capability): a container that adds three dangerous caps emits three findings so reports can rank fixes individually.",
+			container, kind, namespace, name, capName, capName, reason),
+		Impact: fmt.Sprintf("CAP_%s in a container removes a defense layer the Pod Security Standards rely on; depending on the capability, this enables direct host takeover (SYS_MODULE, SYS_RAWIO, MKNOD), credential theft (SYS_PTRACE, DAC_OVERRIDE), or sustained lateral movement (NET_ADMIN, NET_RAW, BPF).", capName),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker gains code execution inside container `%s`.", container),
+			fmt.Sprintf("They confirm the capability is held: `capsh --print | grep %s` or `grep Cap /proc/1/status` decoded with `capsh --decode=<hex>`.", capName),
+			capabilityAttackerStep(capName),
+			"They pivot from the in-container primitive: write to the host filesystem, exfiltrate kubelet credentials, or sniff service-mesh traffic depending on the capability.",
+			"Public tooling automates several of these (`amicontained`, `kdigger dig capabilities`, `deepce.sh`).",
+		},
+		Remediation: fmt.Sprintf("Remove `CAP_%s` from `capabilities.add`. If the workload truly needs it, scope the requirement and document the threat model.", capName),
+		RemediationSteps: []string{
+			fmt.Sprintf("Audit why the container requests `CAP_%s`. Capability requirements should appear in the application's deployment notes; if no one can justify it, drop it.", capName),
+			"Set `securityContext.capabilities.drop: [ALL]` on the container. Add back only the specific capabilities required (most workloads need none; web servers binding < 1024 need `NET_BIND_SERVICE`). Never use `capabilities.add: [ALL]`.",
+			"Apply Pod Security Admission `baseline` (or `restricted`) to the namespace so future capability regressions are blocked at admit time: `kubectl label ns " + namespace + " pod-security.kubernetes.io/enforce=baseline`.",
+			fmt.Sprintf("Validate: `kubectl get %s/%s -n %s -o jsonpath='{.spec.template.spec.containers[*].securityContext.capabilities}'` should show only `drop: [ALL]` plus a tiny `add` list.", strings.ToLower(kind), name, namespace),
+		},
+		LearnMore: []models.Reference{refPSS, refPSA, refSecurityContext, refNSAHardening,
+			{Title: "Linux man-pages — capabilities(7)", URL: "https://man7.org/linux/man-pages/man7/capabilities.7.html"},
+			{Title: "Aqua Security — Container Escape via Linux Capabilities", URL: "https://blog.aquasec.com/container-security-deep-dive-into-securing-linux-namespaces"},
+		},
+		MitreTechniques: capabilityMitreTechniques(capName),
+	}
+}
+
+// capabilityAttackerStep returns a one-line, capability-specific exploit primitive
+// for the attacker walkthrough. Falls back to a generic message for capabilities
+// the table does not enumerate (defensive: dangerousCapabilities and this map should
+// stay in sync).
+func capabilityAttackerStep(capName string) string {
+	switch capName {
+	case "SYS_ADMIN":
+		return "They use `unshare(CLONE_NEWNS)` and `mount` to mount the host root filesystem, or load an eBPF program via `bpf()`; CVE-2022-0492 (cgroup release_agent) is one of many SYS_ADMIN-only escapes."
+	case "SYS_MODULE":
+		return "They craft a malicious kernel module (`gen_module.sh`-style toolkit) and load it with `init_module()`; the module runs in ring 0 on the host."
+	case "SYS_RAWIO":
+		return "They open `/dev/mem` and read kernel-resident credentials, or `iopl()` to talk to host hardware directly."
+	case "NET_ADMIN":
+		return "They install iptables NAT rules redirecting other pods' service traffic through their own listener, or create a tunnel interface to exfiltrate data past egress controls."
+	case "BPF":
+		return "They load an eBPF program attached to `sys_enter` (kprobe), logging every syscall argument including credentials passed to `execve`."
+	case "SYS_PTRACE":
+		return "They ptrace another container's process (under `hostPID`, any host process) and read `/proc/<pid>/mem` to extract ServiceAccount tokens, secrets, or in-memory cryptographic keys."
+	case "DAC_OVERRIDE":
+		return "They read `/etc/shadow` inside the container, or sensitive hostPath mounts whose mode bits would otherwise deny the container's UID."
+	case "MKNOD":
+		return "They `mknod /dev/sda1 b 8 1` (recreating the host block device) and read the host filesystem block-by-block."
+	case "SYS_CHROOT":
+		return "They `chroot` out of a pivoted rootfs sandbox (combined with a writeable rootfs and a SUID binary, this is a sandbox-escape primitive)."
+	case "NET_RAW":
+		return "They open an `AF_PACKET` raw socket, sniff every packet on the pod's interface (including cleartext credentials over HTTP / non-mTLS gRPC), or ARP-spoof a sibling pod's gateway."
+	case "AUDIT_WRITE":
+		return "They forge entries in the kernel audit log (`auditd`-fed SIEMs ingest these) to fabricate evidence or bury legitimate access logs."
+	default:
+		return fmt.Sprintf("They exercise the `CAP_%s` primitive (varies by capability) to bypass a control the container would otherwise be subject to.", capName)
+	}
+}
+
+// capabilityMitreTechniques picks the closest-fit MITRE ATT&CK techniques for a
+// given capability. Defaults to T1611/T1068 (escape + privesc) which cover almost
+// every capability on the dangerous list.
+func capabilityMitreTechniques(capName string) []models.MitreTechnique {
+	base := []models.MitreTechnique{mitreT1611, mitreT1068}
+	switch capName {
+	case "SYS_PTRACE":
+		// Process discovery + credential dumping via /proc/*/mem.
+		return append(base, mitreT1057, mitreT1552_001)
+	case "DAC_OVERRIDE":
+		return append(base, mitreT1552_001, mitreT1083)
+	case "NET_ADMIN", "NET_RAW":
+		return append(base, mitreT1040, mitreT1046)
+	case "AUDIT_WRITE":
+		// Defense-evasion; closest existing entry is T1548_001 (Setuid/Setgid)
+		// for the privilege-bypass family; we keep base + that for now.
+		return append(base, mitreT1548_001)
+	case "BPF":
+		return append(base, mitreT1040)
+	}
+	return base
+}
+
 func contentImageLatest001(kind, namespace, name, container, image string) ruleContent {
 	scope := scopeForWorkload(kind, namespace, name)
 	return ruleContent{

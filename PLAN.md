@@ -51,7 +51,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] Dangerous hostPath mounts, docker/containerd sockets
 - [x] Default SA usage, mutable image tags
 - [x] `allowPrivilegeEscalation` (`KUBE-PODSEC-APE-001`), `readOnlyRootFilesystem` (`KUBE-PODSEC-READONLY-001`), `seccompProfile` (`KUBE-PODSEC-SECCOMP-001`), `procMount: Unmasked` (`KUBE-PODSEC-PROCMOUNT-001`)
-- [ ] Exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, etc.)
+- [x] Exhaustive dangerous-capability list — `KUBE-PODSEC-CAPS-001` (one finding per container × capability) covering `SYS_ADMIN`, `SYS_MODULE`, `SYS_RAWIO`, `NET_ADMIN`, `BPF`, `SYS_PTRACE`, `DAC_OVERRIDE`, `MKNOD`, `SYS_CHROOT`, `NET_RAW`, `AUDIT_WRITE`; `capabilities.add: [ALL]` expands to one finding per dangerous cap.
 - [ ] PersistentVolume hostPath bypass check (KUBE-ESCAPE-011)
 - [ ] Pod Security Admission namespace label assessment — `pod-security.kubernetes.io/{enforce,audit,warn}`
 - [ ] Legacy PSP permissiveness
