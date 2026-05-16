@@ -26,18 +26,6 @@ make scan
 
 `make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step.
 
-Krew (Kubernetes plugin manager, submission pending):
-
-```bash
-kubectl krew install splain
-```
-
-Homebrew (tap submission pending):
-
-```bash
-brew install 0hardik1/tap/kubesplaining
-```
-
 See [Installation](#installation) below for `go install`, pre-built binaries, and checksums.
 
 ## vs the alternatives
@@ -100,7 +88,7 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits. They all produce the same `kubesplaining` CLI. The top-of-README install snippets cover the from-clone path, Krew, and Homebrew; this section adds Go install, pre-built binaries, and Docker.
+Pick the path that fits. They all produce the same `kubesplaining` CLI. The top of this README covers the from-clone path; this section adds Go install, pre-built binaries, and Docker.
 
 ### Go install
 
@@ -128,23 +116,6 @@ sudo install kubesplaining /usr/local/bin/
 
 ```bash
 docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:latest scan
-```
-
-### Krew (Kubernetes plugin manager)
-
-Submission to the [krew-index](https://github.com/kubernetes-sigs/krew-index) is pending; once accepted:
-
-```bash
-kubectl krew install splain
-kubectl splain scan
-```
-
-### Homebrew
-
-The Homebrew tap is pending; once published:
-
-```bash
-brew install 0hardik1/tap/kubesplaining
 ```
 
 ## What it checks
