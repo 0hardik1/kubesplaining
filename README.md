@@ -14,13 +14,17 @@ Kubesplaining is an open-source Kubernetes security assessment CLI that reads a 
 
 ## Install
 
-Each of these produces the same `kubesplaining` CLI. Pick whichever fits your workflow.
+Pick whichever fits your workflow.
 
-Docker (no install needed):
+From a fresh clone (easiest, no install needed):
 
 ```bash
-docker run ghcr.io/0hardik1/kubesplaining:latest scan --help
+git clone https://github.com/0hardik1/kubesplaining
+cd kubesplaining
+make scan
 ```
+
+`make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step.
 
 Krew (Kubernetes plugin manager, submission pending):
 
@@ -96,7 +100,7 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits. They all produce the same `kubesplaining` CLI. The top-of-README install snippets cover Docker, Krew, and Homebrew; this section adds the source-based options.
+Pick the path that fits. They all produce the same `kubesplaining` CLI. The top-of-README install snippets cover the from-clone path, Krew, and Homebrew; this section adds Go install, pre-built binaries, and Docker.
 
 ### Go install
 
