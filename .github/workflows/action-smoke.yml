@@ -1,0 +1,103 @@
+# Smoke test for the composite action defined in `action.yml`.
+#
+# Runs on PRs that touch the action itself (or this workflow), plus a manual
+# dispatch hook, and exercises the action with the offline snapshot fixture so
+# we don't need a kind cluster or kubeconfig in CI. The assertion is that the
+# action's `report-dir` output exists and contains the artifacts we expect
+# (HTML, JSON, SARIF). Failure of those means the docker invocation broke
+# even if the action exit code happened to be zero.
+name: action-smoke
+
+on:
+  pull_request:
+    paths:
+      - 'action.yml'
+      - '.github/workflows/action-smoke.yml'
+      - 'testdata/snapshots/**'
+  push:
+    branches: [main]
+    paths:
+      - 'action.yml'
+      - '.github/workflows/action-smoke.yml'
+      - 'testdata/snapshots/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Required by the action's SARIF-upload step. Without it the upload step
+  # would silently no-op (or fail loudly depending on codeql-action version),
+  # and the smoke test would not exercise the real production path.
+  security-events: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Build the container image locally from the in-tree Dockerfile and tag
+      # it as the `:main` reference the action expects. Lets the smoke test
+      # exercise the action end-to-end before a tagged release has pushed the
+      # image to GHCR (the action's pull step skips when the image already
+      # exists locally).
+      - name: Build kubesplaining image (local)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg VERSION=smoke \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --build-arg DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t ghcr.io/0hardik1/kubesplaining:main \
+            .
+
+      - name: Run kubesplaining action against minimal-risky fixture
+        id: scan
+        # `./` references the action defined in this repository so the smoke
+        # test always exercises the in-tree version of action.yml, not a
+        # released tag.
+        uses: ./
+        with:
+          # Pinned to `main` until slot #1 (.goreleaser image push) lands and
+          # we can bump to `:v1` or `:latest`.
+          version: main
+          input-file: testdata/snapshots/minimal-risky.json
+          severity-threshold: low
+          output-dir: ./kubesplaining-smoke-report
+          # The fixture intentionally contains critical findings (it's the
+          # "minimal-risky" sample), so we must not gate on critical or the
+          # smoke test would always fail.
+          fail-on-critical: 'false'
+          # SARIF upload is exercised in production paths; the smoke test
+          # disables it because we are not asserting against the Security tab
+          # and want this workflow to remain green on forks without the
+          # `security-events: write` token scope.
+          upload-sarif: 'false'
+
+      - name: Assert report artifacts exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_DIR="${{ steps.scan.outputs.report-dir }}"
+          if [ -z "${REPORT_DIR}" ]; then
+            echo "::error::action did not emit report-dir output"
+            exit 1
+          fi
+          echo "Report dir: ${REPORT_DIR}"
+          ls -la "${REPORT_DIR}"
+          for f in report.html findings.json findings.sarif; do
+            if [ ! -s "${REPORT_DIR}/${f}" ]; then
+              echo "::error::missing or empty artifact: ${f}"
+              exit 1
+            fi
+          done
+          echo "All expected artifacts present."
+
+      - name: Upload smoke-test report as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubesplaining-smoke-report
+          path: ./kubesplaining-smoke-report
+          if-no-files-found: warn

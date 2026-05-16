@@ -1,0 +1,225 @@
+# GitHub Action wrapper for kubesplaining.
+#
+# Runs the pinned GHCR container image inside a Workflow runner so callers don't
+# need Go, Docker buildx, or client-go credentials to ship a SARIF result into
+# the repo's Security tab. The action is intentionally a thin composite over
+# `docker run`: every flag the underlying CLI accepts can still be passed
+# through `--input-file`, kubeconfig, or per-input mappings below.
+#
+# Pinning policy: `version` defaults to `latest` once images are published, but
+# while slot #1 (.goreleaser image push) is still in flight we recommend pinning
+# to `main` (or a Git SHA) so callers don't surprise-update. After v1.0.0 ships,
+# bump the README snippet to `:v1`.
+name: kubesplaining
+description: >-
+  Kubernetes security assessment with multi-hop RBAC privilege-escalation
+  graphs. Runs against a live cluster (via kubeconfig) or a pre-collected
+  snapshot JSON, emits SARIF for GitHub code scanning, and optionally fails
+  the build on critical findings.
+author: 0hardik1
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  version:
+    description: >-
+      GHCR image tag to pull. Defaults to `main` while the release pipeline is
+      bootstrapping; switch to `latest` or a pinned `vX.Y.Z` after v1.0.0.
+    required: false
+    default: main
+  kubeconfig:
+    description: >-
+      Base64-encoded kubeconfig for live-cluster scans. Leave empty when using
+      `input-file`. The action writes it to a temporary file inside the runner
+      and exports `KUBECONFIG` so the CLI picks it up; the file is removed
+      after the scan regardless of exit status.
+    required: false
+    default: ''
+  input-file:
+    description: >-
+      Path (relative to the repo checkout) to a pre-collected snapshot JSON
+      produced by `kubesplaining download`. When set, the action skips live
+      collection and runs `scan --input-file` against the snapshot instead.
+    required: false
+    default: ''
+  severity-threshold:
+    description: >-
+      Minimum severity to include in the report: critical, high, medium, low,
+      or info. Forwarded verbatim to `--severity-threshold`.
+    required: false
+    default: medium
+  output-dir:
+    description: >-
+      Directory (relative to the repo checkout) where the report artifacts will
+      be written. Created if it does not exist.
+    required: false
+    default: ./kubesplaining-report
+  fail-on-critical:
+    description: >-
+      When true, the underlying CLI is invoked with `--ci-mode --ci-max-critical 0`
+      so the workflow step exits non-zero on any critical finding. Set to false
+      to surface findings without failing the build.
+    required: false
+    default: 'true'
+  upload-sarif:
+    description: >-
+      When true, the SARIF result is uploaded to GitHub code scanning via
+      `github/codeql-action/upload-sarif@v3`. Requires the calling workflow to
+      grant `security-events: write` permission.
+    required: false
+    default: 'true'
+  compliance:
+    description: >-
+      Optional compliance filter, forwarded to `--compliance`. Supported values
+      are `cis` and `nsa`. Leave empty to skip the filter.
+    required: false
+    default: ''
+
+outputs:
+  report-dir:
+    description: Absolute path to the directory containing the generated reports.
+    value: ${{ steps.run.outputs.report-dir }}
+  sarif-file:
+    description: Absolute path to the SARIF report (only set when SARIF is emitted).
+    value: ${{ steps.run.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    # Stage 1: materialise an optional kubeconfig from the encoded input. We
+    # write to $RUNNER_TEMP so the file lives outside the workspace and is
+    # cleaned up by the runner; the `cleanup` step below also wipes it
+    # defensively in case `RUNNER_TEMP` is persistent across job retries.
+    - name: Prepare kubeconfig
+      id: kubeconfig
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${INPUT_KUBECONFIG}" ]; then
+          KUBECONFIG_PATH="${RUNNER_TEMP}/kubesplaining-kubeconfig"
+          printf '%s' "${INPUT_KUBECONFIG}" | base64 --decode > "${KUBECONFIG_PATH}"
+          chmod 600 "${KUBECONFIG_PATH}"
+          echo "path=${KUBECONFIG_PATH}" >> "$GITHUB_OUTPUT"
+        else
+          echo "path=" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        INPUT_KUBECONFIG: ${{ inputs.kubeconfig }}
+
+    # Stage 2: pull the pinned image up front so the run step's failure modes
+    # are limited to scan logic (and so the pull is logged separately, which
+    # is easier to debug than an opaque `docker run` failure). If the image
+    # already exists locally (for instance, the smoke workflow builds it from
+    # the in-tree Dockerfile so the action can be exercised before a release
+    # has published the registry tag) we skip the pull.
+    - name: Pull kubesplaining image
+      shell: bash
+      run: |
+        set -euo pipefail
+        IMAGE="ghcr.io/0hardik1/kubesplaining:${INPUT_VERSION}"
+        if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+          echo "Image ${IMAGE} already present locally, skipping pull."
+        else
+          docker pull "${IMAGE}"
+        fi
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+
+    # Stage 3: run the scan. We always mount the workspace at /workspace so
+    # both `input-file` and `output-dir` can be relative to it, and always
+    # request html + json + sarif so callers get a full report regardless of
+    # which downstream step consumes it. `--exclusions-preset=standard` is the
+    # CLI default and is left implicit.
+    - name: Run kubesplaining scan
+      id: run
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        OUTPUT_DIR_ABS="${GITHUB_WORKSPACE}/${INPUT_OUTPUT_DIR#./}"
+        OUTPUT_DIR_ABS="${OUTPUT_DIR_ABS%/}"
+        mkdir -p "${OUTPUT_DIR_ABS}"
+
+        # Workspace-relative output dir for the in-container CLI.
+        IN_CONTAINER_OUTPUT="/workspace/${INPUT_OUTPUT_DIR#./}"
+
+        # Run as the host workspace owner so files written under /workspace
+        # (the report dir, scan-metadata.json) land with the caller's uid/gid
+        # and remain readable / cleanable by later workflow steps. The default
+        # distroless `nonroot` user (uid 65532) can't write to dirs owned by
+        # the GitHub runner (typically uid 1001), so without this the report
+        # writes fail with "permission denied".
+        DOCKER_ARGS=(
+          run --rm
+          --user "$(id -u):$(id -g)"
+          -v "${GITHUB_WORKSPACE}:/workspace"
+          -w /workspace
+        )
+
+        if [ -n "${KUBECONFIG_PATH}" ]; then
+          DOCKER_ARGS+=(
+            -v "${KUBECONFIG_PATH}:/tmp/kubeconfig:ro"
+            -e "KUBECONFIG=/tmp/kubeconfig"
+          )
+        fi
+
+        DOCKER_ARGS+=( "ghcr.io/0hardik1/kubesplaining:${INPUT_VERSION}" )
+
+        SCAN_ARGS=(
+          scan
+          --output-dir "${IN_CONTAINER_OUTPUT}"
+          --output-format html,json,sarif
+          --severity-threshold "${INPUT_SEVERITY_THRESHOLD}"
+        )
+
+        if [ -n "${INPUT_INPUT_FILE}" ]; then
+          SCAN_ARGS+=( --input-file "/workspace/${INPUT_INPUT_FILE#./}" )
+        fi
+
+        if [ "${INPUT_FAIL_ON_CRITICAL}" = "true" ]; then
+          SCAN_ARGS+=( --ci-mode --ci-max-critical 0 )
+        fi
+
+        if [ -n "${INPUT_COMPLIANCE}" ]; then
+          SCAN_ARGS+=( --compliance "${INPUT_COMPLIANCE}" )
+        fi
+
+        echo "::group::kubesplaining invocation"
+        printf 'docker'
+        printf ' %q' "${DOCKER_ARGS[@]}" "${SCAN_ARGS[@]}"
+        printf '\n'
+        echo "::endgroup::"
+
+        docker "${DOCKER_ARGS[@]}" "${SCAN_ARGS[@]}"
+
+        echo "report-dir=${OUTPUT_DIR_ABS}" >> "$GITHUB_OUTPUT"
+        if [ -f "${OUTPUT_DIR_ABS}/findings.sarif" ]; then
+          echo "sarif-file=${OUTPUT_DIR_ABS}/findings.sarif" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_INPUT_FILE: ${{ inputs.input-file }}
+        INPUT_SEVERITY_THRESHOLD: ${{ inputs.severity-threshold }}
+        INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
+        INPUT_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
+        INPUT_COMPLIANCE: ${{ inputs.compliance }}
+        KUBECONFIG_PATH: ${{ steps.kubeconfig.outputs.path }}
+
+    # Stage 4: SARIF upload. `if:` guards both the input toggle and presence of
+    # the file (the scan may emit only HTML/JSON if a future tag drops SARIF).
+    # `continue-on-error` keeps the run step's exit code authoritative so
+    # `fail-on-critical=true` still surfaces a red workflow.
+    - name: Upload SARIF to GitHub code scanning
+      if: ${{ always() && inputs.upload-sarif == 'true' && steps.run.outputs.sarif-file != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.run.outputs.sarif-file }}
+        category: kubesplaining
+
+    # Stage 5: best-effort kubeconfig cleanup. `always()` ensures we wipe the
+    # decoded credentials even when the scan failed.
+    - name: Clean up kubeconfig
+      if: ${{ always() && steps.kubeconfig.outputs.path != '' }}
+      shell: bash
+      run: rm -f "${{ steps.kubeconfig.outputs.path }}"
