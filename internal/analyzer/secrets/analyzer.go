@@ -45,8 +45,11 @@ func (a *Analyzer) Name() string {
 }
 
 // Analyze flags legacy service-account tokens, opaque kube-system secrets,
-// credential-like ConfigMap keys, and risky CoreDNS configurations.
-func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]models.Finding, error) {
+// credential-like ConfigMap keys, risky CoreDNS configurations, stale
+// secrets unreferenced by any pod or ServiceAccount, cross-namespace secret
+// reads, TLS secrets approaching expiry, and high-confidence credential
+// patterns in ConfigMap keys.
+func (a *Analyzer) Analyze(ctx context.Context, snapshot models.Snapshot) ([]models.Finding, error) {
 	findings := make([]models.Finding, 0)
 	seen := map[string]struct{}{}
 
@@ -87,6 +90,14 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			}
 		}
 	}
+
+	// Sub-analyzers from the secrets-bundle (PLAN.md:67-71). Each sub-analyzer
+	// owns its own file and operates over the same `findings` slice, sharing
+	// the `seen` set so cross-rule ID collisions are deterministic.
+	findings = a.analyzeStale(ctx, snapshot, findings, seen)
+	findings = a.analyzeCrossNS(ctx, snapshot, findings, seen)
+	findings = a.analyzeTLSExpiry(ctx, snapshot, findings, seen)
+	findings = a.analyzeConfigMapHeuristics(ctx, snapshot, findings, seen)
 
 	return findings, nil
 }

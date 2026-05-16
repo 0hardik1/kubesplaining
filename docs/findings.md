@@ -92,8 +92,12 @@ These appear on `Finding.Tags` (visible in JSON, CSV, and SARIF output) and desc
 | --- | --- | --- | --- | --- |
 | KUBE-SECRETS-001 | HIGH | Long-lived service account token secret | `type: kubernetes.io/service-account-token` | Prefer projected tokens; delete legacy secrets |
 | KUBE-CONFIGMAP-002 | HIGH | CoreDNS configuration contains risky directives | `rewrite` / `forward` in Corefile | Review intent; restrict write access to coredns configmap |
+| KUBE-CONFIGMAP-CREDS-001 | HIGH | ConfigMap key matches a high-confidence credential pattern | Per-key match on `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`aws_secret_access_key`/`dsn`/`connection_string`/`client_secret`/`private_key`/`access_key` | Move credential to a Secret or external secret store; remove the key |
 | KUBE-SECRETS-002 | MEDIUM | Opaque secret stored in kube-system | User `Opaque` secret in `kube-system` | Move to an app namespace and restrict readers |
 | KUBE-CONFIGMAP-001 | MEDIUM | ConfigMap contains credential-like keys | Key name matches `password`/`token`/`key`/`api_key`/… | Move to a Secret or external secret manager |
+| KUBE-SECRETS-CROSSNS-001 | MEDIUM | Workload SA can read Secrets in another namespace | Pod-mounted ServiceAccount has `get`/`list`/`watch` on `secrets` in a namespace other than where the workload runs (one finding per `(subject, target_namespace)`) | Move workload into target ns, narrow to Role + `resourceNames`, or use operator selector mechanisms |
+| KUBE-SECRETS-TLS-EXPIRY-001 | MEDIUM | TLS Secret expired or expires within 30 days | `type: kubernetes.io/tls` with `cert-manager.io/not-after` (or `notafter`/`expiration`) annotation in the past or within 30d. Best-effort: secrets without the annotation are silently skipped | Force renewal via cert-manager (`cmctl renew`), check Issuer health, add expiry alerts |
+| KUBE-SECRETS-STALE-001 | LOW | Secret unreferenced by any Pod or ServiceAccount | Secret name not found in pod env / envFrom / volumes / SA `secrets` / SA `imagePullSecrets`. Skips `service-account-token` type | Confirm no out-of-snapshot consumer; rotate at source; delete |
 
 ### Service Account ([internal/analyzer/serviceaccount/analyzer.go](../internal/analyzer/serviceaccount/analyzer.go))
 
@@ -130,7 +134,7 @@ The following rules are on the roadmap but not yet implemented. See [PLAN.md](..
 
 **Network** — cross-namespace communication map; egress to cloud metadata endpoint `169.254.169.254`.
 
-**Secrets** — stale/unreferenced secrets; cross-namespace secret references; TLS secret expiry; `aws-auth` ConfigMap analysis; EncryptionConfiguration audit.
+**Secrets** — `aws-auth` ConfigMap analysis; EncryptionConfiguration audit. (Stale/unreferenced secrets, cross-namespace secret references, TLS secret expiry, and ConfigMap credential heuristics shipped in Wave 1 slot #12 above.)
 
 **Service Account** — cross-module risk correlation; DaemonSet blast-radius flag.
 
