@@ -50,6 +50,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		customRulesDir       string
 		baselineFile         string
 		baselineFormat       string
+		remediationPatches   bool
 	)
 
 	cmd := &cobra.Command{
@@ -113,11 +114,12 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				CustomRulesDir:  customRulesDir,
 			})
 			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
-				OnlyModules:   onlyModules,
-				SkipModules:   skipModules,
-				Threshold:     threshold,
-				AdmissionMode: mode,
-				UsageIndex:    usageIdx,
+				OnlyModules:        onlyModules,
+				SkipModules:        skipModules,
+				Threshold:          threshold,
+				AdmissionMode:      mode,
+				UsageIndex:         usageIdx,
+				RemediationPatches: remediationPatches,
 			})
 			if err != nil {
 				return err
@@ -256,6 +258,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringVar(&customRulesDir, "custom-rules", "", "Directory of user-supplied *.cel.yaml rules to evaluate alongside the built-in modules. See examples/custom-rules/ for the wire format.")
 	cmd.Flags().StringVar(&baselineFile, "baseline", "", "Path to a previous findings JSON file. When set, a diff.{txt,md,sarif} is written alongside the report and (in --ci-mode) ci-max-* gates count Added findings only, not the absolute scan tally.")
 	cmd.Flags().StringVar(&baselineFormat, "baseline-format", "text", "Format for the baseline diff sidecar: text|markdown|sarif")
+	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Attach structured remediation hints (kubectl patch, Kyverno / Gatekeeper policy, RBAC diff) to every finding. Adds to JSON/SARIF output and the 'Structured remediation' section in HTML. Off by default.")
 
 	return cmd
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -278,12 +279,17 @@ func isSystemNamespace(namespace string) bool {
 	return namespace == "kube-system" || namespace == "kube-public" || namespace == "kube-node-lease"
 }
 
-// appendUnique deduplicates by Finding.ID before appending.
+// appendUnique deduplicates by Finding.ID before appending. The
+// RemediationHint is attached here (rather than at every call site or per
+// emit helper) so the analyzer's per-rule detection blocks stay focused on
+// detection; mirroring the pattern used by the podsec analyzer's
+// appendFinding.
 func appendUnique(findings []models.Finding, seen map[string]struct{}, finding models.Finding) []models.Finding {
 	if _, ok := seen[finding.ID]; ok {
 		return findings
 	}
 	seen[finding.ID] = struct{}{}
+	finding.RemediationHint = remediation.ForNetwork(finding.RuleID, finding)
 	return append(findings, finding)
 }
 

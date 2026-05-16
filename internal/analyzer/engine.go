@@ -38,6 +38,13 @@ type Options struct {
 	// scan.go errors out before we get here when --least-privilege-only is set
 	// without --audit-log.
 	UsageIndex *usage.UsageIndex
+	// RemediationPatches opts into structured remediation hints (kubectl patch,
+	// Kyverno / Gatekeeper policy, RBAC diff) on every finding. Default false:
+	// analyzers always populate Finding.RemediationHint, but the engine strips
+	// the field as a post-process step unless this flag is set. Callers that
+	// regenerate reports from JSON (`internal/cli/report.go`) apply the same
+	// strip themselves, so the flag's behavior is consistent end-to-end.
+	RemediationPatches bool
 }
 
 // Engine holds the set of registered analysis modules to run.
@@ -97,6 +104,10 @@ func (e *Engine) Analyze(ctx context.Context, snapshot models.Snapshot, opts Opt
 	findings, firstErr := runModulesInParallel(ctx, snapshot, selected)
 
 	findings, admissionSummary := postProcess(findings, snapshot, mode)
+
+	if !opts.RemediationPatches {
+		findings = stripRemediationHints(findings)
+	}
 
 	filtered := filterByThreshold(findings, opts.Threshold)
 	sortFindings(filtered)
@@ -181,6 +192,18 @@ func filterByThreshold(findings []models.Finding, threshold models.Severity) []m
 		}
 	}
 	return filtered
+}
+
+// stripRemediationHints zeroes the RemediationHint pointer on every finding.
+// Analyzers always populate the hint, so the engine drops it here when the
+// operator did not pass --remediation-patches. This keeps the per-analyzer
+// remediation generators wired and tested even when the CLI surface defaults
+// to off, and avoids gating every per-module call site behind a flag.
+func stripRemediationHints(findings []models.Finding) []models.Finding {
+	for i := range findings {
+		findings[i].RemediationHint = nil
+	}
+	return findings
 }
 
 // sortFindings sorts in place by severity (descending), then score (descending), then

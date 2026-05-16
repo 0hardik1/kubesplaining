@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -356,12 +357,16 @@ func newFinding(t target, container, ruleID string, severity models.Severity, ca
 
 // appendUnique deduplicates by Finding.ID before appending. The ID already carries
 // rule + workload + container so collisions only happen on a re-evaluation, but the
-// guard is cheap and matches the podsec / network modules.
+// guard is cheap and matches the podsec / network modules. The structured
+// RemediationHint is attached here (rather than at every call site) so the analyzer's
+// per-rule blocks stay focused on detection: the moment we know we are emitting a
+// finding, ask the remediation generator for the matching kubectl patch.
 func appendUnique(findings []models.Finding, seen map[string]struct{}, finding models.Finding) []models.Finding {
 	if _, ok := seen[finding.ID]; ok {
 		return findings
 	}
 	seen[finding.ID] = struct{}{}
+	finding.RemediationHint = remediation.ForContainerSec(finding.RuleID, finding)
 	return append(findings, finding)
 }
 

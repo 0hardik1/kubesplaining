@@ -299,6 +299,30 @@ if ! rg -q "admission:mitigated-psa-restricted" "${ROOT_DIR}/.tmp/e2e-report-att
 fi
 ok "attenuate mode tagged the privileged finding with admission:mitigated-psa-restricted"
 
+step "Re-running scan with --remediation-patches"
+# Asserts the opt-in remediation-hint flag actually wires through the engine
+# and at least one analyzer emits a hint into the JSON output. Without the
+# flag, hint emission is stripped by the engine post-process pass; with the
+# flag, every module's per-finding RemediationHint passes through.
+"${ROOT_DIR}/bin/kubesplaining" scan \
+  --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --output-dir "${ROOT_DIR}/.tmp/e2e-report-remediation" \
+  --remediation-patches \
+  --all-findings \
+  --output-format json >/dev/null
+if ! rg -q '"remediation_hint"' "${ROOT_DIR}/.tmp/e2e-report-remediation/findings.json"; then
+  echo "missing: --remediation-patches should produce at least one remediation_hint in findings.json" >&2
+  exit 1
+fi
+ok "remediation hints present under --remediation-patches"
+
+# Confirm the inverse: without the flag, no hints should leak through.
+if rg -q '"remediation_hint"' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
+  echo "regression: default scan (no --remediation-patches) should not emit remediation_hint" >&2
+  exit 1
+fi
+ok "default scan correctly omits remediation_hint"
+
 if [[ "${KEEP_CLUSTER}" == "1" ]]; then
   step "Wiring kubectl context"
   mkdir -p "$(dirname "${USER_KUBECONFIG}")"

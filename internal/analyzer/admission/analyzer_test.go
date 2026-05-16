@@ -2,6 +2,7 @@ package admission
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -63,6 +64,23 @@ func TestAnalyzerFindsWebhookBypassRisks(t *testing.T) {
 	assertRulePresent(t, findings, "KUBE-ADMISSION-001")
 	assertRulePresent(t, findings, "KUBE-ADMISSION-002")
 	assertRulePresent(t, findings, "KUBE-ADMISSION-003")
+
+	// Every webhook-targeted finding above should carry a RemediationHint
+	// attached by the admission analyzer's appendUnique funnel. We assert at
+	// least one such finding has the hint to confirm the wiring is live
+	// without coupling the test to which specific rule the generator returns
+	// a non-nil hint for (the generator's per-rule shape is exercised in
+	// internal/remediation/admission_test.go).
+	sawHint := false
+	for _, f := range findings {
+		if strings.HasPrefix(f.RuleID, "KUBE-ADMISSION-") && f.RemediationHint != nil {
+			sawHint = true
+			break
+		}
+	}
+	if !sawHint {
+		t.Errorf("expected at least one admission finding to carry a RemediationHint, got %+v", findings)
+	}
 }
 
 func assertRulePresent(t *testing.T, findings []models.Finding, ruleID string) {

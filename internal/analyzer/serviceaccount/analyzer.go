@@ -12,6 +12,7 @@ import (
 
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/permissions"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 )
 
@@ -69,19 +70,23 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		workloads := usageBySA[key]
 		workloadDesc := workloadsSummary(workloads)
 		if subject.Name == "default" && perms != nil && len(perms.Rules) > 0 {
-			findings = appendUnique(findings, seen, newFinding(subject,
+			finding := newFinding(subject,
 				"KUBE-SA-DEFAULT-002", severityForRules(perms.Rules, true), scoreForRules(perms.Rules, true),
 				map[string]any{"workloads": workloads, "rules": summarizeRules(perms.Rules)},
 				"defaultServiceAccountPermissions",
-				contentSADefault002(subject, workloadDesc, ruleSummaryText(perms.Rules))))
+				contentSADefault002(subject, workloadDesc, ruleSummaryText(perms.Rules)))
+			finding.RemediationHint = remediation.ForServiceAccount(finding.RuleID, finding, snapshot)
+			findings = appendUnique(findings, seen, finding)
 		}
 
 		if perms != nil && hasClusterAdminStyleRule(perms.Rules) {
-			findings = appendUnique(findings, seen, newFinding(subject,
+			finding := newFinding(subject,
 				"KUBE-SA-PRIVILEGED-001", models.SeverityCritical, 10,
 				map[string]any{"workloads": workloads, "rules": summarizeRules(perms.Rules)},
 				"clusterAdminStyle",
-				contentSAPrivileged001(subject, workloadDesc, ruleSummaryText(perms.Rules))))
+				contentSAPrivileged001(subject, workloadDesc, ruleSummaryText(perms.Rules)))
+			finding.RemediationHint = remediation.ForServiceAccount(finding.RuleID, finding, snapshot)
+			findings = appendUnique(findings, seen, finding)
 		}
 
 		if perms != nil && len(workloads) > 0 {
@@ -92,11 +97,13 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					severity = models.SeverityCritical
 					score = 9.1
 				}
-				findings = appendUnique(findings, seen, newFinding(subject,
+				finding := newFinding(subject,
 					"KUBE-SA-PRIVILEGED-002", severity, score,
-					map[string]any{"workloads": workloads, "dangerous_permissions": dangerous},
+					map[string]any{"workloads": workloads, "dangerous_permissions": dangerous, "rules": summarizeRules(perms.Rules)},
 					"dangerousPermissions",
-					contentSAPrivileged002(subject, workloadDesc, dangerous)))
+					contentSAPrivileged002(subject, workloadDesc, dangerous))
+				finding.RemediationHint = remediation.ForServiceAccount(finding.RuleID, finding, snapshot)
+				findings = appendUnique(findings, seen, finding)
 			}
 		}
 
@@ -108,11 +115,13 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				severity = models.SeverityHigh
 				score = 7.4
 			}
-			findings = appendUnique(findings, seen, newFinding(subject,
+			finding := newFinding(subject,
 				"KUBE-SA-DAEMONSET-001", severity, score,
 				map[string]any{"workloads": workloads, "rules": summarizeRules(maybeRules(perms))},
 				"daemonSetUsage",
-				contentSADaemonset001(subject, workloadDesc, ruleSummaryText(maybeRules(perms)), hasRules)))
+				contentSADaemonset001(subject, workloadDesc, ruleSummaryText(maybeRules(perms)), hasRules))
+			finding.RemediationHint = remediation.ForServiceAccount(finding.RuleID, finding, snapshot)
+			findings = appendUnique(findings, seen, finding)
 		}
 	}
 

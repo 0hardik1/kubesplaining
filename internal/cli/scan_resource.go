@@ -19,15 +19,16 @@ import (
 // single Kubernetes manifest file offline without requiring cluster access.
 func NewScanResourceCmd() *cobra.Command {
 	var (
-		inputFile         string
-		resourceType      string
-		exclusionsFile    string
-		exclusionsPreset  string
-		outputFormats     []string
-		maxFindings       int
-		allFindings       bool
-		complianceFilters []string
-		customRulesDir    string
+		inputFile          string
+		resourceType       string
+		exclusionsFile     string
+		exclusionsPreset   string
+		outputFormats      []string
+		maxFindings        int
+		allFindings        bool
+		complianceFilters  []string
+		customRulesDir     string
+		remediationPatches bool
 	)
 
 	cmd := &cobra.Command{
@@ -45,8 +46,9 @@ func NewScanResourceCmd() *cobra.Command {
 
 			engine := analyzer.NewWithConfig(analyzer.Config{CustomRulesDir: customRulesDir})
 			result, err := engine.Analyze(cmd.Context(), snapshot, analyzer.Options{
-				Threshold:     models.SeverityLow,
-				AdmissionMode: analyzer.AdmissionModeOff,
+				Threshold:          models.SeverityLow,
+				AdmissionMode:      analyzer.AdmissionModeOff,
+				RemediationPatches: remediationPatches,
 			})
 			if err != nil {
 				return err
@@ -84,6 +86,7 @@ func NewScanResourceCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding; overrides --max-findings")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
 	cmd.Flags().StringVar(&customRulesDir, "custom-rules", "", "Directory of user-supplied *.cel.yaml rules to evaluate alongside the built-in modules. See examples/custom-rules/ for the wire format.")
+	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Attach structured remediation hints (kubectl patch, Kyverno / Gatekeeper policy, RBAC diff) to every finding. Off by default.")
 
 	return cmd
 }
