@@ -444,6 +444,42 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 		return nil
 	})
 
+	runTask("persistentvolumes", func() error {
+		list, err := c.client.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]corev1.PersistentVolume, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, sanitizePersistentVolume(item, c.opts.IncludeManagedFields))
+		}
+
+		mu.Lock()
+		snapshot.Resources.PersistentVolumes = items
+		mu.Unlock()
+		return nil
+	})
+
+	runTask("persistentvolumeclaims", func() error {
+		list, err := c.client.CoreV1().PersistentVolumeClaims(corev1.NamespaceAll).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]corev1.PersistentVolumeClaim, 0, len(list.Items))
+		for _, item := range list.Items {
+			if c.includeNamespace(item.Namespace) {
+				items = append(items, sanitizePersistentVolumeClaim(item, c.opts.IncludeManagedFields))
+			}
+		}
+
+		mu.Lock()
+		snapshot.Resources.PersistentVolumeClaims = items
+		mu.Unlock()
+		return nil
+	})
+
 	runTask("services", func() error {
 		list, err := c.client.CoreV1().Services(corev1.NamespaceAll).List(ctx, metav1.ListOptions{})
 		if err != nil {
@@ -797,6 +833,16 @@ func sanitizeService(obj corev1.Service, includeManagedFields bool) corev1.Servi
 }
 
 func sanitizeNetworkPolicy(obj networkingv1.NetworkPolicy, includeManagedFields bool) networkingv1.NetworkPolicy {
+	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
+	return obj
+}
+
+func sanitizePersistentVolume(obj corev1.PersistentVolume, includeManagedFields bool) corev1.PersistentVolume {
+	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
+	return obj
+}
+
+func sanitizePersistentVolumeClaim(obj corev1.PersistentVolumeClaim, includeManagedFields bool) corev1.PersistentVolumeClaim {
 	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
 	return obj
 }

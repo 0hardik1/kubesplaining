@@ -54,6 +54,13 @@ type SnapshotResources struct {
 	Nodes               []corev1.Node                `json:"nodes,omitempty"`
 	Services            []corev1.Service             `json:"services,omitempty"`
 	NetworkPolicies     []networkingv1.NetworkPolicy `json:"network_policies,omitempty"`
+	// PersistentVolumes and PersistentVolumeClaims power the PV-hostPath bypass check
+	// (KUBE-PV-HOSTPATH-001): a Pod can mount a PVC whose backing PV uses a sensitive
+	// hostPath (`/`, `/etc`, `/var/run/docker.sock`, `/var/lib/kubelet`, ...). PSA cannot
+	// see through PVCs, so this is a real Baseline bypass. Both fields are populated by
+	// the collector; missing-permission errors degrade them to empty (warning, not fatal).
+	PersistentVolumes      []corev1.PersistentVolume      `json:"persistent_volumes,omitempty"`
+	PersistentVolumeClaims []corev1.PersistentVolumeClaim `json:"persistent_volume_claims,omitempty"`
 	// CertificateSigningRequests are the cluster's pending / approved CSRs. They drive
 	// the KUBE-PRIVESC-011 detection (a subject that can both create CSRs and approve
 	// them at the `certificatesigningrequests/approval` subresource can mint a

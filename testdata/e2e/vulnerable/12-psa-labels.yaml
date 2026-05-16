@@ -1,0 +1,44 @@
+# Slot #11B: PSA namespace label assessment (KUBE-PSA-LABELS-001).
+# Namespace runs a Baseline-violating Pod (hostNetwork=true) AND has no PSA
+# `enforce` label. The analyzer flags the namespace for missing the cluster's
+# first line of defense at the namespace boundary.
+#
+# This file mirrors the same fixture in testdata/e2e/vulnerable.yaml. Once the
+# Wave 0-e split lands, the flat-file copy will be removed and only this
+# directory variant will be applied by `kubectl apply -f testdata/e2e/vulnerable/`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: psa-unlabeled-fixtures
+  # Deliberately no pod-security.kubernetes.io/* labels at all.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-psa-unlabeled
+  namespace: psa-unlabeled-fixtures
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: psa-unlabeled-app
+  namespace: psa-unlabeled-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: psa-unlabeled-app
+  template:
+    metadata:
+      labels:
+        app: psa-unlabeled-app
+    spec:
+      serviceAccountName: sa-psa-unlabeled
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: app
+          image: nginx:1.27
+          ports:
+            - containerPort: 18080
+              hostPort: 18080

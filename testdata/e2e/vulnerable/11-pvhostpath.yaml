@@ -1,0 +1,101 @@
+# Slot #11A: PV hostPath bypass (KUBE-PV-HOSTPATH-001).
+# Demonstrates the PSA bypass: a PV backed by a sensitive hostPath
+# (/var/lib/kubelet) is mounted by a Pod via a PVC. PSA inspects the PodSpec
+# only and never follows the PVC -> PV indirection, so even a Baseline-enforced
+# namespace would admit this pod. The analyzer walks Pod -> PVC -> PV and flags
+# the sensitive hostPath source.
+#
+# This file mirrors the same fixture in testdata/e2e/vulnerable.yaml. Once the
+# Wave 0-e split lands, the flat-file copy will be removed and only this
+# directory variant will be applied by `kubectl apply -f testdata/e2e/vulnerable/`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pv-hostpath-fixtures
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-hostpath-kubelet
+spec:
+  capacity:
+    storage: 1Mi
+  accessModes: ["ReadWriteOnce"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: pv-hostpath-fixtures
+    name: pvc-hostpath-kubelet
+  hostPath:
+    path: /var/lib/kubelet
+    type: Directory
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-hostpath-kubelet
+  namespace: pv-hostpath-fixtures
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: ""
+  volumeName: pv-hostpath-kubelet
+  resources:
+    requests:
+      storage: 1Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-pv-hostpath
+  namespace: pv-hostpath-fixtures
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pv-hostpath-app
+  namespace: pv-hostpath-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pv-hostpath-app
+  template:
+    metadata:
+      labels:
+        app: pv-hostpath-app
+    spec:
+      serviceAccountName: sa-pv-hostpath
+      # PodSpec is intentionally PSA-Baseline compliant in every other way:
+      # the bypass is in the PVC, not in the PodSpec. We use the busybox sleep
+      # loop pattern (mirroring socket-mounts-app) so the pod starts
+      # deterministically inside kind without fighting nginx's writable-dir
+      # requirements.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sleep", "infinity"]
+          # Mount the PVC read-only so we don't actually clobber kubelet state
+          # on the kind node (it remains a real bypass; we just don't write).
+          volumeMounts:
+            - name: kubelet-data
+              mountPath: /mnt/kubelet
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: kubelet-data
+          persistentVolumeClaim:
+            claimName: pvc-hostpath-kubelet

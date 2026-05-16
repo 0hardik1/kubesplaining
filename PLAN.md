@@ -30,7 +30,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [~] Collector not yet split into per-resource files (one ~646-line `collector.go`). Cosmetic; leave until a second collector appears.
 - [ ] `certificatesigningrequests` collection
 - [ ] `storageclasses` collection
-- [ ] `persistentvolumes` / `persistentvolumeclaims` collection
+- [x] `persistentvolumes` / `persistentvolumeclaims` collection — added in slot #11 to back the PV hostPath bypass check
 - [ ] `events` collection (optional)
 - [ ] Cluster metadata: feature gates, PSP admission enabled flag
 - [ ] Cloud provider detection + metadata — no `collector/cloud/`
@@ -53,8 +53,8 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] Default SA usage, mutable image tags
 - [x] `allowPrivilegeEscalation` (`KUBE-PODSEC-APE-001`), `readOnlyRootFilesystem` (`KUBE-PODSEC-READONLY-001`), `seccompProfile` (`KUBE-PODSEC-SECCOMP-001`), `procMount: Unmasked` (`KUBE-PODSEC-PROCMOUNT-001`)
 - [x] Exhaustive dangerous-capability list — `KUBE-PODSEC-CAPS-001` (one finding per container × capability) covering `SYS_ADMIN`, `SYS_MODULE`, `SYS_RAWIO`, `NET_ADMIN`, `BPF`, `SYS_PTRACE`, `DAC_OVERRIDE`, `MKNOD`, `SYS_CHROOT`, `NET_RAW`, `AUDIT_WRITE`; `capabilities.add: [ALL]` expands to one finding per dangerous cap.
-- [ ] PersistentVolume hostPath bypass check (KUBE-ESCAPE-011)
-- [ ] Pod Security Admission namespace label assessment — `pod-security.kubernetes.io/{enforce,audit,warn}`
+- [x] PersistentVolume hostPath bypass check (`KUBE-PV-HOSTPATH-001`) — Pod -> PVC -> PV walk; flags sensitive hostPath sources PSA cannot see through
+- [x] Pod Security Admission namespace label assessment (`KUBE-PSA-LABELS-001`) — flags namespaces running Baseline violators with no `enforce` label
 - [ ] Legacy PSP permissiveness
 
 ### Network Policy — [internal/analyzer/network/](internal/analyzer/network/analyzer.go)
