@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **54 distinct rule IDs across 9 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **55 distinct rule IDs across 9 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Findings Library — Implemented
 
@@ -52,6 +52,7 @@ These rules compare granted RBAC permissions against observed usage from a kube-
 | KUBE-ESCAPE-008 | HIGH | Host log directory mounted | hostPath `/var/log` | Use a log collector sidecar instead |
 | KUBE-HOSTPATH-001 | HIGH | HostPath volume mount | Generic hostPath mount | Prefer ConfigMaps/Secrets/CSI |
 | KUBE-PODSEC-APE-001 | HIGH | Privilege escalation allowed in container | `allowPrivilegeEscalation` missing or `true` | Set `allowPrivilegeEscalation: false` |
+| KUBE-PODSEC-CAPS-001 | CRITICAL/HIGH/MEDIUM | Container adds a dangerous Linux capability | `capabilities.add` (or `add: [ALL]`) includes any of `SYS_ADMIN`, `SYS_MODULE`, `SYS_RAWIO`, `NET_ADMIN`, `BPF`, `SYS_PTRACE`, `DAC_OVERRIDE`, `MKNOD`, `SYS_CHROOT`, `NET_RAW`, `AUDIT_WRITE` (one finding per container × capability) | Drop the capability; set `capabilities.drop: [ALL]` and add back only what's required (typically nothing, or `NET_BIND_SERVICE`) |
 | KUBE-PODSEC-PROCMOUNT-001 | HIGH | Container requests Unmasked /proc | `securityContext.procMount: Unmasked` (explicit opt-in) | Remove the field (default `Default` is safe); enforce PSA `baseline` |
 | KUBE-PODSEC-ROOT-001 | MEDIUM | Container runs as root | UID 0 or `runAsNonRoot: false` | Set a non-zero UID and `runAsNonRoot: true` |
 | KUBE-PODSEC-READONLY-001 | MEDIUM | Container has a writable root filesystem | `readOnlyRootFilesystem` missing or `false` | Set `readOnlyRootFilesystem: true`; mount `emptyDir` for legitimate write paths |

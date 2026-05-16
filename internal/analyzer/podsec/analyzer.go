@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -163,10 +164,121 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					models.SeverityHigh, models.CategoryPrivilegeEscalation, scoring.Clamp(7.5),
 					map[string]any{"container": container.Name, "procMount": "Unmasked"}, "procMount", content).withSuffix(":"+container.Name))
 			}
+
+			for _, cap := range dangerousAddedCapabilities(container) {
+				content := contentPodSecCaps001(target.Kind, target.Namespace, target.Name, container.Name, cap)
+				score := scoring.Clamp(dangerousCapabilities[cap].Score)
+				findings = appendFinding(findings, seen, newFindingFromContent(target, "KUBE-PODSEC-CAPS-001",
+					scoring.SeverityForScore(score), models.CategoryPrivilegeEscalation, score,
+					map[string]any{"container": container.Name, "capability": cap}, "capabilities", content).withSuffix(":"+container.Name+":"+cap))
+			}
 		}
 	}
 
 	return findings, nil
+}
+
+// capabilityRisk pairs a base score with a one-line justification for why a Linux
+// capability is dangerous in a container. The score feeds into scoring.SeverityForScore
+// so a single CAPS-001 rule emits findings across the Critical/High/Medium severity
+// buckets without per-capability hard-coded severities.
+type capabilityRisk struct {
+	Score  float64
+	Reason string
+}
+
+// dangerousCapabilities lists Linux capabilities that grant container-escape or
+// credential-theft primitives on their own. Each entry carries a short justification
+// for the score: capabilities that allow direct host takeover (kernel module load,
+// raw I/O, arbitrary mknod) score Critical; capabilities that defeat in-container
+// hardening (ptrace, DAC_OVERRIDE) score High; lower-risk audit/chroot capabilities
+// score Medium. SYS_ADMIN and NET_ADMIN are the canonical escape primitives and are
+// always Critical. The Pod Security Standards Baseline profile forbids every cap on
+// this list except NET_BIND_SERVICE (deliberately omitted).
+var dangerousCapabilities = map[string]capabilityRisk{
+	// CAP_SYS_ADMIN is "the new root": mount, pivot_root, unshare, BPF program load,
+	// and dozens of other syscalls. Every public container escape from the last decade
+	// either had SYS_ADMIN or worked around its absence.
+	"SYS_ADMIN": {Score: 9.5, Reason: "kernel-equivalent privilege: mount, unshare, bpf, pivot_root; almost every container-escape requires it"},
+	// CAP_SYS_MODULE allows insmod/init_module: load arbitrary kernel modules and
+	// own the host kernel outright. Always Critical.
+	"SYS_MODULE": {Score: 9.7, Reason: "loads kernel modules via init_module; direct host-kernel takeover"},
+	// CAP_SYS_RAWIO allows direct I/O port and /dev/mem access: read kernel memory,
+	// inject code into running processes, bypass DMA protections.
+	"SYS_RAWIO": {Score: 9.0, Reason: "raw I/O port and /dev/mem access; read kernel memory and bypass DMA"},
+	// CAP_NET_ADMIN allows iptables/nftables rewrites, traffic interception,
+	// promiscuous mode, and tunnel creation. In multi-tenant clusters this is
+	// lateral-movement primitive #1.
+	"NET_ADMIN": {Score: 8.5, Reason: "network configuration: redirect traffic, intercept service IPs, manipulate firewall"},
+	// CAP_BPF (split out from SYS_ADMIN in kernel 5.8) lets a container load eBPF
+	// programs. Combined with CAP_PERFMON or CAP_SYS_RESOURCE this includes
+	// kernel-tracing and credential snooping.
+	"BPF": {Score: 8.5, Reason: "load eBPF programs; kernel-side tracing, credential snooping, packet manipulation"},
+	// CAP_SYS_PTRACE allows ptrace() on any process in the same PID namespace,
+	// including reading /proc/*/mem. Combined with hostPID this leaks every
+	// credential held by every workload on the node.
+	"SYS_PTRACE": {Score: 8.0, Reason: "ptrace any process; read /proc/*/mem to steal credentials in-pod (and host-wide under hostPID)"},
+	// CAP_DAC_OVERRIDE bypasses Unix DAC permission checks on file reads/writes.
+	// A container with DAC_OVERRIDE can read /etc/shadow inside the container and
+	// any sensitive hostPath mount regardless of the mode bits.
+	"DAC_OVERRIDE": {Score: 7.5, Reason: "bypass file DAC checks; read root-owned files in container and hostPath mounts"},
+	// CAP_MKNOD allows creating device files via mknod(). With access to /dev,
+	// an attacker can recreate /dev/sda1 and read the host disk directly.
+	"MKNOD": {Score: 7.5, Reason: "create device nodes (mknod /dev/sda1); read host block devices directly"},
+	// CAP_SYS_CHROOT allows chroot(). On its own it's a sandbox-escape primitive
+	// when combined with a writeable rootfs and a SUID binary.
+	"SYS_CHROOT": {Score: 6.5, Reason: "chroot() and break out of pivot_root sandboxes when paired with a writeable rootfs"},
+	// CAP_NET_RAW allows AF_PACKET sockets and raw ICMP. Enables ARP spoofing,
+	// DHCP starvation, and traffic sniffing across pods sharing a node-local
+	// bridge (CNI-dependent).
+	"NET_RAW": {Score: 6.0, Reason: "raw sockets and packet sniffing; ARP spoof or DHCP starvation across pods on the same node"},
+	// CAP_AUDIT_WRITE lets a container forge entries in the kernel audit log.
+	// Lower direct risk; primary value is covering tracks of an in-progress attack.
+	"AUDIT_WRITE": {Score: 5.5, Reason: "forge entries in the kernel audit log; defense-evasion primitive"},
+}
+
+// dangerousAddedCapabilities returns the deduplicated list of dangerous capabilities
+// granted via securityContext.capabilities.add for a single container. The output is
+// stable-ordered by the dangerousCapabilities map's insertion-equivalent key sort so
+// finding IDs are deterministic across runs.
+func dangerousAddedCapabilities(container corev1.Container) []string {
+	if container.SecurityContext == nil || container.SecurityContext.Capabilities == nil {
+		return nil
+	}
+	caps := container.SecurityContext.Capabilities
+	seen := map[string]struct{}{}
+	for _, c := range caps.Add {
+		normalized := normalizeCapability(string(c))
+		if normalized == "ALL" {
+			// capabilities.add: ["ALL"] grants every capability; surface each
+			// dangerous one individually so the finding count, scoring, and
+			// remediation advice match what an attacker can do.
+			for name := range dangerousCapabilities {
+				seen[name] = struct{}{}
+			}
+			continue
+		}
+		if _, ok := dangerousCapabilities[normalized]; ok {
+			seen[normalized] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// normalizeCapability strips the conventional CAP_ prefix (Linux kernel writes
+// capabilities with it; Kubernetes manifests usually omit it) and uppercases so
+// the comparison against dangerousCapabilities is case- and prefix-insensitive.
+func normalizeCapability(name string) string {
+	n := strings.ToUpper(strings.TrimSpace(name))
+	return strings.TrimPrefix(n, "CAP_")
 }
 
 // collectTargets flattens bare pods (skipping controller-managed ones to avoid duplicate findings) and every workload-kind pod template into target entries.
