@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 )
 
 // DefaultMaxDepth is the fallback BFS depth used when no explicit MaxDepth is configured.
@@ -30,6 +31,12 @@ func (a *Analyzer) Name() string {
 }
 
 // Analyze builds the escalation graph, finds paths to any sensitive sink, and emits one Finding per unique source→target pair.
+//
+// Each finding is enriched with a structured RemediationHint (Wave 1 slot #17):
+// the per-path remediation generator picks the minimal binding edit that breaks
+// the chain (drop the subject from the first hop's binding) and emits a unified
+// diff + kubectl edit command. Synthetic-edge paths (pod escapes, token mints)
+// fall back to an advisory comment-only diff.
 func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]models.Finding, error) {
 	depth := a.MaxDepth
 	if depth <= 0 {
@@ -46,6 +53,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		if _, ok := seen[finding.ID]; ok {
 			continue
 		}
+		finding.RemediationHint = remediation.ForPrivescPath(finding, snapshot)
 		seen[finding.ID] = struct{}{}
 		findings = append(findings, finding)
 	}
