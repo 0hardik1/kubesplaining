@@ -192,23 +192,23 @@ var Glossary = map[string]GlossaryEntry{
 		Long:  template.HTML(`<p>The <strong>system:masters</strong> group is special-cased in the API server: members bypass RBAC and act as cluster-admin. The membership comes from the authenticator (typically certificate <code>O=system:masters</code>) and <em>cannot</em> be removed by deleting bindings; it is wired in below the RBAC layer.</p>`),
 	},
 	// Wave 0 stub entries for resource kinds referenced by Wave 1 analyzer rules.
-	// Short copy here so the Background block has *something* to render; the Long
-	// field stays empty for the moment so it is obvious to subsequent reviewers
-	// what still needs filling in.
+	// Short copy here so the Background block has *something* to render. The Long
+	// field is filled in by the owning Wave 1 slot when it lands the bespoke rule
+	// (slot #9 owns ResourceQuota / LivenessProbe / LimitRange below).
 	"ResourceQuota": {
 		Title: "ResourceQuota",
 		Short: "Namespace-scoped cap on CPU, memory, and object counts (prevents noisy-neighbor and DoS).",
-		Long:  "",
+		Long:  template.HTML(`<p>A <strong>ResourceQuota</strong> caps total compute and object counts inside a namespace: aggregate CPU / memory requests and limits across all pods, plus per-kind object counts (Pods, Services, Secrets, PVCs). Once a quota exists, the kube-apiserver rejects any pod whose containers do not declare matching <code>resources.requests</code> and <code>resources.limits</code> for the quota's tracked resources. ResourceQuota is the namespace-level multi-tenancy backstop: without it, a single workload can starve every co-tenant on the same node, or an attacker who lands code execution can spawn unlimited replicas / Secrets / Pods until something breaks.</p>`),
 	},
 	"LivenessProbe": {
 		Title: "Liveness probe",
 		Short: "Periodic kubelet check that restarts a container when it stops responding.",
-		Long:  "",
+		Long:  template.HTML(`<p>A <strong>livenessProbe</strong> is a periodic HTTP / TCP / exec / gRPC check the kubelet runs against the container. When it fails for <code>failureThreshold</code> consecutive intervals, the kubelet kills and restarts the container. Liveness solves the "PID 1 is alive but wedged" case: a deadlocked thread, an infinite GC loop, or a stuck-on-startup dependency. It is intentionally <em>different</em> from the <code>readinessProbe</code> (which gates Service endpoint membership, not restart). The correct shape is a tiny <code>/livez</code> handler with no downstream dependencies; a liveness probe that touches the database will restart the pod every time the database hiccups, amplifying outages.</p>`),
 	},
 	"LimitRange": {
 		Title: "LimitRange",
 		Short: "Namespace-scoped default + min/max for pod / container resource requests and limits.",
-		Long:  "",
+		Long:  template.HTML(`<p>A <strong>LimitRange</strong> declares per-namespace default <code>requests</code> / <code>limits</code> for pod and container resources, plus optional <code>min</code> / <code>max</code> bounds the kube-apiserver enforces at admission. When a pod is created without explicit resources, the LimitRange default is injected, so authors who forget the limits no longer ship <code>BestEffort</code> workloads by accident. Combined with a namespace <code>ResourceQuota</code> the pair gives operators a default-on baseline (LimitRange) plus a hard cap (ResourceQuota), which together prevent both noisy-neighbor failures and unbounded resource consumption from a single misconfiguration.</p>`),
 	},
 	"CertificateSigningRequest": {
 		Title:  "CertificateSigningRequest",

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -330,12 +331,17 @@ func newFindingFromContent(target target, ruleID string, severity models.Severit
 	})
 }
 
-// appendFinding deduplicates by Finding.ID before appending.
+// appendFinding deduplicates by Finding.ID before appending. The
+// RemediationHint is attached here (rather than at every call site) so the
+// analyzer's per-rule blocks stay focused on detection: the moment we know
+// we are emitting a finding, ask the remediation generator for the
+// matching kubectl patch.
 func appendFinding(findings []models.Finding, seen map[string]struct{}, finding models.Finding) []models.Finding {
 	if _, ok := seen[finding.ID]; ok {
 		return findings
 	}
 	seen[finding.ID] = struct{}{}
+	finding.RemediationHint = remediation.ForPodsec(finding.RuleID, finding)
 	return append(findings, finding)
 }
 

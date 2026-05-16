@@ -1,0 +1,4 @@
+# Wave 1 slot #13 workloads — wait for these to roll out before scanning so
+# the snapshot reflects the policies + pods landing together.
+deploy/imds-open-app:netpol-imds
+deploy/imds-allow-app:netpol-imds

@@ -1,0 +1,4 @@
+deploy/containersec-limits:containersec-fixtures
+deploy/containersec-probes:containersec-fixtures
+deploy/containersec-lifecycle:containersec-fixtures
+deploy/containersec-image:containersec-fixtures

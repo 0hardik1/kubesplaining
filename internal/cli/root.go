@@ -19,6 +19,7 @@ func NewRootCmd(build BuildInfo) *cobra.Command {
 		NewScanResourceCmd(),
 		NewCreateExclusionsCmd(),
 		NewReportCmd(),
+		NewDiffCmd(),
 		NewVersionCmd(build),
 	)
 
