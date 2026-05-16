@@ -18,6 +18,7 @@ package analyzer
 
 import (
 	"github.com/0hardik1/kubesplaining/internal/analyzer/admission"
+	celmod "github.com/0hardik1/kubesplaining/internal/analyzer/cel"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/containersec"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
@@ -53,4 +54,8 @@ var DefaultModules = []func(cfg Config) Module{
 	},
 	func(_ Config) Module { return leastprivilege.New(nil) },
 	func(_ Config) Module { return containersec.New() },
+	// custom-rules is the CEL-based user rule loader (slot #20). It's a no-op
+	// when CustomRulesDir is empty, matching the "registered but silent"
+	// pattern the containersec stub above uses.
+	func(cfg Config) Module { return celmod.New(cfg.CustomRulesDir) },
 }

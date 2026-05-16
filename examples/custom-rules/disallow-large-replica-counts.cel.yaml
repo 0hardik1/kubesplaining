@@ -1,0 +1,27 @@
+# disallow-large-replica-counts: catch Deployments asking for more replicas
+# than the cluster can plausibly serve.
+#
+# Why: an outsized replica count is usually a typo (200 instead of 20) and
+# either fills up the scheduling backlog or, if the cluster autoscales, runs
+# up a real bill before anyone notices. The exact threshold is policy: edit
+# this file to suit your environment, or load the rule under a different id
+# per team / namespace.
+id: CUSTOM-REPLICAS-LARGE-001
+title: Deployment requests an unusually large replica count
+severity: low
+category: infrastructure_modification
+description: |
+  Deployments with replica counts above the cluster's expected ceiling are
+  almost always a manifest typo or a forgotten test artifact. They starve
+  smaller workloads of scheduling capacity and silently scale cloud spend.
+remediation: |
+  Confirm the workload genuinely needs this many replicas. If it does,
+  whitelist this Deployment via an exclusions file. Otherwise reduce
+  spec.replicas to a more conservative count.
+match:
+  kinds:
+    - Deployment
+# `has()` is a CEL builtin that returns true only when the field is present.
+# We guard the index so a Deployment with `replicas` unset (which K8s treats
+# as 1) does not blow up the expression.
+expression: has(resource.spec.replicas) && resource.spec.replicas > 50
