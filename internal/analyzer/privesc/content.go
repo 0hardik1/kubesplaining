@@ -122,6 +122,9 @@ func hopNarrative(hop models.EscalationHop) string {
 	case "impersonate_system_masters":
 		return fmt.Sprintf("Acting as %s, the attacker impersonates the `system:masters` group (%s). The kube-apiserver hard-codes that group as authorized for every operation regardless of RBAC. A single such grant collapses the entire authorization layer.", from, perm)
 
+	case "csr_approve":
+		return fmt.Sprintf("Acting as %s, the attacker submits a CertificateSigningRequest carrying `O=system:masters` in its Subject DN and self-approves it via the `certificatesigningrequests/approval` subresource (%s). The cluster CA signs the cert, and the attacker authenticates with it as `system:masters`, which the apiserver hard-codes as cluster-admin. The cert persists after the RBAC grant is revoked; only a CA rotation invalidates it.", from, perm)
+
 	case "read_secrets":
 		return fmt.Sprintf("Acting as %s, the attacker reads ServiceAccount tokens out of the cluster's Secrets store (%s) and uses one of those tokens (typically a control-plane controller's) to escalate. Read-access on Secrets is the most consequential single verb in Kubernetes RBAC because every other identity's credential lives in a Secret object somewhere.", from, perm)
 

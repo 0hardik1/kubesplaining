@@ -15,6 +15,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	certificatesv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -481,6 +482,27 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 		return nil
 	})
 
+	runTask("certificatesigningrequests", func() error {
+		// CSRs are cluster-scoped (no namespace filter). The collector keeps
+		// SignerName + Usages + the approval Conditions; we deliberately drop the
+		// raw .Spec.Request PEM because analyzers never inspect signing-request
+		// payloads and we don't want them in offline snapshots.
+		list, err := c.client.CertificatesV1().CertificateSigningRequests().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+
+		items := make([]models.CSR, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, sanitizeCSR(item))
+		}
+
+		mu.Lock()
+		snapshot.Resources.CertificateSigningRequests = items
+		mu.Unlock()
+		return nil
+	})
+
 	runTask("validatingwebhookconfigurations", func() error {
 		list, err := c.client.AdmissionregistrationV1().ValidatingWebhookConfigurations().List(ctx, metav1.ListOptions{})
 		if err != nil {
@@ -797,6 +819,42 @@ func sanitizeValidatingAdmissionPolicy(obj admissionregistrationv1.ValidatingAdm
 func sanitizeValidatingAdmissionPolicyBinding(obj admissionregistrationv1.ValidatingAdmissionPolicyBinding, includeManagedFields bool) admissionregistrationv1.ValidatingAdmissionPolicyBinding {
 	obj.ManagedFields = maybeManagedFields(nil, includeManagedFields, obj.ManagedFields)
 	return obj
+}
+
+// sanitizeCSR projects a certificatesv1.CertificateSigningRequest into the minimal
+// models.CSR shape the analyzers need: name, signer, requester identity (without the
+// raw PEM Request body), key usages, and the approval Conditions. Approved is set true
+// when any condition has Type=Approved and Status=True so callers don't have to scan
+// Conditions themselves.
+func sanitizeCSR(obj certificatesv1.CertificateSigningRequest) models.CSR {
+	usages := make([]string, 0, len(obj.Spec.Usages))
+	for _, u := range obj.Spec.Usages {
+		usages = append(usages, string(u))
+	}
+	conditions := make([]models.CSRCondition, 0, len(obj.Status.Conditions))
+	var approved bool
+	for _, c := range obj.Status.Conditions {
+		conditions = append(conditions, models.CSRCondition{
+			Type:    string(c.Type),
+			Status:  string(c.Status),
+			Reason:  c.Reason,
+			Message: c.Message,
+		})
+		if c.Type == certificatesv1.CertificateApproved && c.Status == corev1.ConditionTrue {
+			approved = true
+		}
+	}
+	return models.CSR{
+		Name:        obj.Name,
+		SignerName:  obj.Spec.SignerName,
+		Username:    obj.Spec.Username,
+		Usages:      usages,
+		Groups:      append([]string(nil), obj.Spec.Groups...),
+		Conditions:  conditions,
+		Approved:    approved,
+		Annotations: obj.Annotations,
+		Labels:      obj.Labels,
+	}
 }
 
 // maybeManagedFields returns current when include is true and nil otherwise so callers can easily drop managedFields from snapshots.

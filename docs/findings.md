@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **50 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **51 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Findings Library — Implemented
 
@@ -16,6 +16,7 @@ Each rule produces zero or more findings against a given snapshot.
 | KUBE-PRIVESC-008 | CRITICAL | Impersonation permissions | `impersonate` on users/groups/serviceaccounts | Grant impersonate only to tightly controlled admin workflows |
 | KUBE-PRIVESC-009 | CRITICAL | RBAC `bind` or `escalate` permission | `bind`/`escalate` on roles/clusterroles | Remove from non-admin identities |
 | KUBE-PRIVESC-010 | CRITICAL | Role binding modification can self-grant access | create/update/patch on rolebindings/clusterrolebindings | Limit binding writes to a tight admin boundary |
+| KUBE-PRIVESC-011 | HIGH | CSR create + approve mints a `system:masters` cert | Cluster-scoped `create certificatesigningrequests` AND `update/patch certificatesigningrequests/approval` held by the same subject | Split the two halves across different subjects; reserve approval for the kube-controller-manager auto-approver or a strict admin allowlist |
 | KUBE-PRIVESC-012 | CRITICAL | Node proxy access | `get` on `nodes/proxy` (kubelet abuse) | Keep kubelet-facing permissions off application identities |
 | KUBE-PRIVESC-001 | HIGH | Pod creation access can be used for token theft | `create` on pods | Route deployments through controlled automation |
 | KUBE-PRIVESC-003 | HIGH | Workload controller modification can create privileged pods | create/update/patch on deployments/daemonsets/statefulsets/jobs/cronjobs | Separate deploy automation from runtime identities |
@@ -116,7 +117,7 @@ These findings are emitted **per `(source subject, sink)` pair** found by BFS on
 | KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS | HIGH (8.6) | `<subject>` can reach kube-system secrets in N hop(s) | Cluster-wide or kube-system `get`/`list` on secrets |
 | KUBE-PRIVESC-PATH-NAMESPACE-ADMIN | HIGH (7.6) | `<subject>` can reach namespace-admin in `<ns>` in N hop(s) | Namespace-scoped `create rolebindings` or `bind/escalate roles` (one sink per affected namespace) |
 
-Edge techniques that can appear in a hop chain: `KUBE-PRIVESC-001` (pod create), `-005` (secrets read), `-008` (impersonate), `-009` (bind/escalate), `-010` (rolebinding modify), `-012` (nodes/proxy), `-014` (serviceaccounts/token), `-017` (wildcard), plus `KUBE-ESCAPE-00{1,2,3,4,5,6,8}` / `KUBE-HOSTPATH-001` for the pod-escape terminal edge. `system:*` subjects are skipped as traversable intermediates so paths do not launder through the control plane.
+Edge techniques that can appear in a hop chain: `KUBE-PRIVESC-001` (pod create), `-005` (secrets read), `-008` (impersonate), `-009` (bind/escalate), `-010` (rolebinding modify), `-011` (CSR create + approve), `-012` (nodes/proxy), `-014` (serviceaccounts/token), `-017` (wildcard), plus `KUBE-ESCAPE-00{1,2,3,4,5,6,8}` / `KUBE-HOSTPATH-001` for the pod-escape terminal edge. `system:*` subjects are skipped as traversable intermediates so paths do not launder through the control plane.
 
 Each path finding ships with an `escalation_path` array: one `EscalationHop` per step, with `from_subject`, `to_subject`, `action`, `permission`, and a human-readable `gains` line.
 
@@ -124,7 +125,7 @@ Each path finding ships with an `escalation_path` array: one `EscalationHop` per
 
 The following rules are on the roadmap but not yet implemented. See [PLAN.md](../PLAN.md) for status and priority.
 
-**RBAC** — KUBE-PRIVESC-002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft), -011 (CSR), -013 (ephemeral containers), -015 (portforward), -016 (node drain); stale/dangling bindings.
+**RBAC** — KUBE-PRIVESC-002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft), -013 (ephemeral containers), -015 (portforward), -016 (node drain); stale/dangling bindings.
 
 **Pod Security** — exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, …); PersistentVolume hostPath bypass (KUBE-ESCAPE-011); PSA namespace label checks; legacy PSP permissiveness.
 

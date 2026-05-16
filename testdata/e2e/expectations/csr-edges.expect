@@ -1,0 +1,11 @@
+# Expected rule IDs from the CSR fixture (testdata/e2e/vulnerable/14-csr.yaml).
+#
+# KUBE-PRIVESC-011 is the rbac analyzer's per-subject correlation: subject holds
+# cluster-scoped `create csr` AND cluster-scoped `update csr/approval`. The
+# privesc graph also emits a csr_approve edge from the subject to the
+# system_masters sink, so the BFS produces a KUBE-PRIVESC-PATH-SYSTEM-MASTERS
+# finding. Both are already covered by baseline.expect's
+# KUBE-PRIVESC-PATH-SYSTEM-MASTERS entry (the existing impersonate-groups path
+# also reaches it), but we add the per-rule -011 here so the fixture is the
+# unique producer for that ID.
+KUBE-PRIVESC-011

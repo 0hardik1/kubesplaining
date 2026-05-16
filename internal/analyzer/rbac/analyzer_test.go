@@ -371,3 +371,131 @@ func assertRuleAbsent(t *testing.T, findings []models.Finding, ruleID string) {
 		}
 	}
 }
+
+// TestCSRMintPrimitive covers KUBE-PRIVESC-011: a subject must hold BOTH
+// cluster-scoped `create csr` AND cluster-scoped `update csr/approval` for the
+// rule to fire. Either half alone is insufficient.
+func TestCSRMintPrimitive(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		rules  []rbacv1.PolicyRule
+		fires  bool
+		reason string
+	}{
+		{
+			name: "create only — no finding",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+			},
+			fires:  false,
+			reason: "create alone cannot self-approve, so no escalation primitive",
+		},
+		{
+			name: "approve only — no finding",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+			},
+			fires:  false,
+			reason: "approve alone has nothing to approve",
+		},
+		{
+			name: "both halves on the same role — fires",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+			},
+			fires: true,
+		},
+		{
+			name: "both halves with patch instead of update — fires",
+			rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+				{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"patch"}},
+			},
+			fires: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := models.Snapshot{
+				Resources: models.SnapshotResources{
+					ClusterRoles: []rbacv1.ClusterRole{
+						{ObjectMeta: metav1ObjectMeta("csr-role", ""), Rules: tc.rules},
+					},
+					ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+						{
+							ObjectMeta: metav1ObjectMeta("csr-binding", ""),
+							RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "csr-role"},
+							Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "csr-sa", Namespace: "default"}},
+						},
+					},
+				},
+			}
+			findings, err := New().Analyze(context.Background(), snapshot)
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			var sawCSR bool
+			for _, f := range findings {
+				if f.RuleID == "KUBE-PRIVESC-011" && f.Subject != nil && f.Subject.Name == "csr-sa" {
+					sawCSR = true
+					if f.Severity != models.SeverityHigh {
+						t.Errorf("KUBE-PRIVESC-011 expected severity HIGH, got %q", f.Severity)
+					}
+					if f.Scope.Level != models.ScopeCluster {
+						t.Errorf("KUBE-PRIVESC-011 expected cluster scope, got %q", f.Scope.Level)
+					}
+					if !strings.Contains(f.Description, "system:masters") {
+						t.Errorf("KUBE-PRIVESC-011 description should explain the system:masters mechanism: %q", f.Description)
+					}
+				}
+			}
+			if sawCSR != tc.fires {
+				t.Fatalf("fires=%v, sawCSR=%v (%s)", tc.fires, sawCSR, tc.reason)
+			}
+		})
+	}
+}
+
+// TestCSRMintPrimitiveNamespaceScopeIgnored guards that namespace-scoped grants
+// (impossible in practice for CSRs, which are cluster-scoped, but possible to
+// declare in a Role) do NOT fire the rule. CSRs are cluster-scoped resources,
+// so a RoleBinding granting these verbs is dead RBAC and should not produce a
+// privesc finding.
+func TestCSRMintPrimitiveNamespaceScopeIgnored(t *testing.T) {
+	t.Parallel()
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Roles: []rbacv1.Role{
+				{
+					ObjectMeta: metav1ObjectMeta("csr-role-ns", "team-a"),
+					Rules: []rbacv1.PolicyRule{
+						{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests"}, Verbs: []string{"create"}},
+						{APIGroups: []string{"certificates.k8s.io"}, Resources: []string{"certificatesigningrequests/approval"}, Verbs: []string{"update"}},
+					},
+				},
+			},
+			RoleBindings: []rbacv1.RoleBinding{
+				{
+					ObjectMeta: metav1ObjectMeta("csr-rb", "team-a"),
+					RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "csr-role-ns"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "csr-sa-ns", Namespace: "team-a"}},
+				},
+			},
+		},
+	}
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	for _, f := range findings {
+		if f.RuleID == "KUBE-PRIVESC-011" {
+			t.Fatalf("namespace-scoped CSR grants must not produce KUBE-PRIVESC-011; got %+v", f)
+		}
+	}
+}

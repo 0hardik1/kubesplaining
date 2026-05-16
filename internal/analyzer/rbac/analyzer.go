@@ -212,6 +212,46 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					contentPrivesc014(rule.Namespace, perms.Subject, bindingRef, roleRef)))
 			}
 		}
+
+		// KUBE-PRIVESC-011 — CSR-mint primitive. Detection requires correlating two
+		// separate rules on the same subject: cluster-scoped `create` on
+		// `certificatesigningrequests` AND cluster-scoped `update`/`patch` on
+		// `certificatesigningrequests/approval`. Held together, the subject can
+		// submit a CSR carrying `O=system:masters` (or any principal it picks) in
+		// its Subject DN and self-approve it. The kubelet-signed cert then
+		// authenticates as cluster-admin.
+		//
+		// We do this as a per-subject pass after the per-rule switch above so we
+		// can union both halves across the subject's entire effective-rule set,
+		// then emit one finding (anchored to the create rule for evidence) when
+		// both halves are present.
+		var createRule, approveRule *effectiveRule
+		for i := range perms.Rules {
+			r := &perms.Rules[i]
+			if r.Namespace != "" {
+				continue // CSRs are cluster-scoped; namespace-scoped grants are dead RBAC
+			}
+			if matchesCSRCreate(*r) && createRule == nil {
+				createRule = r
+			}
+			if matchesCSRApprove(*r) && approveRule == nil {
+				approveRule = r
+			}
+		}
+		if createRule != nil && approveRule != nil {
+			blastRadius := 1.2 // CSRs are cluster-scoped, always blast-radius=1.2
+			exploitability := 1.0
+			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+				exploitability = 1.2
+			}
+			scaledScore := func(base float64) float64 {
+				return scoring.Clamp(base * exploitability * blastRadius)
+			}
+			findings = appendFinding(findings, seen, findingFromContent(perms.Subject, *createRule,
+				"KUBE-PRIVESC-011", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+				scaledScore(7.0), // base 7.0 × 1.2 blast = 8.4 (clamped if SA is mounted)
+				contentPrivesc011(perms.Subject, createRule.formattedBinding(), createRule.formattedRole(), approveRule.formattedBinding(), approveRule.formattedRole())))
+		}
 	}
 
 	for _, binding := range snapshot.Resources.ClusterRoleBindings {
@@ -590,6 +630,22 @@ func hasAnyResource(values []string, wanted []string) bool {
 		}
 	}
 	return false
+}
+
+// matchesCSRCreate reports whether rule grants `create` on the cluster-scoped
+// `certificatesigningrequests` resource. Cluster scope is the caller's
+// responsibility (rule.Namespace == "").
+func matchesCSRCreate(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "certificatesigningrequests") && hasAnyVerb(rule.Verbs, "create")
+}
+
+// matchesCSRApprove reports whether rule grants `update` or `patch` on the
+// `certificatesigningrequests/approval` subresource. The /approval subresource
+// is the only RBAC gate on CSR approval — the parent CSR object's `update` verb
+// does not allow approval — so this check is narrow on resource and broad on
+// the two verbs `kubectl certificate approve` could use.
+func matchesCSRApprove(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "certificatesigningrequests/approval") && hasAnyVerb(rule.Verbs, "update", "patch")
 }
 
 // usedServiceAccounts returns the set of ServiceAccounts actually mounted by pods, used to bump exploitability scoring.

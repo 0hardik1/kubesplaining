@@ -43,7 +43,8 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] Dangerous permissions: wildcards, pod/workload create, secret access, impersonate, escalate/bind, nodes/proxy, serviceaccounts/token, configmap modification (KUBE-PRIVESC-001, -003, -005, -008, -009, -010, -012, -014, -017)
 - [x] Overly-broad bindings (KUBE-RBAC-OVERBROAD-001)
 - [x] Stale / unused bindings — dangling RoleRef (`KUBE-RBAC-STALE-001`) and dangling ServiceAccount subjects (`KUBE-RBAC-STALE-002`). User/Group subject existence is intentionally not validated: the snapshot has no Users/Groups inventory (Kubernetes authenticates them externally and keeps no roster). Built-in `cluster-admin`/`admin`/`edit`/`view` ClusterRoles are allowlisted so partial snapshots don't false-fire.
-- [ ] Remaining technique IDs: -002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft correlation), -011 (CSR), -013 (ephemeral containers), -015 (portforward), -016 (node drain)
+- [x] CSR mint primitive (`KUBE-PRIVESC-011`): a subject holding cluster-scoped `create certificatesigningrequests` AND `update/patch certificatesigningrequests/approval` can self-mint a `system:masters` x509 client cert. The rbac analyzer emits the per-subject finding; the privesc graph adds a `csr_approve` edge from the subject to the `system_masters` sink so the BFS produces `KUBE-PRIVESC-PATH-SYSTEM-MASTERS` paths.
+- [ ] Remaining technique IDs: -002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft correlation), -013 (ephemeral containers), -015 (portforward), -016 (node drain)
 
 ### Pod Security — [internal/analyzer/podsec/](internal/analyzer/podsec/analyzer.go)
 - [x] Container SecurityContext (privileged, runAsRoot, capabilities)
@@ -81,8 +82,8 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 - [x] BFS pathfinder with `--max-privesc-depth` (default 5), shortest-path per (source, target) dedup, system subjects skipped as sources and waypoints
 - [x] Findings with `EscalationPath` hops, severity/score shaped by target + chain length
 - [ ] Cloud identity edges (IRSA/Workload Identity) — blocked on Cloud Provider Integration below
-- [ ] CSR-based node impersonation edge (KUBE-PRIVESC-011)
-- [ ] `system:masters` impersonation edge
+- [x] CSR-based cluster-admin edge (KUBE-PRIVESC-011) — added to `internal/analyzer/privesc/graph.go` as the `csr_approve` action targeting the `system_masters` sink. Subject must hold both `create csr` and `update csr/approval` cluster-scoped; correlated across rules by `finalizeCSRApprovals`.
+- [x] `system:masters` impersonation edge — emitted by `internal/analyzer/privesc/graph.go` when a subject holds cluster-scoped `impersonate groups` (which subsumes `system:masters`). Action `impersonate_system_masters` → `sinkSystemMasters`.
 - [ ] Graph visualization page in HTML report
 
 ### Cloud Provider Integration — **NOT STARTED**
