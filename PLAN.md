@@ -58,15 +58,15 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 
 ### Network Policy — [internal/analyzer/network/](internal/analyzer/network/analyzer.go)
 - [x] Coverage & weakness (default-allow, namespace-wide allow)
-- [ ] Cross-namespace communication map
-- [ ] Egress-to-metadata-endpoint (`169.254.169.254`) detection
+- [x] Cross-namespace communication map (KUBE-NETPOL-CROSSNS-001)
+- [x] Egress-to-metadata-endpoint (`169.254.169.254`) detection (KUBE-NETPOL-IMDS-001)
 
 ### Secrets & ConfigMaps — [internal/analyzer/secrets/](internal/analyzer/secrets/analyzer.go)
 - [x] Long-lived SA token secrets, excessive secret access
-- [ ] Stale secrets (not referenced by any pod)
-- [ ] Cross-namespace secret references
-- [ ] TLS secret expiry
-- [ ] ConfigMap credential heuristics (keys like `password`, `token`, `dsn`, ...)
+- [x] Stale secrets (not referenced by any pod) — KUBE-SECRETS-STALE-001
+- [x] Cross-namespace secret references — KUBE-SECRETS-CROSSNS-001
+- [x] TLS secret expiry — KUBE-SECRETS-TLS-EXPIRY-001 (best-effort, reads cert-manager annotations)
+- [x] ConfigMap credential heuristics (keys like `password`, `token`, `dsn`, ...) — KUBE-CONFIGMAP-CREDS-001
 - [ ] `aws-auth` / `coredns` ConfigMap analysis
 - [ ] EncryptionConfiguration check (best-effort)
 

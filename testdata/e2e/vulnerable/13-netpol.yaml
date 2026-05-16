@@ -1,0 +1,105 @@
+# Fixture for slot #13 (NetPol bundle: cross-ns map + IMDS-endpoint egress).
+#
+# Two scenarios exercised here:
+#
+# 1) NetworkPolicy in namespace netpol-bridge that allows ingress FROM kube-system
+#    via namespaceSelector matchLabels — should trigger KUBE-NETPOL-CROSSNS-001.
+#
+# 2) Deployment in namespace netpol-imds with NO egress policy at all — should
+#    trigger KUBE-NETPOL-IMDS-001 with reason=no-egress-policy. We also add a
+#    second Deployment in the same namespace that IS covered by an egress policy
+#    whose ipBlock 0.0.0.0/0 admits IMDS without an except: carve-out, so the
+#    rule fires with reason=explicit-allow as well.
+#
+# The kube-system namespace label keyed by kubernetes.io/metadata.name is set by
+# the kube-apiserver NamespaceDefaultLabelName admission plugin in every modern
+# Kubernetes (and kind) cluster, so the namespaceSelector below resolves at scan
+# time without us touching kube-system labels here.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netpol-bridge
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kube-system-ingress
+  namespace: netpol-bridge
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netpol-imds
+---
+# Workload with NO egress NetworkPolicy applying to it — fires KUBE-NETPOL-IMDS-001
+# with reason=no-egress-policy. We use a stable nginx image (the same baseline
+# uses for other lp/risky pods) so kind can pull and roll it out quickly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imds-open-app
+  namespace: netpol-imds
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imds-open-app
+  template:
+    metadata:
+      labels:
+        app: imds-open-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27.5
+          ports:
+            - containerPort: 80
+---
+# Workload covered by an egress policy whose ipBlock 0.0.0.0/0 includes the IMDS
+# endpoint. Fires KUBE-NETPOL-IMDS-001 with reason=explicit-allow. The policy
+# does not include an except: [169.254.169.254/32] carve-out which is the
+# typical real-world misconfiguration the rule catches.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imds-allow-app
+  namespace: netpol-imds
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imds-allow-app
+  template:
+    metadata:
+      labels:
+        app: imds-allow-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27.5
+          ports:
+            - containerPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-everywhere
+  namespace: netpol-imds
+spec:
+  podSelector:
+    matchLabels:
+      app: imds-allow-app
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0

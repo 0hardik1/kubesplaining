@@ -6,11 +6,62 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/0hardik1/kubesplaining)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/0hardik1/kubesplaining)](https://goreportcard.com/report/github.com/0hardik1/kubesplaining)
 
-A Kubernetes security assessment CLI that maps every RBAC subject's privilege-escalation paths to cluster-admin, host root, and kube-system secrets, then renders the chains as a risk-prioritized HTML / JSON / CSV / SARIF report.
+Kubesplaining is an open-source Kubernetes security assessment CLI that reads a live cluster or a captured snapshot and tells you exactly how an attacker can move through it. Unlike scanners that stop at "this resource is misconfigured," it builds a multi-hop RBAC privilege-escalation graph from every non-system subject to four cluster-takeover sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`) and renders each chain with the actual verbs, evidence, and remediation. Outputs are risk-prioritized HTML, JSON, CSV, and SARIF reports for human review, GitHub code scanning, or CI delta gates.
+
+<!-- Asset coming in a follow-up; see issue/TODO -->
+![demo](docs/assets/demo.gif)
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
-> <video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
+## Install
+
+Each of these produces the same `kubesplaining` CLI. Pick whichever fits your workflow.
+
+Docker (no install needed):
+
+```bash
+docker run ghcr.io/0hardik1/kubesplaining:latest scan --help
+```
+
+Krew (Kubernetes plugin manager, submission pending):
+
+```bash
+kubectl krew install splain
+```
+
+Homebrew (tap submission pending):
+
+```bash
+brew install 0hardik1/tap/kubesplaining
+```
+
+See [Installation](#installation) below for `go install`, pre-built binaries, and checksums.
+
+## vs the alternatives
+
+Most scanners overlap on "is this pod privileged?" The differentiator is whether they show you the *chain* from a non-admin subject to cluster takeover, and whether they ship an actionable fix.
+
+| Capability | kubesplaining | kubescape | trivy | polaris |
+| --- | --- | --- | --- | --- |
+| Multi-hop RBAC privesc graph | Yes (BFS over RBAC + pod state to 4 sinks, full hop chain) | No (per-binding flags only) | No | No |
+| Per-finding remediation (patch / Kyverno / Gatekeeper) | Yes (prose + kubectl patch + policy YAML, per rule) | Partial (control description) | Partial (text only) | Partial (text only) |
+| Snapshot diff for CI delta gates | Yes (`scan --baseline old.json`, fail only on *new* findings) | No | No | No |
+
+## Screenshots
+
+The privesc graph (hop-by-hop chains color-coded by severity attenuation):
+
+![Privesc graph](docs/assets/privesc-graph.png)
+
+Per-ServiceAccount "what can this principal actually do" panel (Cloudsplaining parity, ported to Kubernetes):
+
+![Per-SA permissions](docs/assets/sa-permissions.png)
+
+SARIF results surfaced as PR annotations in GitHub's code-scanning UI:
+
+![SARIF in GitHub](docs/assets/sarif-github.png)
+
+> The CLI run + report-open walkthrough video is preserved here while the animated GIF above is being produced: <video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
 
 Inspired by [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) at [BeyondTrust Phantom Labs](https://www.linkedin.com/company/beyondtrust-phantom-labs/) and his [Cloudsplaining](https://github.com/salesforce/cloudsplaining), which does the same job for AWS IAM. Kubesplaining reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings: explanation, not just detection.
 
@@ -45,7 +96,7 @@ kubesplaining scan                          # writes ./kubesplaining-report/
 open kubesplaining-report/report.html       # macOS; xdg-open on Linux
 ```
 
-Already cloned the repo? `make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step — no separate install needed. Pass extra flags via `ARGS`, e.g. `make scan ARGS="--severity-threshold high --only-modules privesc"`.
+Already cloned the repo? `make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step, no separate install needed. Pass extra flags via `ARGS`, e.g. `make scan ARGS="--severity-threshold high --only-modules privesc"`.
 
 For air-gapped or audit workflows, capture a snapshot first and analyze it offline:
 
@@ -62,7 +113,7 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits. All three produce the same `kubesplaining` binary.
+Pick the path that fits. They all produce the same `kubesplaining` CLI. The top-of-README install snippets cover Docker, Krew, and Homebrew; this section adds the source-based options.
 
 ### Go install
 
@@ -86,9 +137,28 @@ shasum -a 256 -c kubesplaining_<version>_checksums.txt
 sudo install kubesplaining /usr/local/bin/
 ```
 
+### Docker
+
+```bash
+docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:latest scan
+```
+
+### Krew (Kubernetes plugin manager)
+
+Submission to the [krew-index](https://github.com/kubernetes-sigs/krew-index) is pending; once accepted:
+
+```bash
+kubectl krew install splain
+kubectl splain scan
+```
+
 ### Homebrew
 
-Coming as a post-release fast-follow: `brew install 0hardik1/tap/kubesplaining` will be wired up shortly after v1.0.0.
+The Homebrew tap is pending; once published:
+
+```bash
+brew install 0hardik1/tap/kubesplaining
+```
 
 ## What it checks
 
@@ -236,20 +306,20 @@ The `leastprivilege` module compares the RBAC permissions a ServiceAccount **has
 
 It emits four rule IDs:
 
-- `KUBE-RBAC-UNUSED-ROLE-001` — Role bound to a mounted SA with zero observed events in the audit window.
-- `KUBE-RBAC-UNUSED-RULE-001` — Every (verb, resource) triple in a Role rule is unused.
-- `KUBE-RBAC-UNUSED-VERB-001` — Some verbs in a Role rule are unused; suggests a narrower verb list.
-- `KUBE-RBAC-WILDCARD-USED-PARTIAL-001` — `verbs: ["*"]` is granted but the SA only used a subset.
+- `KUBE-RBAC-UNUSED-ROLE-001`: Role bound to a mounted SA with zero observed events in the audit window.
+- `KUBE-RBAC-UNUSED-RULE-001`: Every (verb, resource) triple in a Role rule is unused.
+- `KUBE-RBAC-UNUSED-VERB-001`: Some verbs in a Role rule are unused; suggests a narrower verb list.
+- `KUBE-RBAC-WILDCARD-USED-PARTIAL-001`: `verbs: ["*"]` is granted but the SA only used a subset.
 
-The pre-existing `KUBE-RBAC-STALE-*` rules surface alongside in the Least Privilege HTML tab so dangling-binding cleanup and verb-level narrowing live in one view. Cluster-admin grants live in their own "Subjects bound to cluster-admin" inventory table on the same tab — directly bound subjects are listed for review rather than each one being flagged CRITICAL, because cluster-admin has legitimate uses (`system:masters`, break-glass groups) that vary by cluster. The standalone `KUBE-RBAC-OVERBROAD-001` finding still fires from the rbac module and shows up in the main Findings tab (and in JSON/CSV/SARIF output) for operators who want the per-binding alert.
+The pre-existing `KUBE-RBAC-STALE-*` rules surface alongside in the Least Privilege HTML tab so dangling-binding cleanup and verb-level narrowing live in one view. Cluster-admin grants live in their own "Subjects bound to cluster-admin" inventory table on the same tab: directly bound subjects are listed for review rather than each one being flagged CRITICAL, because cluster-admin has legitimate uses (`system:masters`, break-glass groups) that vary by cluster. The standalone `KUBE-RBAC-OVERBROAD-001` finding still fires from the rbac module and shows up in the main Findings tab (and in JSON/CSV/SARIF output) for operators who want the per-binding alert.
 
 ### When does it fire?
 
-The module is **opt-in via `--audit-log`**. A plain `kubesplaining scan` (no audit log) silently skips it — no LP findings ship and existing CI baselines stay unchanged.
+The module is **opt-in via `--audit-log`**. A plain `kubesplaining scan` (no audit log) silently skips it, so no LP findings ship and existing CI baselines stay unchanged.
 
 | Command | Audit log required? | What you get |
 | --- | --- | --- |
-| `kubesplaining scan` / `make scan` | No | Same behavior as before — module silently no-ops. |
+| `kubesplaining scan` / `make scan` | No | Same behavior as before; module silently no-ops. |
 | `scan --audit-log <path>` | Used if supplied | LP findings appear alongside the regular findings. |
 | `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Attack Paths / Risk Overview / Findings tabs are hidden. |
 | `make scan-lp AUDIT_LOG=<path>` | **Yes** (Makefile errors if missing) | Same as the focused mode above; convenience target. |
@@ -276,10 +346,10 @@ kubesplaining scan \
 
 The Least Privilege tab carries two summary tables on top, each row spelling out the exact action:
 
-- **Unused RBAC resources** — Roles/ClusterRoles/Bindings that look like delete candidates. Each row names the binding to remove (e.g. `Delete ClusterRoleBinding/dashboard-admin (scope down to a narrower ClusterRole)`).
-- **Role to verb activity** — Verb-level narrowing opportunities with side-by-side **Used** vs **Unused** verb lists grouped by verb (`get: deployments|pods`), plus a "what to do" action and the suggested narrower-Role YAML on the per-finding card below.
+- **Unused RBAC resources**: Roles/ClusterRoles/Bindings that look like delete candidates. Each row names the binding to remove (e.g. `Delete ClusterRoleBinding/dashboard-admin (scope down to a narrower ClusterRole)`).
+- **Role to verb activity**: Verb-level narrowing opportunities with side-by-side **Used** vs **Unused** verb lists grouped by verb (`get: deployments|pods`), plus a "what to do" action and the suggested narrower-Role YAML on the per-finding card below.
 
-When the audit log contains non-ServiceAccount callers (humans, groups, kubelets), the tab shows a one-line note explaining they're out of scope — kubesplaining only correlates ServiceAccount-bound RBAC; human users belong in IdP / SSO group review.
+When the audit log contains non-ServiceAccount callers (humans, groups, kubelets), the tab shows a one-line note explaining they're out of scope: kubesplaining only correlates ServiceAccount-bound RBAC, and human users belong in IdP / SSO group review.
 
 ### Audit log details
 
@@ -362,18 +432,18 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--severity-threshold` | `low` | Hide findings below this severity (`critical` / `high` / `medium` / `low` / `info`). |
 | `--output-format` | `html,json` | Comma-separated list: `html`, `json`, `csv`, `sarif`. |
 | `--output-dir` | `./kubesplaining-report` | Where reports are written. |
-| `--only-modules` / `--skip-modules` | — | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`). |
+| `--only-modules` / `--skip-modules` | (none) | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`). |
 | `--least-privilege-only` | `false` | Focus mode: hide everything except RBAC tightening opportunities and land on the **Least Privilege** tab. Requires `--audit-log`. |
-| `--audit-log` | — | Path to a kube-apiserver audit log (file or directory; repeatable). Opt-in: without it the `leastprivilege` module is a no-op. See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
+| `--audit-log` | (none) | Path to a kube-apiserver audit log (file or directory; repeatable). Opt-in: without it the `leastprivilege` module is a no-op. See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
 | `--audit-source` | `native` | Audit-log format: `native` (kube-apiserver JSON-lines) or `eks` (CloudWatch `filter-log-events` export). |
 | `--audit-window-days` | `30` | How many days of audit history to consider. Widen for monthly cron jobs. |
 | `--max-privesc-depth` | `5` | BFS depth cap for the escalation graph. |
 | `--ci-mode` | off | Exit non-zero when over thresholds. |
 | `--ci-max-critical` / `--ci-max-high` | `0` / `0` | Max findings allowed at each severity in CI mode. |
 | `--exclusions-preset` | `standard` | `standard` / `minimal` / `none`. |
-| `--exclusions-file` | — | User-supplied YAML, merged on top of the preset. |
-| `--input-file` | — | Use a snapshot JSON instead of live collection. |
-| `--namespaces` / `--exclude-namespaces` | — | Filter live collection by namespace. |
+| `--exclusions-file` | (none) | User-supplied YAML, merged on top of the preset. |
+| `--input-file` | (none) | Use a snapshot JSON instead of live collection. |
+| `--namespaces` / `--exclude-namespaces` | (none) | Filter live collection by namespace. |
 | `--parallelism` | `10` | Max parallel API requests during live collection. |
 
 ### Output formats
@@ -416,5 +486,5 @@ The `standard` preset suppresses control-plane noise (kube-system, system:*, kub
 
 ## Credits
 
-- [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) — for the tool idea. His [Cloudsplaining](https://github.com/salesforce/cloudsplaining) inspired this project.
-- [Ramesh Ramani](https://www.linkedin.com/in/rameshdotramani/) ([@secmesh](https://github.com/secmesh)) — the least-privilege mode was inspired by his idea.
+- [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/), for the tool idea. His [Cloudsplaining](https://github.com/salesforce/cloudsplaining) inspired this project.
+- [Ramesh Ramani](https://www.linkedin.com/in/rameshdotramani/) ([@secmesh](https://github.com/secmesh)): the least-privilege mode was inspired by his idea.

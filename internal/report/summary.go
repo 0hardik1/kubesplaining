@@ -236,32 +236,13 @@ func moduleLabel(key string) string {
 	}
 }
 
-// buildHeroChains is the Wave 0 stub for the "Critical attack chains" hero
-// panel at the top of the HTML report (STRATEGY.md:151, plan slot W1 #4).
-// Returns nil so the {{ if .HeroChains }} template gate suppresses the section
-// until Wave 1 populates it.
-func buildHeroChains(_ []models.Finding) []HeroChainCard {
-	return nil
-}
+// buildHeroChains lives in narratives.go alongside the related chain-detection /
+// headline helpers (W1 slot #4). The stub is intentionally absent here so the
+// implementation has a single home.
 
-// buildTopFixes is the Wave 0 stub for the "Top 5 fixes" panel
-// (STRATEGY.md:162, plan slot W1 #5). Wave 1 will group findings by Subject,
-// sum scores, and surface the top binding / role deletions ranked by
-// score-reduction. Returns nil for now so the {{ if .TopFixes }} template gate
-// suppresses the section.
-func buildTopFixes(_ []models.Finding) []TopFix {
-	return nil
-}
-
-// buildPerSubjectCapabilities is the Wave 0 stub for the per-ServiceAccount
-// "what can this principal actually do" capability cards
-// (STRATEGY.md:32, plan slot W1 #7). Wave 1 will read aggregated EffectiveRules
-// from internal/permissions/aggregate.go plus the privesc paths originating
-// from each subject. Returns nil for now so the {{ if .SubjectCapCards }}
-// template gate suppresses the section.
-func buildPerSubjectCapabilities(_ models.Snapshot, _ []models.Finding) []SubjectCapabilityCard {
-	return nil
-}
+// buildTopFixes is implemented in topfixes.go. The stub originally lived here;
+// the call site stays so the BuildHTMLData hot path keeps a single line per
+// section builder. See topfixes.go for the grouping + ranking algorithm.
 
 // BuildScoringTooltip is the Wave 0 helper that converts a finding into the
 // ScoringBreakdown surfaced in the HTML score tooltip (STRATEGY.md:155, plan

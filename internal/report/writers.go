@@ -265,14 +265,20 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"findingEducationHTML": func(f models.Finding) template.HTML {
 			return renderFindingEducation(f)
 		},
-		// scoringTooltip is the Wave 0 stub helper registered for the W1 #6
-		// scoring-formula tooltip. Templates can call {{ scoringTooltip .Finding }}
-		// today; the returned struct's HasFactors is false on every finding because
-		// no analyzer populates ScoreFactors yet, so the template path that would
-		// render the breakdown stays gated on .HasFactors and contributes nothing
-		// to the rendered HTML until Wave 1 wires it in.
+		// scoringTooltip exposes the structured ScoringBreakdown for templates that
+		// want to drive an expandable row instead of a `title` tooltip. When an
+		// analyzer has populated Finding.ScoreFactors the breakdown carries the
+		// per-factor values; otherwise HasFactors is false and only Score is set.
 		"scoringTooltip": func(f models.Finding) ScoringBreakdown {
 			return BuildScoringTooltip(f)
+		},
+		// scoringTooltipText returns the plain-text "Score 7.4 = base 6.0 × exploit 1.2
+		// × blast 1.0 + chain 0.2" string the HTML template attaches to the score
+		// badge as a `title="…"` attribute (STRATEGY.md:155, plan slot W1 #6). Falls
+		// back to "Score 7.4" when ScoreFactors is nil so the tooltip degrades
+		// gracefully on hand-picked-score findings.
+		"scoringTooltipText": func(f models.Finding) string {
+			return renderScoringTooltip(f)
 		},
 		"pluralize": func(n int, singular, plural string) string {
 			if n == 1 {
