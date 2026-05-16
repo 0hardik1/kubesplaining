@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
@@ -162,54 +163,59 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			// finding. switch (not if/else chain) so a rule that matches several cases
 			// only fires the first - we prefer the most specific framing and let dedupe
 			// merge cross-module overlaps later.
+			//
+			// `attachDangerousRemediation` (defined below) populates the structured
+			// RemediationHint for the dangerous-verb findings. Wave 1 slot #17 added the
+			// per-rule remediation generator; the analyzer is the one place that has the
+			// snapshot in scope when these findings are constructed.
 			switch {
 			case hasWildcard(rule.Verbs) && hasWildcard(rule.Resources) && hasWildcard(rule.APIGroups):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-017", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.8),
-					contentPrivesc017(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc017(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get", "list", "watch"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-005", models.SeverityHigh, models.CategoryDataExfiltration,
 					scaledScore(8.2),
-					contentPrivesc005(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc005(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-001", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.4),
-					contentPrivesc001(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc001(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasAnyResource(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-003", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.1),
-					contentPrivesc003(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc003(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasAnyResource(rule.Resources, []string{"users", "groups", "serviceaccounts"}) && hasAnyVerb(rule.Verbs, "impersonate"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-008", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.4),
-					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasAnyResource(rule.Resources, []string{"roles", "clusterroles"}) && hasAnyVerb(rule.Verbs, "bind", "escalate"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-009", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.2),
-					contentPrivesc009(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc009(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasAnyResource(rule.Resources, []string{"rolebindings", "clusterrolebindings"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-010", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.0),
-					contentPrivesc010(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc010(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasResource(rule.Resources, "nodes/proxy") && hasAnyVerb(rule.Verbs, "get"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-012", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.3),
-					contentPrivesc012(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc012(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasResource(rule.Resources, "serviceaccounts/token") && hasAnyVerb(rule.Verbs, "create"):
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, rule,
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-014", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.0),
-					contentPrivesc014(rule.Namespace, perms.Subject, bindingRef, roleRef)))
+					contentPrivesc014(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			}
 		}
 	}
@@ -221,7 +227,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				if strings.HasPrefix(ref.Name, "system:") {
 					continue
 				}
-				findings = appendFinding(findings, seen, findingFromContent(
+				overbroadFinding := findingFromContent(
 					ref,
 					effectiveRule{
 						SourceBinding:     binding.Name,
@@ -230,7 +236,9 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 						SourceRoleKind:    binding.RoleRef.Kind,
 					},
 					"KUBE-RBAC-OVERBROAD-001", models.SeverityCritical, models.CategoryPrivilegeEscalation, 10,
-					contentRBACOverbroad001(ref, binding.Name)))
+					contentRBACOverbroad001(ref, binding.Name))
+				overbroadFinding.RemediationHint = remediation.ForRBACOverbroad(overbroadFinding, snapshot)
+				findings = appendFinding(findings, seen, overbroadFinding)
 			}
 		}
 	}
@@ -468,6 +476,18 @@ func appendFinding(findings []models.Finding, seen map[string]struct{}, finding 
 	return append(findings, finding)
 }
 
+// attachDangerousRemediation populates the structured RemediationHint for the
+// dangerous-verb (KUBE-PRIVESC-001 … -017) findings. Wired at each switch
+// branch above as a one-line wrapper around findingFromContent so the per-rule
+// remediation generator runs with the finding's evidence already populated.
+//
+// The remediation package guards on the rule ID and returns nil for anything
+// it doesn't know about, so the wrapper is safe to apply uniformly.
+func attachDangerousRemediation(f models.Finding, snap models.Snapshot) models.Finding {
+	f.RemediationHint = remediation.ForRBACDangerous(f.RuleID, f, snap)
+	return f
+}
+
 // findingFromContent materializes a models.Finding using the enriched ruleContent (Scope, Impact,
 // AttackScenario, RemediationSteps, LearnMore, MitreTechniques) plus the runtime context (subject,
 // originating rule, severity/score/category bucket). Evidence keeps the same shape as before so
@@ -475,6 +495,7 @@ func appendFinding(findings []models.Finding, seen map[string]struct{}, finding 
 func findingFromContent(subject models.SubjectRef, rule effectiveRule, ruleID string, severity models.Severity, category models.RiskCategory, score float64, content ruleContent) models.Finding {
 	evidenceBytes, _ := json.Marshal(map[string]any{
 		"source_role":         rule.SourceRole,
+		"source_role_kind":    rule.SourceRoleKind,
 		"source_binding":      rule.SourceBinding,
 		"source_binding_kind": rule.SourceBindingKind,
 		"api_groups":          rule.APIGroups,
