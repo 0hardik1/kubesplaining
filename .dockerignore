@@ -1,0 +1,28 @@
+# Keep the build context tiny. Anything not needed by `go build` is excluded
+# so layer caching kicks in on go.mod / go.sum changes only.
+.git/
+.github/
+.githooks/
+.tmp/
+.claude/
+bin/
+dist/
+kubesplaining-report/
+tmp-*/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Generated output / docs that don't affect the binary
+*.md
+!README.md
+CHANGELOG.md
+docs/
+examples/
+
+# Test data isn't needed inside the image
+testdata/
+scripts/

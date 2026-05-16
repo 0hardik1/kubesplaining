@@ -1,0 +1,17 @@
+# Used by GoReleaser only. GoReleaser drops the already-built binary into
+# the build context as `kubesplaining`, so this stage is intentionally a
+# copy-only Dockerfile (no go toolchain needed in the release pipeline).
+# For ad-hoc `docker build .` from a fresh clone, use the top-level
+# multi-stage Dockerfile instead.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+LABEL org.opencontainers.image.source=https://github.com/0hardik1/kubesplaining
+LABEL org.opencontainers.image.title=kubesplaining
+LABEL org.opencontainers.image.description="Kubernetes security CLI: RBAC privesc graph, offline snapshot scanning"
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
+COPY kubesplaining /usr/local/bin/kubesplaining
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/kubesplaining"]
