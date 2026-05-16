@@ -482,6 +482,58 @@ func contentPrivesc012(ruleNamespace string, subject models.SubjectRef, sourceBi
 	}
 }
 
+// contentPrivesc011 — CSR mint via create + self-approve (KUBE-PRIVESC-011).
+//
+// Detection requires correlating two separate cluster-scoped rules on the same
+// subject: `create certificatesigningrequests` AND `update/patch
+// certificatesigningrequests/approval`. Held together, the subject can submit
+// a CSR carrying `O=system:masters` in its Subject DN and self-approve it; the
+// kubelet-signed client cert then authenticates as cluster-admin.
+//
+// Sources: Kubernetes RBAC Good Practices ("Privilege Escalation Risks"
+// section: "anyone able to create/issue CertificateSigningRequests"), Rory
+// McCune (Aqua Security) CSR writeup, kube-apiserver client cert flow docs.
+func contentPrivesc011(subject models.SubjectRef, createBinding, createRole, approveBinding, approveRole string) ruleContent {
+	scope := models.Scope{
+		Level:  models.ScopeCluster,
+		Detail: "Cluster-wide: CertificateSigningRequests are a cluster-scoped resource and approval applies cluster-wide",
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("CSR create + approve enables cluster-admin via system:masters on `%s`", subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can both `create` `certificatesigningrequests` (via %s → %s) and `update/patch` the `certificatesigningrequests/approval` subresource (via %s → %s). Held together, those two verbs are equivalent to cluster-admin via the certificates API.\n\n"+
+			"The mechanism: a CertificateSigningRequest carries an x509 CSR whose Subject DN can claim any Common Name and any list of Organizations. The kube-apiserver's built-in client-cert authenticator treats CN as the `User` and each Organization as a `Group`. The group `system:masters` is hard-coded inside the apiserver to short-circuit RBAC entirely. So an attacker who can both submit a CSR with `O=system:masters` AND mark it Approved can pick up the kubelet-signed cert (via `kubectl get csr <name> -o jsonpath='{.status.certificate}'`) and use it as a permanent cluster-admin credential.\n\n"+
+			"The Kubernetes project explicitly flags this in `RBAC Good Practices`: 'Anyone with full control over the CertificateSigningRequest API, including the ability to approve CSRs, is effectively a Kubernetes cluster admin'. The cert survives RBAC binding revocation, has whatever validity period the signer applies (often a year), and leaves no Secret behind that an operator can rotate.",
+			subjectKey(subject), createBinding, createRole, approveBinding, approveRole),
+		Impact: "Cluster-admin equivalent via the certificates API: subject can mint a kubelet-signed x509 client cert that authenticates as `system:masters`, bypassing RBAC. The cert persists after the RBAC grant is revoked.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the two halves with `%s` and `%s`.", kubectlAuthCanI("create", "certificatesigningrequests", "", subject), kubectlAuthCanI("update", "certificatesigningrequests/approval", "", subject)),
+			"They generate a private key + CSR locally with `O=system:masters` in the Subject DN: `openssl req -new -key admin.key -subj '/CN=attacker/O=system:masters' -out admin.csr`.",
+			"They submit it via the CertificateSigningRequest API, targeting the `kubernetes.io/kube-apiserver-client` signer: `kubectl apply -f csr.yaml`.",
+			"They self-approve: `kubectl certificate approve <csr-name>`. The kube-controller-manager signs the cert using the cluster CA.",
+			"They extract the issued cert: `kubectl get csr <csr-name> -o jsonpath='{.status.certificate}' | base64 -d > admin.crt` and use it: `kubectl --client-certificate=admin.crt --client-key=admin.key get nodes` — succeeds as `system:masters`.",
+		},
+		Remediation: "Split the two halves across different subjects: never grant `create csr` and `update csr/approval` to the same identity. Approval should be reserved to the kube-controller-manager's auto-approver (for known signers) or a strict admin allowlist.",
+		RemediationSteps: []string{
+			"Audit who holds both verbs: `kubectl get clusterroles,roles -A -o json | jq '.items[] | {name, rules}'` and grep for `certificatesigningrequests` and `certificatesigningrequests/approval`.",
+			fmt.Sprintf("Remove one half from %s. Application workloads almost never need either verb; CI/CD systems that issue dev certs typically need `create` but never `approval`.", subjectKey(subject)),
+			"For legitimate auto-approval (kubelet bootstrap), use the built-in `system:kube-controller-manager` flow or a CSR controller with a tightly-scoped `signerName` (e.g. `kubernetes.io/kubelet-serving` only).",
+			"Add a ValidatingAdmissionPolicy (or Kyverno) that rejects any CertificateSigningRequest whose `spec.request` decodes to a Subject containing `O=system:masters` regardless of the submitting identity.",
+			fmt.Sprintf("Verify the remediation with `%s` returning `no` for at least one of the two halves.", kubectlAuthCanI("update", "certificatesigningrequests/approval", "", subject)),
+			"Rotate the cluster CA if you suspect a cert was issued (the issued cert remains valid for its full lifetime; only a CA rotation invalidates it).",
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — RBAC Good Practices: CertificateSigningRequest escalation", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/#certificatesigningrequest"},
+			{Title: "Kubernetes — Certificate Signing Requests (lifecycle)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/"},
+			{Title: "Kubernetes — Authenticating: X509 client certificates", URL: "https://kubernetes.io/docs/reference/access-authn-authz/authentication/#x509-client-certificates"},
+			{Title: "Rory McCune (Aqua) — Kubernetes CSR API for Privilege Escalation", URL: "https://www.aquasec.com/blog/kubernetes-rbac-privilige-escalation/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1098, mitreT1098_001, mitreT1078_004, mitreT1550},
+	}
+}
+
 // contentPrivesc014 — serviceaccounts/token create (KUBE-PRIVESC-014).
 func contentPrivesc014(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
 	scope := scopeForRule(ruleNamespace)

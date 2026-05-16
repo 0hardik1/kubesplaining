@@ -20,6 +20,16 @@ const (
 	sinkNamespaceAdminPrefix = "sink:namespace_admin:"
 )
 
+// csrAnnotation tags a subject with one of the two halves of the CSR-approval
+// privesc primitive. A subject that accumulates both halves (after every rule
+// has been processed) gets an edge to the system_masters sink in finalizeCSRApprovals.
+type csrAnnotation int
+
+const (
+	csrAnnotationCreate csrAnnotation = 1 << iota
+	csrAnnotationApprove
+)
+
 // nodeID returns the canonical graph-node ID for a subject.
 func nodeID(ref models.SubjectRef) string {
 	return "subject:" + ref.Key()
@@ -41,13 +51,22 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	subjectsByNs := serviceAccountsByNamespace(snapshot)
 	podSAsByNs := podServiceAccountsByNamespace(snapshot)
 
+	// csrCapabilities accumulates the two CSR-approval halves (create CSRs +
+	// approve at the /approval subresource) per subject. Both verbs across the
+	// subject's effective rules are required before an edge to system_masters is
+	// emitted, so collection runs across the per-rule loop and the finalize step
+	// emits the edge once both halves are present.
+	csrCapabilities := map[string]csrAnnotation{}
+
 	effective := permissions.Aggregate(snapshot)
 	for _, perms := range effective {
 		ensureSubjectNode(graph, perms.Subject)
 		for _, rule := range perms.Rules {
-			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs)
+			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, csrCapabilities)
 		}
 	}
+
+	finalizeCSRApprovals(graph, csrCapabilities)
 
 	for _, pod := range snapshot.Resources.Pods {
 		addPodEscapeEdges(graph, pod)
@@ -75,13 +94,54 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	return graph
 }
 
+// finalizeCSRApprovals emits a csr_approve edge from any subject that holds both
+// halves of the CSR-mint primitive (create on certificatesigningrequests AND
+// update/patch on certificatesigningrequests/approval, both cluster-scoped) to
+// the system_masters sink. The CSR mint primitive is the only one in the model
+// today that requires correlating two separate RBAC rules on the same subject,
+// hence the two-pass build.
+func finalizeCSRApprovals(graph *models.EscalationGraph, caps map[string]csrAnnotation) {
+	const both = csrAnnotationCreate | csrAnnotationApprove
+	for subjectKey, ann := range caps {
+		if ann&both != both {
+			continue
+		}
+		from := "subject:" + subjectKey
+		// Defensive: the subject node may not yet exist if the caller stored an
+		// annotation without first walking effective rules. ensureSubjectNode is
+		// keyed on SubjectRef, so we parse the key back; the graph builder is
+		// the only writer of caps, so this branch is effectively unreachable but
+		// kept simple in case future code paths short-circuit.
+		if _, ok := graph.Nodes[from]; !ok {
+			continue
+		}
+		addEdge(graph, from, sinkSystemMasters, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-011",
+			Action:      "csr_approve",
+			Permission:  "create certificatesigningrequests + update certificatesigningrequests/approval",
+			Description: "can submit a CSR with system:masters in its Subject and self-approve it, minting a kubelet-signed cluster-admin client cert",
+		})
+	}
+}
+
+// annotateSubjectCSR records that subject holds one of the two CSR-approval halves.
+// Stored on a side map (passed in by BuildGraph) because addEdgesForRule sees one
+// rule at a time; the edge is only safe to emit once we've confirmed both halves
+// landed across the subject's full effective rule set.
+func annotateSubjectCSR(caps map[string]csrAnnotation, subject models.SubjectRef, half csrAnnotation) {
+	caps[subject.Key()] |= half
+}
+
 // addEdgesForRule inspects one aggregated RBAC rule and emits the graph edges it enables (to sinks or to impersonable subjects).
+// csrCapabilities accumulates the per-subject CSR-mint halves across rules so finalizeCSRApprovals
+// can emit the csr_approve edge once both halves are present.
 func addEdgesForRule(
 	graph *models.EscalationGraph,
 	subject models.SubjectRef,
 	rule permissions.EffectiveRule,
 	subjectsByNs map[string][]models.SubjectRef,
 	podSAsByNs map[string][]models.SubjectRef,
+	csrCapabilities map[string]csrAnnotation,
 ) {
 	from := nodeID(subject)
 	clusterScope := rule.Namespace == ""
@@ -264,6 +324,24 @@ func addEdgesForRule(
 			Permission:  "create serviceaccounts/token (cluster-wide)",
 			Description: "can mint a service-account token for any ServiceAccount in any namespace",
 		})
+	}
+
+	// CSR approval → system:masters. A subject that can both `create
+	// certificatesigningrequests` AND `update certificatesigningrequests/approval`
+	// can issue a client cert whose Subject carries `O=system:masters` (or any
+	// principal it chooses) and authenticate as cluster-admin. CSRs are cluster-
+	// scoped, so this edge requires cluster-scoped grants for both verbs.
+	//
+	// We need to see both verbs across the same subject's effective rules, but
+	// addEdgesForRule sees one rule at a time. The simplest correct treatment is
+	// to emit a candidate edge whenever EITHER verb is held cluster-scoped, then
+	// drop the candidate in a graph-wide pass if the other verb is missing. That
+	// pass lives in BuildGraph after every rule has been processed.
+	if clusterScope && matchesResourceVerb(rule, []string{"certificatesigningrequests"}, []string{"create"}) {
+		annotateSubjectCSR(csrCapabilities, subject, csrAnnotationCreate)
+	}
+	if clusterScope && matchesResourceVerb(rule, []string{"certificatesigningrequests/approval"}, []string{"update", "patch"}) {
+		annotateSubjectCSR(csrCapabilities, subject, csrAnnotationApprove)
 	}
 }
 

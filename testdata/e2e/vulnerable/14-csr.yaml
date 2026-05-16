@@ -1,0 +1,75 @@
+# Fixture for KUBE-PRIVESC-011 (CSR create + approve → system:masters).
+#
+# The ClusterRole `cr-csr-mint` carries both halves of the CSR-approval primitive:
+# `create certificatesigningrequests` and `update certificatesigningrequests/approval`.
+# A subject bound to this role can submit a CSR with `O=system:masters` in its Subject
+# DN and self-approve it, yielding a kubelet-signed cluster-admin client cert.
+#
+# The e2e assertion file `csr.expect` requires KUBE-PRIVESC-011 and the
+# KUBE-PRIVESC-PATH-SYSTEM-MASTERS path to appear in findings.json.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: csr-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-csr-mint
+  namespace: csr-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-csr-mint
+rules:
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests/approval"]
+    verbs: ["update", "patch"]
+  # Some auto-approver flows also need `approve` on the specific signer's
+  # `signers` resource. We omit it here because the apiserver authorizer only
+  # checks signers when the controller-manager runs the approval action with
+  # `--cluster-signing-cert-file` set, which kind does have. Including the
+  # SubjectAccessReview-style permission would force the e2e to bootstrap a
+  # private CA — out of scope for what kubesplaining flags.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-csr-mint
+subjects:
+  - kind: ServiceAccount
+    name: sa-csr-mint
+    namespace: csr-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-csr-mint
+---
+# Mount the SA in a pod so it's an "active" identity (the rbac analyzer applies
+# an exploitability multiplier when the SA is mounted, and the privesc engine
+# correlates findings to mounted SAs). Keep the container minimal — pause is
+# what kind ships and rolls out instantly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csr-mint-app
+  namespace: csr-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: csr-mint-app
+  template:
+    metadata:
+      labels:
+        app: csr-mint-app
+    spec:
+      serviceAccountName: sa-csr-mint
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.9
