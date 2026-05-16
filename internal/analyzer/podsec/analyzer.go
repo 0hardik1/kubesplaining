@@ -44,7 +44,8 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	findings := make([]models.Finding, 0)
 	seen := map[string]struct{}{}
 
-	for _, target := range collectTargets(snapshot) {
+	targets := collectTargets(snapshot)
+	for _, target := range targets {
 		serviceAccount := target.PodSpec.ServiceAccountName
 		if serviceAccount == "" {
 			serviceAccount = "default"
@@ -164,6 +165,18 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			}
 		}
 	}
+
+	// PV hostPath bypass (KUBE-PV-HOSTPATH-001): a Pod that mounts a PVC whose
+	// backing PV uses a sensitive hostPath path. PSA inspects the PodSpec only
+	// and does not follow PVC -> PV indirection, so this is a real Baseline
+	// bypass. Walks pods -> PVC -> PV.
+	findings = analyzePVHostPath(targets, snapshot, findings, seen)
+
+	// PSA namespace label assessment (KUBE-PSA-LABELS-001): a namespace that
+	// runs Baseline-violating pods AND has no `enforce` label (or has it set
+	// to `privileged`) is treated as missing the cluster's first line of
+	// defense at the namespace boundary. Emits one finding per namespace.
+	findings = analyzePSALabels(targets, snapshot, findings, seen)
 
 	return findings, nil
 }

@@ -228,6 +228,14 @@ var ruleControls = map[string][]models.FrameworkRef{
 	"KUBE-IMAGE-LATEST-001": {
 		nsa("Pod Security", "Image scanning"),
 	},
+	"KUBE-PV-HOSTPATH-001": {
+		cis("5.2.12", "Minimize the admission of HostPath volumes"),
+		nsa("Pod Security", "Application security: securityContext"),
+	},
+	"KUBE-PSA-LABELS-001": {
+		cis("5.2.1", "Minimize the admission of privileged containers"),
+		nsa("Pod Security", "Pod Security Standards / Pod Security Admission"),
+	},
 
 	// --- Network Policy ----------------------------------------------------------
 

@@ -145,6 +145,12 @@ var Glossary = map[string]GlossaryEntry{
 		Long:   template.HTML(`<p>A <strong>hostPath</strong> volume bind-mounts a path from the host node into the container. Sensitive paths like <code>/</code>, <code>/etc</code>, <code>/var/run/docker.sock</code>, or <code>/var/lib/kubelet</code> turn the pod into a node-takeover primitive: an attacker inside the pod can write systemd units, read the kubelet's credentials, or directly invoke the container runtime to start privileged containers on the host.</p>`),
 		DocURL: "https://kubernetes.io/docs/concepts/storage/volumes/#hostpath",
 	},
+	"PersistentVolume": {
+		Title:  "PersistentVolume",
+		Short:  "A cluster-scoped storage handle. PVs that wrap hostPath bypass Pod Security Admission.",
+		Long:   template.HTML(`<p>A <strong>PersistentVolume</strong> is a cluster-scoped storage object that a PersistentVolumeClaim binds to. PVs come from many sources: CSI drivers, NFS, iSCSI, and (dangerously) <code>hostPath</code>. The Pod Security Admission controller inspects the PodSpec only and never follows the PVC -> PV indirection, so a PV that wraps a sensitive hostPath (<code>/</code>, <code>/etc</code>, <code>/var/lib/kubelet</code>, the container runtime sockets) becomes an unobservable node-escape primitive: a Pod in a Baseline- or Restricted-enforced namespace can mount the equivalent of a sensitive hostPath simply by claiming the PV.</p><p>PVs are non-namespaced. Whoever can create or modify PVs can therefore expose sensitive node directories to any tenant in the cluster, regardless of namespace boundaries.</p>`),
+		DocURL: "https://kubernetes.io/docs/concepts/storage/persistent-volumes/",
+	},
 	"PrivilegedContainer": {
 		Title:  "Privileged container",
 		Short:  "Runs with kernel-level access to the host (equivalent to root on the node).",
@@ -190,35 +196,6 @@ var Glossary = map[string]GlossaryEntry{
 		Title: "system:masters group",
 		Short: "Hardcoded as cluster-admin. Membership cannot be revoked through RBAC.",
 		Long:  template.HTML(`<p>The <strong>system:masters</strong> group is special-cased in the API server: members bypass RBAC and act as cluster-admin. The membership comes from the authenticator (typically certificate <code>O=system:masters</code>) and <em>cannot</em> be removed by deleting bindings; it is wired in below the RBAC layer.</p>`),
-	},
-	// Wave 0 stub entries for resource kinds referenced by Wave 1 analyzer rules.
-	// Short copy here so the Background block has *something* to render; the Long
-	// field stays empty for the moment so it is obvious to subsequent reviewers
-	// what still needs filling in.
-	"ResourceQuota": {
-		Title: "ResourceQuota",
-		Short: "Namespace-scoped cap on CPU, memory, and object counts (prevents noisy-neighbor and DoS).",
-		Long:  "",
-	},
-	"LivenessProbe": {
-		Title: "Liveness probe",
-		Short: "Periodic kubelet check that restarts a container when it stops responding.",
-		Long:  "",
-	},
-	"LimitRange": {
-		Title: "LimitRange",
-		Short: "Namespace-scoped default + min/max for pod / container resource requests and limits.",
-		Long:  "",
-	},
-	"CertificateSigningRequest": {
-		Title: "CertificateSigningRequest",
-		Short: "API resource for requesting a signed client / serving certificate from the cluster CA.",
-		Long:  "",
-	},
-	"PersistentVolume": {
-		Title: "PersistentVolume",
-		Short: "Cluster-scoped storage resource backing PVCs (hostPath PVs are a node-escape primitive).",
-		Long:  "",
 	},
 }
 
@@ -406,6 +383,14 @@ func TechniqueKeyForFinding(f models.Finding) string {
 	switch {
 	case strings.HasPrefix(f.RuleID, "KUBE-ESCAPE"):
 		return "pod_host_escape"
+	case strings.HasPrefix(f.RuleID, "KUBE-PV-HOSTPATH-"):
+		// Same attacker primitive as direct hostPath, just routed through the PVC layer.
+		return "pod_host_escape"
+	case strings.HasPrefix(f.RuleID, "KUBE-PSA-LABELS-"):
+		// Namespace-level finding: no per-finding technique applies, but the
+		// "deploy container" technique covers the regression a missing PSA
+		// label enables. Returning "" would drop the explainer card entirely.
+		return ""
 	case f.RuleID == "KUBE-PRIVESC-001":
 		return "pod_create_token_theft"
 	case f.RuleID == "KUBE-PRIVESC-004":
@@ -426,29 +411,6 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "wildcard_permission"
 	case f.RuleID == "KUBE-RBAC-OVERBROAD-001":
 		return "bound_to_cluster_admin"
-	// Wave 0 stubs: pre-route new Wave 1 rule prefixes to their best-fit
-	// existing Techniques entry. Each branch can be redirected to a more
-	// specific Techniques key when Wave 1 lands the bespoke explainer.
-	case strings.HasPrefix(f.RuleID, "KUBE-CONTAINER-"):
-		// Container Security rules (W1 #9) describe container-hardening gaps that
-		// most often serve as the final-mile primitive in a host-escape chain.
-		return "pod_host_escape"
-	case strings.HasPrefix(f.RuleID, "KUBE-NETPOL-IMDS-"):
-		return "read_secrets"
-	case strings.HasPrefix(f.RuleID, "KUBE-NETPOL-CROSSNS-"):
-		return "read_secrets"
-	case strings.HasPrefix(f.RuleID, "KUBE-SECRETS-STALE-"):
-		return "read_secrets"
-	case strings.HasPrefix(f.RuleID, "KUBE-SECRETS-CROSSNS-"):
-		return "read_secrets"
-	case strings.HasPrefix(f.RuleID, "KUBE-SECRETS-TLS-EXPIRY-"):
-		return "read_secrets"
-	case strings.HasPrefix(f.RuleID, "KUBE-CONFIGMAP-CREDS-"):
-		return "read_secrets"
-	case strings.HasPrefix(f.RuleID, "KUBE-PV-HOSTPATH-"):
-		return "pod_host_escape"
-	case strings.HasPrefix(f.RuleID, "KUBE-PSA-LABELS-"):
-		return "pod_host_escape"
 	case strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-"):
 		// Fall back to the chain's first hop, already handled above; if no hops, leave empty.
 		return ""
@@ -480,7 +442,7 @@ func GlossaryKeyForResource(ref *models.ResourceRef) string {
 	}
 	switch ref.Kind {
 	case "Pod", "Deployment", "DaemonSet", "StatefulSet", "ReplicaSet", "Job",
-		"Secret", "ConfigMap", "Namespace",
+		"Secret", "ConfigMap", "Namespace", "PersistentVolume",
 		"ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding":
 		return ref.Kind
 	}

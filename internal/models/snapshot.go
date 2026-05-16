@@ -37,23 +37,30 @@ type SnapshotMetadata struct {
 
 // SnapshotResources holds the collected Kubernetes objects grouped by kind; empty slices are allowed and common.
 type SnapshotResources struct {
-	Roles                    []rbacv1.Role                                            `json:"roles,omitempty"`
-	ClusterRoles             []rbacv1.ClusterRole                                     `json:"cluster_roles,omitempty"`
-	RoleBindings             []rbacv1.RoleBinding                                     `json:"role_bindings,omitempty"`
-	ClusterRoleBindings      []rbacv1.ClusterRoleBinding                              `json:"cluster_role_bindings,omitempty"`
-	ServiceAccounts          []corev1.ServiceAccount                                  `json:"service_accounts,omitempty"`
-	Pods                     []corev1.Pod                                             `json:"pods,omitempty"`
-	Deployments              []appsv1.Deployment                                      `json:"deployments,omitempty"`
-	DaemonSets               []appsv1.DaemonSet                                       `json:"daemon_sets,omitempty"`
-	StatefulSets             []appsv1.StatefulSet                                     `json:"stateful_sets,omitempty"`
-	Jobs                     []batchv1.Job                                            `json:"jobs,omitempty"`
-	CronJobs                 []batchv1.CronJob                                        `json:"cron_jobs,omitempty"`
-	SecretsMetadata          []SecretMetadata                                         `json:"secrets_metadata,omitempty"`
-	ConfigMaps               []ConfigMapSnapshot                                      `json:"config_maps,omitempty"`
-	Namespaces               []corev1.Namespace                                       `json:"namespaces,omitempty"`
-	Nodes                    []corev1.Node                                            `json:"nodes,omitempty"`
-	Services                 []corev1.Service                                         `json:"services,omitempty"`
-	NetworkPolicies          []networkingv1.NetworkPolicy                             `json:"network_policies,omitempty"`
+	Roles               []rbacv1.Role                `json:"roles,omitempty"`
+	ClusterRoles        []rbacv1.ClusterRole         `json:"cluster_roles,omitempty"`
+	RoleBindings        []rbacv1.RoleBinding         `json:"role_bindings,omitempty"`
+	ClusterRoleBindings []rbacv1.ClusterRoleBinding  `json:"cluster_role_bindings,omitempty"`
+	ServiceAccounts     []corev1.ServiceAccount      `json:"service_accounts,omitempty"`
+	Pods                []corev1.Pod                 `json:"pods,omitempty"`
+	Deployments         []appsv1.Deployment          `json:"deployments,omitempty"`
+	DaemonSets          []appsv1.DaemonSet           `json:"daemon_sets,omitempty"`
+	StatefulSets        []appsv1.StatefulSet         `json:"stateful_sets,omitempty"`
+	Jobs                []batchv1.Job                `json:"jobs,omitempty"`
+	CronJobs            []batchv1.CronJob            `json:"cron_jobs,omitempty"`
+	SecretsMetadata     []SecretMetadata             `json:"secrets_metadata,omitempty"`
+	ConfigMaps          []ConfigMapSnapshot          `json:"config_maps,omitempty"`
+	Namespaces          []corev1.Namespace           `json:"namespaces,omitempty"`
+	Nodes               []corev1.Node                `json:"nodes,omitempty"`
+	Services            []corev1.Service             `json:"services,omitempty"`
+	NetworkPolicies     []networkingv1.NetworkPolicy `json:"network_policies,omitempty"`
+	// PersistentVolumes and PersistentVolumeClaims power the PV-hostPath bypass check
+	// (KUBE-PV-HOSTPATH-001): a Pod can mount a PVC whose backing PV uses a sensitive
+	// hostPath (`/`, `/etc`, `/var/run/docker.sock`, `/var/lib/kubelet`, ...). PSA cannot
+	// see through PVCs, so this is a real Baseline bypass. Both fields are populated by
+	// the collector; missing-permission errors degrade them to empty (warning, not fatal).
+	PersistentVolumes        []corev1.PersistentVolume                                `json:"persistent_volumes,omitempty"`
+	PersistentVolumeClaims   []corev1.PersistentVolumeClaim                           `json:"persistent_volume_claims,omitempty"`
 	ValidatingWebhookConfigs []admissionregistrationv1.ValidatingWebhookConfiguration `json:"validating_webhook_configs,omitempty"`
 	MutatingWebhookConfigs   []admissionregistrationv1.MutatingWebhookConfiguration   `json:"mutating_webhook_configs,omitempty"`
 	// ValidatingAdmissionPolicies and ValidatingAdmissionPolicyBindings are the in-tree
