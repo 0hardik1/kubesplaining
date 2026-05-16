@@ -1385,6 +1385,20 @@
       .topbar-meta .sep { display: none; }
       h1 { font-size: 24px; }
     }
+
+    /* Top fixes panel: ranked, single-edit recommendations. Mirrors the visual
+       weight of .narrative cards (severity-tinted strip on the left, monospace
+       rule chips) while staying compact enough to keep five rows above the fold. */
+    .top-fixes-intro { color: var(--text-mut); font-size: 13px; margin: 4px 0 14px; }
+    .top-fixes-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+    .top-fix-row { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; align-items: start; background: rgba(255,255,255,0.02); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 14px; }
+    .top-fix-rank { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 14px; font-weight: 700; color: var(--accent); text-align: center; padding-top: 2px; }
+    .top-fix-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .top-fix-action { color: var(--text); font-size: 14px; line-height: 1.45; }
+    .top-fix-action code { font-size: 12.5px; }
+    .top-fix-impact { color: var(--text-mut); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .top-fix-rules { color: var(--text-mut); font-size: 11.5px; word-break: break-word; }
+    .top-fix-rules code { font-size: 11px; padding: 1px 4px; }
   </style>
   <script>
     // Mark JS as live before paint so kp-js-only copy (interactive-graph hints) appears
@@ -1656,12 +1670,16 @@
       <div class="card soft">
         <div class="kicker">Top fixes</div>
         <h2>Highest-impact remediations</h2>
+        <p class="top-fixes-intro">Each row collapses every finding sharing the same owning principal or workload into a single edit. Tackle them top-down: the score-reduction column shows how much your cluster risk index drops once the fix lands.</p>
         <ol class="top-fixes-list">
           {{ range .TopFixes }}
           <li class="top-fix-row">
-            <span class="top-fix-rank">{{ .Rank }}</span>
-            <span class="top-fix-action">{{ .Action }}</span>
-            <span class="top-fix-impact">resolves {{ .FindingsCount }} {{ pluralize .FindingsCount "finding" "findings" }} (&minus;{{ score .ScoreImpact }})</span>
+            <span class="top-fix-rank">#{{ .Rank }}</span>
+            <div class="top-fix-body">
+              <span class="top-fix-action">{{ inlineHTML .Action }}</span>
+              <span class="top-fix-impact">Clears {{ .FindingsCount }} {{ pluralize .FindingsCount "rule" "rules" }} &middot; score impact &minus;{{ score .ScoreImpact }}</span>
+              {{ if .RuleIDs }}<span class="top-fix-rules">Rules: {{ range $i, $r := .RuleIDs }}{{ if $i }}, {{ end }}<code>{{ $r }}</code>{{ end }}</span>{{ end }}
+            </div>
           </li>
           {{ end }}
         </ol>

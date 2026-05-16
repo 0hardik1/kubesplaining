@@ -240,14 +240,9 @@ func moduleLabel(key string) string {
 // headline helpers (W1 slot #4). The stub is intentionally absent here so the
 // implementation has a single home.
 
-// buildTopFixes is the Wave 0 stub for the "Top 5 fixes" panel
-// (STRATEGY.md:162, plan slot W1 #5). Wave 1 will group findings by Subject,
-// sum scores, and surface the top binding / role deletions ranked by
-// score-reduction. Returns nil for now so the {{ if .TopFixes }} template gate
-// suppresses the section.
-func buildTopFixes(_ []models.Finding) []TopFix {
-	return nil
-}
+// buildTopFixes is implemented in topfixes.go. The stub originally lived here;
+// the call site stays so the BuildHTMLData hot path keeps a single line per
+// section builder. See topfixes.go for the grouping + ranking algorithm.
 
 // buildPerSubjectCapabilities is the Wave 0 stub for the per-ServiceAccount
 // "what can this principal actually do" capability cards
