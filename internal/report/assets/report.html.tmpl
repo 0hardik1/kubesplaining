@@ -501,6 +501,64 @@
     .lp-tag-review { background: var(--high-soft); color: var(--high);
       border: 1px solid rgba(255,120,120,0.35); }
 
+    /* Per-subject capability cards: the Cloudsplaining-style "what each principal
+       can actually do" panel that follows the cluster-admin inventory. Each card
+       is a self-contained summary of one RBAC subject (bindings + effective verbs
+       + collapsed rules, plus originating privesc chains when present). Visual
+       treatment mirrors .lp-table-wrap / .hero-chain-card: surface background,
+       border, severity color as a left accent so high-risk principals jump out. */
+    .subject-caps { margin: 18px 0 4px; }
+    .lp-caps-hd { margin-bottom: 14px; }
+    .lp-caps-hd h2 { font-size: 17px; margin: 0 0 6px; letter-spacing: -0.01em; }
+    .lp-caps-sub { color: var(--text-mut); font-size: 13px; line-height: 1.6;
+      margin: 0; max-width: 880px; }
+    .lp-caps-sub strong { color: var(--text); font-weight: 600; }
+    .subject-cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 14px; }
+    .subject-cap-card { background: var(--surface); border: 1px solid var(--border);
+      border-left: 3px solid var(--text-mut); border-radius: 12px;
+      padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .subject-cap-card.sev-crit { border-left-color: var(--critical); }
+    .subject-cap-card.sev-high { border-left-color: var(--high); }
+    .subject-cap-card.sev-med { border-left-color: var(--medium); }
+    .subject-cap-card.sev-low { border-left-color: var(--low); }
+    .subject-cap-hd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .subject-cap-hd h3 { font-size: 14px; font-weight: 600; margin: 0;
+      letter-spacing: -0.01em; color: var(--text); word-break: break-word; }
+    .badge-chain { display: inline-block; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 8px;
+      border-radius: 999px; background: rgba(192,148,255,0.14);
+      color: var(--accent-2); border: 1px solid rgba(192,148,255,0.36); }
+    .subject-cap-card .cap-bindings,
+    .subject-cap-card .cap-rules-wrap,
+    .subject-cap-card .cap-paths { font-size: 12.5px; color: var(--text-mut);
+      line-height: 1.55; }
+    .subject-cap-card .cap-bindings strong,
+    .subject-cap-card .cap-rules-wrap strong,
+    .subject-cap-card .cap-paths strong,
+    .subject-cap-card .cap-verbs strong { display: block; color: var(--text);
+      font-weight: 600; font-size: 11px; letter-spacing: 0.06em;
+      text-transform: uppercase; margin: 0 0 4px; }
+    .subject-cap-card .cap-bindings ul,
+    .subject-cap-card .cap-rules,
+    .subject-cap-card .cap-paths ul { list-style: none; margin: 0; padding: 0;
+      display: flex; flex-direction: column; gap: 4px; }
+    .subject-cap-card .cap-bindings li,
+    .subject-cap-card .cap-rules li,
+    .subject-cap-card .cap-paths li { line-height: 1.5; }
+    .subject-cap-card code { background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px;
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+      font-size: 11.5px; color: var(--text); word-break: break-all; }
+    .subject-cap-card .cap-verbs { margin: 0; font-size: 12.5px;
+      color: var(--text-mut); line-height: 1.7; }
+    .subject-cap-card .cap-verbs code { display: inline-block; margin: 2px 4px 0 0;
+      color: #e8b86b; background: rgba(255,180,80,0.10);
+      border: 1px solid rgba(255,180,80,0.22); }
+    .subject-cap-card .cap-paths li { color: var(--text); font-size: 12px; }
+    .subject-cap-card .cap-paths li::before { content: '\21D2'; color: var(--accent-2);
+      margin-right: 6px; font-weight: 700; }
+
     main { max-width: 1280px; margin: 0 auto; padding: 24px 28px 80px; }
     section { margin-bottom: 24px; }
 
@@ -2311,7 +2369,7 @@
             the granular RBAC rules into one row per resource so the operator can scan them. When the
             engine detected a privesc chain from this subject the card is tagged
             <span class="badge-chain">chain-amplified</span> and the chain summaries appear at the
-            bottom — those are the principals to prune first.
+            bottom: those are the principals to prune first.
           </p>
         </div>
         <div class="subject-cap-grid">
