@@ -41,6 +41,8 @@ var (
 	refNetworkPolicies = models.Reference{Title: "Kubernetes — Network Policies", URL: "https://kubernetes.io/docs/concepts/services-networking/network-policies/"}
 	refCISBenchmark532 = models.Reference{Title: "CIS Kubernetes Benchmark 5.3.2 — All namespaces should have NetworkPolicies", URL: "https://www.cisecurity.org/benchmark/kubernetes"}
 	refNSAHardening    = models.Reference{Title: "NSA/CISA Kubernetes Hardening Guidance v1.2 (PDF)", URL: "https://media.defense.gov/2022/Aug/29/2003066362/-1/-1/0/CTR_KUBERNETES_HARDENING_GUIDANCE_1.2_20220829.PDF"}
+	refIMDSv2          = models.Reference{Title: "AWS — Use IMDSv2 and the metadata hop-limit", URL: "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-IMDS-existing-instances.html"}
+	refEKSIMDSPrivesc  = models.Reference{Title: "Christophe Tafani-Dereeper — EKS privilege escalation via worker node IAM", URL: "https://blog.christophetd.fr/privilege-escalation-in-aws-elastic-kubernetes-service-eks-by-compromising-the-instance-role-of-worker-nodes/"}
 )
 
 func contentNetpolCoverage001(namespace string) ruleContent {
@@ -221,5 +223,130 @@ func contentNetpolWeakness001(namespace, policyName string) ruleContent {
 			{Title: "vCluster — NetworkPolicies for multi-tenant isolation", URL: "https://www.vcluster.com/blog/kubernetes-network-policies-for-isolating-namespaces"},
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1046, mitreT1018, mitreT1090, mitreT1078_004},
+	}
+}
+
+// contentNetpolCrossNS001 is the rule prose for KUBE-NETPOL-CROSSNS-001 (Cross-namespace
+// communication map). One entry per (sourceNS, targetNS, direction) tuple where at least
+// one endpoint is a sensitive namespace (kube-system / kube-public / kube-node-lease /
+// default / gatekeeper-system) or where the peer's namespaceSelector is empty.
+func contentNetpolCrossNS001(pair crossNSPair) ruleContent {
+	sourceLabel := pair.SourceNS
+	if sourceLabel == "*" {
+		sourceLabel = "every namespace in the cluster"
+	}
+	directionLabel := "ingress from"
+	if pair.Direction == directionEgress {
+		directionLabel = "egress to"
+	}
+
+	return ruleContent{
+		Title: fmt.Sprintf("NetworkPolicy `%s/%s` opens cross-namespace %s `%s` (target `%s`)", pair.PolicyNamespace, pair.PolicyName, pair.Direction, sourceLabel, pair.TargetNS),
+		Scope: models.Scope{
+			Level:  models.ScopeObject,
+			Detail: fmt.Sprintf("NetworkPolicy `%s/%s`: cross-namespace %s `%s`", pair.PolicyNamespace, pair.PolicyName, directionLabel, sourceLabel),
+		},
+		Description: fmt.Sprintf("NetworkPolicy `%s/%s` declares a peer that crosses a namespace boundary. The %s rule references `%s`, which is a different namespace from the policy's own `%s` and either the source or the target is a *sensitive* namespace (a control-plane namespace such as `kube-system`, `kube-public`, or `kube-node-lease`, the implicit `default` namespace, or `gatekeeper-system`).\n\n"+
+			"Namespace boundaries are the cheapest soft-tenancy primitive Kubernetes offers. A cross-namespace allow rule that pierces one of the sensitive namespaces is structurally suspicious because those namespaces tend to host either the cluster control plane (kube-system DaemonSets, the kubelet's apiserver client) or the catch-all destination for workloads that omit `metadata.namespace`. Tenancy-aware operators want explicit, narrowly-labeled selectors for these edges, not a broad cross-NS allow.\n\n"+
+			"In particular, an *ingress* rule that admits `kube-system` (or `*` / every namespace) gives every control-plane pod a path into the selected workload. An *egress* rule that admits traffic back into `kube-system` lets a compromised pod talk to control-plane services (CoreDNS, kube-proxy sidecars) that may run with elevated privilege or expose admin-only endpoints. The wildcard form (`namespaceSelector: {}`) is the worst variant: it matches every present and future namespace, so future tenants are silently bridged the moment they are created.",
+			pair.PolicyNamespace, pair.PolicyName, pair.Direction, sourceLabel, pair.PolicyNamespace),
+		Impact: fmt.Sprintf("Workloads selected by `%s` participate in cross-namespace traffic with `%s`, bypassing namespace-level isolation between tenants. The blast radius grows when the bridged namespace is a control-plane namespace because the bridge crosses a privilege boundary as well as a tenancy boundary.", pair.PolicyName, sourceLabel),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker compromises any pod in `%s` (or any namespace, when the source is `*`).", sourceLabel),
+			fmt.Sprintf("They open a TCP connection to the pods selected by `%s.spec.podSelector` in `%s`. The cross-namespace allow rule matches, so the connection succeeds when other tenant pods would be denied.", pair.PolicyName, pair.TargetNS),
+			fmt.Sprintf("They exploit an application-layer issue on the now-reachable port (auth bypass, weak credential, RCE) and gain a foothold in `%s`.", pair.TargetNS),
+			fmt.Sprintf("From `%s`, they pivot using mounted ServiceAccount tokens, in-namespace secrets, and any further allow rules that originate from this newly-owned pod.", pair.TargetNS),
+			"If the bridged namespace was a control-plane namespace, the attacker now has a usable position adjacent to control-plane services and can attempt to enumerate or impersonate the more privileged identities those services run as.",
+		},
+		Remediation: "Replace the cross-namespace peer with an explicit, narrowly-labeled `namespaceSelector` and a sibling `podSelector` that names the small set of pods that legitimately need this traffic, and confirm with the platform team whether the bridge is required at all.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Audit `%s/%s` and confirm whether the cross-namespace allow rule is intentional. Most cross-NS rules touching `kube-system` / `default` are leftovers from a debug session.", pair.PolicyNamespace, pair.PolicyName),
+			"If the bridge is not intentional, delete the offending peer (`kubectl edit netpol`).",
+			"If the bridge is intentional, label the source namespace with a stable, policy-meaningful key (e.g., `tenancy.example.com/role: shared-egress`) and switch the peer to `matchLabels` for that key paired with a `podSelector`.",
+			fmt.Sprintf("Validate from a netshoot pod in `%s`: confirm allowed connections succeed and unrelated namespaces are still denied.", pair.TargetNS),
+			"Add a Kyverno or Gatekeeper rule that warns on any new NetworkPolicy whose `namespaceSelector` matches `kube-system` / `kube-public` / `default` or is empty.",
+		},
+		LearnMore: []models.Reference{
+			refNetworkPolicies,
+			{Title: "Kubernetes — Pod-to-Pod Communication semantics", URL: "https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors"},
+			{Title: "vCluster — NetworkPolicies for multi-tenant isolation", URL: "https://www.vcluster.com/blog/kubernetes-network-policies-for-isolating-namespaces"},
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1046, mitreT1018, mitreT1090, mitreT1078_004},
+	}
+}
+
+// contentNetpolIMDS001 is the rule prose for KUBE-NETPOL-IMDS-001 (workload egress can
+// reach 169.254.169.254). One entry per workload; renders slightly differently depending
+// on whether the cause is "no egress policy applies" or "an explicit allow rule includes
+// the IMDS endpoint".
+func contentNetpolIMDS001(item imdsFinding) ruleContent {
+	wl := item.Workload
+	rid := fmt.Sprintf("%s/%s/%s", wl.Kind, wl.Namespace, wl.Name)
+
+	var (
+		title       string
+		description string
+		impact      string
+		scenario    []string
+	)
+
+	switch item.Reason {
+	case imdsReasonNoEgressPolicy:
+		title = fmt.Sprintf("Workload `%s` has no egress NetworkPolicy, so 169.254.169.254 (cloud IMDS) is reachable", rid)
+		description = fmt.Sprintf("Workload `%s` runs in namespace `%s` and is not selected by any NetworkPolicy with `policyTypes: [Egress]`. Kubernetes' default for non-isolated pods is allow-all egress, so this pod can open TCP/UDP connections to any destination, including the link-local cloud Instance Metadata Service at `169.254.169.254`.\n\n"+
+			"IMDS is the single most attacked egress destination in cloud Kubernetes. On AWS, a pod that can reach `169.254.169.254/latest/meta-data/iam/security-credentials/` can mint the node's IAM role credentials and pivot from container RCE to full cloud-account compromise. The same primitive exists on Azure (`169.254.169.254/metadata/instance`) and GCP (`metadata.google.internal`, served from the same link-local IP). IMDSv2 with `hop-limit = 1` (AWS) is the node-level defense, but a NetworkPolicy egress deny is the cluster-level defense and the only one a Kubernetes operator controls directly.\n\n"+
+			"The fix is to put the workload under an egress NetworkPolicy that, at a minimum, denies the IMDS range. The strongest pattern is a namespace-wide default-deny-egress baseline plus narrow per-workload allow rules; the more incremental pattern is a single namespace-wide NetworkPolicy that selects `podSelector: {}` and lists every allowed peer except an `ipBlock 0.0.0.0/0` with `except: [169.254.169.254/32]`.",
+			rid, wl.Namespace)
+		impact = "A compromised pod (RCE, leaked credential, sidecar SSRF) can scrape node IAM credentials from IMDS within seconds, escalating from container compromise to cloud-account compromise."
+		scenario = []string{
+			fmt.Sprintf("Attacker gains RCE in `%s` via an application vulnerability (e.g., SSRF, dependency exploit).", rid),
+			"They send an IMDSv1 request: `curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/`. The request is not blocked because no egress policy applies.",
+			"They use the returned IAM credentials with `aws sts get-caller-identity` to confirm the role, then enumerate the cloud account (S3 buckets, RDS, IAM users).",
+			"They exfiltrate secrets and pivot inside the cloud account using the worker node's role permissions.",
+			"They optionally open an outbound C2 channel to attacker infrastructure; the same lack of egress restriction allows the outbound TLS connection.",
+		}
+	case imdsReasonExplicitAllow:
+		offender := item.OffenderCIDR
+		offenderPolicy := fmt.Sprintf("%s/%s", item.OffenderPolicyNamespace, item.OffenderPolicyName)
+		title = fmt.Sprintf("Workload `%s` has an egress policy whose `ipBlock: %s` admits cloud IMDS (`169.254.169.254`)", rid, offender)
+		description = fmt.Sprintf("Workload `%s` is selected by NetworkPolicy `%s`, which contains an egress `to:` peer with `ipBlock.cidr: %s`. That CIDR includes `169.254.169.254` and the policy's `except:` list does not carve it out, so the cloud Instance Metadata Service is reachable from the selected pods.\n\n"+
+			"This is the most common foot-gun in egress policies. Operators often add `ipBlock: 0.0.0.0/0` (or `169.254.0.0/16`, the full link-local range) to allow \"general internet\" or \"any AWS API\" reach, not realizing that the link-local IMDS endpoint is included in the same range. The defense is to add an `except: [169.254.169.254/32]` carve-out (or to use a narrower allow ipBlock that does not include link-local at all).\n\n"+
+			"On AWS the second-layer defense is IMDSv2 with hop-limit = 1, which blocks pods on the host network from reaching IMDS via the node's address. But hop-limit only helps when the cluster-level NetworkPolicy is also in place; a pod with explicit egress to `0.0.0.0/0` can still construct an IMDSv2 request when the hop-limit allows it.",
+			rid, offenderPolicy, offender)
+		impact = "Despite having an egress NetworkPolicy in place, the workload retains a usable path to cloud IMDS. Container RCE -> cloud-account compromise stays one curl away."
+		scenario = []string{
+			fmt.Sprintf("Attacker compromises a pod selected by `%s.spec.podSelector` (the policy that admits IMDS).", offenderPolicy),
+			fmt.Sprintf("They reach IMDS at `http://169.254.169.254/latest/meta-data/iam/security-credentials/` because the `ipBlock: %s` allow rule includes the IMDS IP.", offender),
+			"They exfiltrate the worker node's IAM credentials and pivot into the cloud account.",
+			"The NetworkPolicy gives operators a false sense of \"egress is restricted\" while the most dangerous destination is still reachable.",
+			"On AWS specifically, IMDSv2 hop-limit = 1 may have been deployed at the node level, but the NetworkPolicy's broad ipBlock means the pod can still issue an IMDSv2 token request that the hop-limit permits.",
+		}
+	}
+
+	return ruleContent{
+		Title: title,
+		Scope: models.Scope{
+			Level:  models.ScopeWorkload,
+			Detail: fmt.Sprintf("Workload `%s`: egress to `%s` is reachable.", rid, imdsIP),
+		},
+		Description:    description,
+		Impact:         impact,
+		AttackScenario: scenario,
+		Remediation:    "Apply or tighten an egress NetworkPolicy in the workload's namespace that denies `169.254.169.254/32` explicitly, and pair it with IMDSv2 hop-limit = 1 at the node layer.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Apply a default-deny-egress policy in `%s` (`podSelector: {}`, `policyTypes: [Egress]`).", wl.Namespace),
+			"Add an explicit DNS allow policy (UDP/TCP 53 to kube-system) so application hostname resolution still works.",
+			"For each workload that requires legitimate outbound, add a tight `to:` clause. Prefer `namespaceSelector + podSelector` for in-cluster destinations and an `ipBlock` with `except: [169.254.169.254/32]` for genuine internet reach.",
+			fmt.Sprintf("Validate from inside the pod: `kubectl exec %s -n %s -- curl --max-time 3 http://169.254.169.254/` must time out.", wl.Name, wl.Namespace),
+			"On AWS, set the launch-template `HttpPutResponseHopLimit = 1` so IMDSv2 token requests from pods routed via the node's network namespace are denied at the hypervisor.",
+			"Add a Kyverno or Gatekeeper policy that rejects any new NetworkPolicy whose egress ipBlock contains `169.254.169.254` without an `except:` carve-out.",
+		},
+		LearnMore: []models.Reference{
+			refNetworkPolicies,
+			refIMDSv2,
+			refEKSIMDSPrivesc,
+			{Title: "Calico GlobalNetworkPolicy reference", URL: "https://docs.tigera.io/calico/latest/reference/resources/globalnetworkpolicy"},
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1552_005, mitreT1078_004, mitreT1041, mitreT1071},
 	}
 }

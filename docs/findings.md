@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **50 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **54 distinct rule IDs across 9 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Findings Library — Implemented
 
@@ -61,15 +61,28 @@ These rules compare granted RBAC permissions against observed usage from a kube-
 | KUBE-SA-DEFAULT-001 | MEDIUM | Default service account in use | Workload mounts the namespace `default` SA | Bind a dedicated least-privilege SA |
 | KUBE-IMAGE-LATEST-001 | LOW | Mutable image tag used | `:latest` or no tag | Pin to an immutable tag or digest |
 
+### Container Security ([internal/analyzer/containersec/analyzer.go](../internal/analyzer/containersec/analyzer.go))
+
+This module surfaces container-template settings that weaken runtime hardening without granting RBAC. Findings aggregate per workload (controller-owned pods are skipped to avoid duplicate findings, mirroring the podsec module). The image-pin rule is intentionally scoped to digest pinning so it does not duplicate `KUBE-IMAGE-LATEST-001` above, which already flags mutable image tags.
+
+| Rule ID | Sev | Title | What it detects | Remediation |
+| --- | --- | --- | --- | --- |
+| KUBE-CONTAINER-LIFECYCLE-001 | MEDIUM | Container declares a non-trivial lifecycle exec hook | `lifecycle.postStart.exec` or `lifecycle.preStop.exec` with a command beyond `sleep N` | Move the work into the image or an init container; if needed, replace inline `sh -c` with a small auditable script |
+| KUBE-CONTAINER-LIMITS-001 | MEDIUM | Container missing CPU / memory limits or requests | One or more of `resources.{limits,requests}.{cpu,memory}` is unset on a container template | Set explicit `requests` + `limits`; add a namespace `LimitRange` default and a `ResourceQuota` |
+| KUBE-CONTAINER-IMAGE-001 | MEDIUM | Container image is not digest-pinned and pulled `Always` | Image lacks `@sha256:` and `imagePullPolicy: Always` (explicit or kubelet default for `:latest`) | Pin to `registry/app@sha256:<digest>`; sign and verify with cosign / Sigstore |
+| KUBE-CONTAINER-PROBE-001 | LOW | Container has neither liveness nor readiness probe | Both `livenessProbe` and `readinessProbe` are absent on a container template | Add a readiness probe gated on real dependencies and a small liveness probe; tune `initialDelaySeconds` |
+
 ### Network Policy ([internal/analyzer/network/analyzer.go](../internal/analyzer/network/analyzer.go))
 
 | Rule ID | Sev | Title | What it detects | Remediation |
 | --- | --- | --- | --- | --- |
 | KUBE-NETPOL-COVERAGE-001 | HIGH | Namespace has no NetworkPolicies | Non-system namespace with zero policies | Add a default-deny, then allow explicitly |
 | KUBE-NETPOL-WEAKNESS-002 | HIGH | NetworkPolicy permits internet egress | Egress rule targets `0.0.0.0/0` or `::/0` | Restrict to required CIDRs or services |
+| KUBE-NETPOL-IMDS-001 | HIGH | Workload egress can reach cloud IMDS `169.254.169.254` | No egress policy applies OR an explicit ipBlock admits the IMDS endpoint without an `except:` carve-out | Apply a default-deny-egress policy and carve out IMDS with `except: [169.254.169.254/32]`; pair with IMDSv2 hop-limit = 1 |
 | KUBE-NETPOL-COVERAGE-002 | MEDIUM | Workload is not selected by any NetworkPolicy | Pod in a policy-bearing namespace but no policy matches it | Add a selector or apply a baseline policy |
 | KUBE-NETPOL-COVERAGE-003 | MEDIUM | Ingress policies present but egress remains open | Namespace has ingress rules but no egress | Add explicit egress rules or a default-deny egress |
 | KUBE-NETPOL-WEAKNESS-001 | MEDIUM | NetworkPolicy allows ingress from all namespaces | Empty namespace selector in ingress | Use explicit namespace labels |
+| KUBE-NETPOL-CROSSNS-001 | MEDIUM | NetworkPolicy bridges a sensitive namespace | Ingress or egress peer's `namespaceSelector` matches a sensitive namespace (`kube-system`, `kube-public`, `kube-node-lease`, `default`, `gatekeeper-system`) other than the policy's own, or is empty (matches all) | Replace the cross-namespace peer with a narrow `matchLabels` + `podSelector` pair |
 
 ### Admission Webhooks ([internal/analyzer/admission/analyzer.go](../internal/analyzer/admission/analyzer.go))
 
@@ -94,8 +107,12 @@ These appear on `Finding.Tags` (visible in JSON, CSV, and SARIF output) and desc
 | --- | --- | --- | --- | --- |
 | KUBE-SECRETS-001 | HIGH | Long-lived service account token secret | `type: kubernetes.io/service-account-token` | Prefer projected tokens; delete legacy secrets |
 | KUBE-CONFIGMAP-002 | HIGH | CoreDNS configuration contains risky directives | `rewrite` / `forward` in Corefile | Review intent; restrict write access to coredns configmap |
+| KUBE-CONFIGMAP-CREDS-001 | HIGH | ConfigMap key matches a high-confidence credential pattern | Per-key match on `password`/`passwd`/`secret`/`token`/`api_key`/`apikey`/`aws_secret_access_key`/`dsn`/`connection_string`/`client_secret`/`private_key`/`access_key` | Move credential to a Secret or external secret store; remove the key |
 | KUBE-SECRETS-002 | MEDIUM | Opaque secret stored in kube-system | User `Opaque` secret in `kube-system` | Move to an app namespace and restrict readers |
 | KUBE-CONFIGMAP-001 | MEDIUM | ConfigMap contains credential-like keys | Key name matches `password`/`token`/`key`/`api_key`/… | Move to a Secret or external secret manager |
+| KUBE-SECRETS-CROSSNS-001 | MEDIUM | Workload SA can read Secrets in another namespace | Pod-mounted ServiceAccount has `get`/`list`/`watch` on `secrets` in a namespace other than where the workload runs (one finding per `(subject, target_namespace)`) | Move workload into target ns, narrow to Role + `resourceNames`, or use operator selector mechanisms |
+| KUBE-SECRETS-TLS-EXPIRY-001 | MEDIUM | TLS Secret expired or expires within 30 days | `type: kubernetes.io/tls` with `cert-manager.io/not-after` (or `notafter`/`expiration`) annotation in the past or within 30d. Best-effort: secrets without the annotation are silently skipped | Force renewal via cert-manager (`cmctl renew`), check Issuer health, add expiry alerts |
+| KUBE-SECRETS-STALE-001 | LOW | Secret unreferenced by any Pod or ServiceAccount | Secret name not found in pod env / envFrom / volumes / SA `secrets` / SA `imagePullSecrets`. Skips `service-account-token` type | Confirm no out-of-snapshot consumer; rotate at source; delete |
 
 ### Service Account ([internal/analyzer/serviceaccount/analyzer.go](../internal/analyzer/serviceaccount/analyzer.go))
 
@@ -132,7 +149,7 @@ The following rules are on the roadmap but not yet implemented. See [PLAN.md](..
 
 **Network** — cross-namespace communication map; egress to cloud metadata endpoint `169.254.169.254`.
 
-**Secrets** — stale/unreferenced secrets; cross-namespace secret references; TLS secret expiry; `aws-auth` ConfigMap analysis; EncryptionConfiguration audit.
+**Secrets** — `aws-auth` ConfigMap analysis; EncryptionConfiguration audit. (Stale/unreferenced secrets, cross-namespace secret references, TLS secret expiry, and ConfigMap credential heuristics shipped in Wave 1 slot #12 above.)
 
 **Service Account** — cross-module risk correlation; DaemonSet blast-radius flag.
 

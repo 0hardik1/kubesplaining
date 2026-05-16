@@ -1,0 +1,5 @@
+# Wave 1 slot #13 — NetPol bundle (cross-ns map + IMDS-endpoint egress detection).
+# See testdata/e2e/vulnerable/13-netpol.yaml for the workloads + policies that
+# trigger these rules.
+KUBE-NETPOL-CROSSNS-001
+KUBE-NETPOL-IMDS-001

@@ -116,6 +116,10 @@ func Write(path string, cfg Config) error {
 // line in config.go.
 var wave1RulePrefixes = []string{
 	// "KUBE-CONTAINER-*",        // W1 #9 Container Security analyzer
+	// W1 #13 NetPol bundle: the rules are surfaced by default — operators
+	// who want them muted can re-add the patterns to their own exclusions
+	// file. The placeholder lines stay in this slice as documentation of
+	// what slots the standard preset reserves for future tuning.
 	// "KUBE-NETPOL-IMDS-*",      // W1 #13 NetPol IMDS egress
 	// "KUBE-NETPOL-CROSSNS-*",   // W1 #13 NetPol cross-namespace map
 	// "KUBE-SECRETS-STALE-*",    // W1 #12 Secrets bundle
