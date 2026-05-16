@@ -280,6 +280,64 @@ func TestCIDRHintContainment(t *testing.T) {
 	}
 }
 
+func TestRenderScoringTooltipNilFactors(t *testing.T) {
+	// Hand-picked-score path: ScoreFactors is nil, so the tooltip degrades to
+	// just the final score with no formula.
+	f := models.Finding{Score: 7.4}
+	got := renderScoringTooltip(f)
+	want := "Score 7.4"
+	if got != want {
+		t.Errorf("renderScoringTooltip(nil factors) = %q, want %q", got, want)
+	}
+}
+
+func TestRenderScoringTooltipWithFactorsNoChain(t *testing.T) {
+	// Factor-driven path with no chain amplification: omits the "+ chain" suffix
+	// to keep the tooltip compact.
+	f := models.Finding{
+		Score: 7.2,
+		ScoreFactors: &models.ScoreFactors{
+			Base:           6.0,
+			Exploitability: 1.2,
+			BlastRadius:    1.0,
+			ChainModifier:  0.0,
+		},
+	}
+	got := renderScoringTooltip(f)
+	want := "Score 7.2 = base 6.0 × exploit 1.2 × blast 1.0"
+	if got != want {
+		t.Errorf("renderScoringTooltip(no chain) = %q, want %q", got, want)
+	}
+}
+
+func TestRenderScoringTooltipWithChain(t *testing.T) {
+	// Chain-amplified path: the "+ chain N.N" suffix appears.
+	f := models.Finding{
+		Score: 8.4,
+		ScoreFactors: &models.ScoreFactors{
+			Base:           6.0,
+			Exploitability: 1.2,
+			BlastRadius:    1.0,
+			ChainModifier:  1.2,
+		},
+	}
+	got := renderScoringTooltip(f)
+	want := "Score 8.4 = base 6.0 × exploit 1.2 × blast 1.0 + chain 1.2"
+	if got != want {
+		t.Errorf("renderScoringTooltip(with chain) = %q, want %q", got, want)
+	}
+}
+
+func TestRenderScoringTooltipZeroScore(t *testing.T) {
+	// Edge case: nil factors and zero score still produce a usable tooltip.
+	f := models.Finding{}
+	got := renderScoringTooltip(f)
+	want := "Score 0.0"
+	if got != want {
+		t.Errorf("renderScoringTooltip(zero) = %q, want %q", got, want)
+	}
+}
+
 func TestMutableImageHint(t *testing.T) {
 	cases := map[string]string{
 		"nginx:latest": ":latest is mutable",
