@@ -1616,30 +1616,6 @@
     </section>
     {{ end }}
 
-    {{ if .SubjectCapCards }}
-    <section class="subject-caps" data-tab="leastprivilege">
-      <div class="card soft">
-        <div class="kicker">Per-subject capabilities</div>
-        <h2>What each principal can actually do</h2>
-        <div class="subject-cap-grid">
-          {{ range .SubjectCapCards }}
-          <article class="subject-cap-card sev-{{ sevClass .HighestSeverity }}">
-            <header><h3>{{ .SubjectLabel }}</h3></header>
-            {{ if .EffectiveVerbs }}<p class="cap-verbs"><strong>Verbs:</strong> {{ range .EffectiveVerbs }}<code>{{ . }}</code> {{ end }}</p>{{ end }}
-            {{ if .EffectiveRules }}<ul class="cap-rules">{{ range .EffectiveRules }}<li>{{ . }}</li>{{ end }}</ul>{{ end }}
-            {{ if .PrivescPaths }}
-            <div class="cap-paths">
-              <strong>Privesc paths:</strong>
-              <ul>{{ range .PrivescPaths }}<li>{{ . }}</li>{{ end }}</ul>
-            </div>
-            {{ end }}
-          </article>
-          {{ end }}
-        </div>
-      </div>
-    </section>
-    {{ end }}
-
     {{ if .Graph.Nodes }}
     <section data-tab="attack">
       <div class="card kp-graph-card">
@@ -2250,6 +2226,53 @@
           </tbody>
         </table>
       </details>
+      {{ end }}
+
+      {{ if .SubjectCapCards }}
+      <section class="subject-caps">
+        <div class="lp-caps-hd">
+          <h2>What each principal can actually do</h2>
+          <p class="lp-caps-sub">
+            The Cloudsplaining-style per-subject view: every RBAC subject that fires a finding or
+            holds a cluster-admin-equivalent grant gets one card. <strong>Bindings</strong> lists the
+            (Cluster)RoleBindings that grant the subject its permissions; <strong>Effective verbs</strong>
+            is the deduped verb set across all bound roles; <strong>Effective rules</strong> collapses
+            the granular RBAC rules into one row per resource so the operator can scan them. When the
+            engine detected a privesc chain from this subject the card is tagged
+            <span class="badge-chain">chain-amplified</span> and the chain summaries appear at the
+            bottom — those are the principals to prune first.
+          </p>
+        </div>
+        <div class="subject-cap-grid">
+          {{ range .SubjectCapCards }}
+          <article class="subject-cap-card sev-{{ sevClass .HighestSeverity }}">
+            <header class="subject-cap-hd">
+              <h3>{{ .SubjectLabel }}</h3>
+              {{ if .ChainAmplified }}<span class="badge-chain" title="A privesc chain originates from this subject">chain-amplified</span>{{ end }}
+            </header>
+            {{ if .Bindings }}
+            <div class="cap-bindings">
+              <strong>Bindings:</strong>
+              <ul>{{ range .Bindings }}<li><code>{{ . }}</code></li>{{ end }}</ul>
+            </div>
+            {{ end }}
+            {{ if .EffectiveVerbs }}<p class="cap-verbs"><strong>Effective verbs:</strong> {{ range .EffectiveVerbs }}<code>{{ . }}</code> {{ end }}</p>{{ end }}
+            {{ if .EffectiveRules }}
+            <div class="cap-rules-wrap">
+              <strong>Effective rules:</strong>
+              <ul class="cap-rules">{{ range .EffectiveRules }}<li><code>{{ . }}</code></li>{{ end }}</ul>
+            </div>
+            {{ end }}
+            {{ if .PrivescPaths }}
+            <div class="cap-paths">
+              <strong>Privesc paths originating here:</strong>
+              <ul>{{ range .PrivescPaths }}<li>{{ . }}</li>{{ end }}</ul>
+            </div>
+            {{ end }}
+          </article>
+          {{ end }}
+        </div>
+      </section>
       {{ end }}
 
       {{ range .LeastPrivilege.Groups }}

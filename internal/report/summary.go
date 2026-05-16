@@ -253,16 +253,6 @@ func buildTopFixes(_ []models.Finding) []TopFix {
 	return nil
 }
 
-// buildPerSubjectCapabilities is the Wave 0 stub for the per-ServiceAccount
-// "what can this principal actually do" capability cards
-// (STRATEGY.md:32, plan slot W1 #7). Wave 1 will read aggregated EffectiveRules
-// from internal/permissions/aggregate.go plus the privesc paths originating
-// from each subject. Returns nil for now so the {{ if .SubjectCapCards }}
-// template gate suppresses the section.
-func buildPerSubjectCapabilities(_ models.Snapshot, _ []models.Finding) []SubjectCapabilityCard {
-	return nil
-}
-
 // BuildScoringTooltip is the Wave 0 helper that converts a finding into the
 // ScoringBreakdown surfaced in the HTML score tooltip (STRATEGY.md:155, plan
 // slot W1 #6). When ScoreFactors is nil (the legacy hand-picked-score path),
