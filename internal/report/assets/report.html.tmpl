@@ -536,6 +536,43 @@
     .truncation-banner strong { color: var(--text); font-weight: 600; }
     .truncation-banner code { color: var(--accent); background: rgba(106,183,255,0.10); padding: 1px 4px; border-radius: 4px; }
 
+    /* Hero "Critical attack chains" panel (W1 #4, STRATEGY.md:151). Sits directly
+       under the executive-summary card so the most dangerous chains are the first
+       artefact a reader sees, with the full hop list rendered inline (no
+       click-through). The visual treatment mirrors the .tldr critical accent so
+       cluster-takeover paths read as the report's loudest signal. */
+    .hero-chains { margin-top: 16px; }
+    .hero-chains h2 { margin: 4px 0 6px; font-size: 18px; }
+    .hero-chains-intro { color: var(--text-mut); font-size: 13.5px; line-height: 1.55; margin: 0 0 14px; }
+    .hero-chain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    .hero-chain-card { padding: 14px 16px 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: rgba(21,28,44,0.55);
+      border-left: 3px solid var(--text-mut); }
+    .hero-chain-card.sev-crit { border-left-color: var(--critical);
+      background: linear-gradient(90deg, var(--critical-soft), rgba(21,28,44,0.55) 70%); }
+    .hero-chain-card.sev-high { border-left-color: #ff9a3c;
+      background: linear-gradient(90deg, rgba(255,154,60,0.13), rgba(21,28,44,0.55) 70%); }
+    .hero-chain-card.sev-med { border-left-color: #f5d76e;
+      background: linear-gradient(90deg, rgba(245,215,110,0.10), rgba(21,28,44,0.55) 70%); }
+    .hero-chain-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+      font-size: 14.5px; font-weight: 600; color: var(--text); }
+    .hero-chain-title a { color: var(--text); text-decoration: none; border-bottom: 1px dashed transparent; }
+    .hero-chain-title a:hover { border-bottom-color: var(--accent); color: var(--accent); }
+    .hero-chain-score { font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+      color: var(--text-mut); padding: 2px 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.05); border: 1px solid var(--border); }
+    .hero-chain-card.sev-crit .hero-chain-score { color: #ffb4be; background: var(--critical-soft); border-color: var(--critical-edge); }
+    .hero-chain-card.sev-high .hero-chain-score { color: #ffd6a8; background: rgba(255,154,60,0.13); border-color: rgba(255,154,60,0.35); }
+    .hero-chain-summary { margin: 8px 0 10px; font-size: 13.5px; line-height: 1.55; color: var(--text-mut); }
+    .hero-chain-summary code { color: var(--accent); background: rgba(106,183,255,0.10); padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+    .hero-chain-hops { list-style: decimal; margin: 6px 0 0; padding-left: 22px;
+      display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-mut); }
+    .hero-chain-hops li { line-height: 1.5; }
+    .hero-chain-hops strong { color: var(--text); font-weight: 600; text-transform: lowercase; letter-spacing: 0; }
+    .hero-chain-hops code { color: var(--accent); background: rgba(106,183,255,0.08); padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+    .hero-chain-hops code.hero-chain-sink { color: #ffb4be; background: var(--critical-soft); border: 1px solid var(--critical-edge); text-transform: lowercase; letter-spacing: 0.04em; }
+    .hero-chain-hops em { color: var(--text-mut); font-style: italic; font-size: 11.5px; }
+
     /* Cluster reconnaissance - collapsible top-of-report panel surfacing
        pentester-relevant snapshot facts. Sits as the first card inside <main>
        (above the executive-summary hero) so the recon view is the first thing
@@ -1579,15 +1616,16 @@
       <div class="card soft">
         <div class="kicker">Critical attack chains</div>
         <h2>Cluster-takeover paths</h2>
+        <p class="hero-chains-intro">{{ if eq (len .HeroChains) 1 }}The chain below is the most direct route{{ else }}The {{ len .HeroChains }} chains below are the most direct routes{{ end }} from a non-system identity to a sensitive sink in this cluster. Each step is annotated with the RBAC permission that enables it; jump to the rule card for full remediation.</p>
         <ol class="hero-chain-list">
-          {{ range .HeroChains }}
-          <li class="hero-chain-card sev-{{ sevClass .Severity }}">
-            <div class="hero-chain-title"><a href="#{{ .Anchor }}">{{ .Title }}</a> <span class="hero-chain-score">{{ score .Score }}</span></div>
-            {{ if .Summary }}<p class="hero-chain-summary">{{ .Summary }}</p>{{ end }}
-            {{ if .Hops }}
+          {{ range $card := .HeroChains }}
+          <li class="hero-chain-card sev-{{ sevClass $card.Severity }}">
+            <div class="hero-chain-title"><a href="#{{ $card.Anchor }}">{{ inlineHTML $card.Title }}</a> <span class="hero-chain-score">score {{ score $card.Score }}</span></div>
+            {{ if $card.Summary }}<p class="hero-chain-summary">{{ inlineHTML $card.Summary }}</p>{{ end }}
+            {{ if $card.Hops }}
             <ol class="hero-chain-hops">
-              {{ range .Hops }}
-              <li><strong>{{ .Action }}</strong>: <code>{{ .FromSubject.Kind }}/{{ if .FromSubject.Namespace }}{{ .FromSubject.Namespace }}/{{ end }}{{ .FromSubject.Name }}</code> &rarr; <code>{{ .ToSubject.Kind }}/{{ if .ToSubject.Namespace }}{{ .ToSubject.Namespace }}/{{ end }}{{ .ToSubject.Name }}</code>{{ if .Permission }} <em>({{ .Permission }})</em>{{ end }}</li>
+              {{ range $i, $hop := $card.Hops }}
+              <li><strong>{{ $hop.Action }}</strong>: <code>{{ $hop.FromSubject.Kind }}/{{ if $hop.FromSubject.Namespace }}{{ $hop.FromSubject.Namespace }}/{{ end }}{{ $hop.FromSubject.Name }}</code> &rarr; {{ if and $hop.ToSubject.Kind $hop.ToSubject.Name }}<code>{{ $hop.ToSubject.Kind }}/{{ if $hop.ToSubject.Namespace }}{{ $hop.ToSubject.Namespace }}/{{ end }}{{ $hop.ToSubject.Name }}</code>{{ else }}<code class="hero-chain-sink">{{ $card.Sink }}</code>{{ end }}{{ if $hop.Permission }} <em>({{ $hop.Permission }})</em>{{ end }}</li>
               {{ end }}
             </ol>
             {{ end }}

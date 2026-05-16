@@ -143,6 +143,229 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 	return narratives
 }
 
+// buildHeroChains computes the 1-3 most severe attack chains to surface above-the-fold
+// in the HTML report (STRATEGY.md:151, plan slot W1 #4). It filters findings to the
+// privesc graph paths (RuleID prefix "KUBE-PRIVESC-PATH-"), ranks them so cluster-takeover
+// paths sit at the top, and renders each as a HeroChainCard with the full hop list inline
+// (no click-through). Returns nil when no privesc paths exist; the
+// `{{ if .HeroChains }}` template gate then suppresses the whole section.
+//
+// Ranking: sink-priority bucket (cluster_admin / system_masters first, then the other
+// sensitive sinks), then severity rank desc, then score desc, then hop count asc, then
+// stable on RuleID + source subject so two runs against the same snapshot produce the
+// same hero slate.
+func buildHeroChains(findings []models.Finding) []HeroChainCard {
+	const heroCap = 3
+	var paths []models.Finding
+	for _, f := range findings {
+		if !strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-") {
+			continue
+		}
+		paths = append(paths, f)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	sort.SliceStable(paths, func(i, j int) bool {
+		pi := heroSinkPriority(heroSinkSlug(paths[i]))
+		pj := heroSinkPriority(heroSinkSlug(paths[j]))
+		if pi != pj {
+			return pi < pj
+		}
+		ri := paths[i].Severity.Rank()
+		rj := paths[j].Severity.Rank()
+		if ri != rj {
+			return ri > rj
+		}
+		if paths[i].Score != paths[j].Score {
+			return paths[i].Score > paths[j].Score
+		}
+		hi := len(paths[i].EscalationPath)
+		hj := len(paths[j].EscalationPath)
+		if hi != hj {
+			return hi < hj
+		}
+		if paths[i].RuleID != paths[j].RuleID {
+			return paths[i].RuleID < paths[j].RuleID
+		}
+		return paths[i].ID < paths[j].ID
+	})
+	if len(paths) > heroCap {
+		paths = paths[:heroCap]
+	}
+	out := make([]HeroChainCard, 0, len(paths))
+	for _, f := range paths {
+		sink := heroSinkSlug(f)
+		out = append(out, HeroChainCard{
+			Title:    f.Title,
+			Severity: f.Severity,
+			Score:    f.Score,
+			Sink:     sink,
+			Summary:  heroChainSummary(f, sink),
+			Hops:     f.EscalationPath,
+			RuleID:   f.RuleID,
+			Anchor:   "finding-" + f.RuleID,
+		})
+	}
+	return out
+}
+
+// heroSinkSlug pulls the "target:<sink>" tag (set by the privesc analyzer) off a finding,
+// falling back to the last hop's destination subject name when the tag is absent. The slug
+// stays in lower_snake form ("cluster_admin", "kube_system_secrets") so callers can switch
+// on it without normalizing case.
+func heroSinkSlug(f models.Finding) string {
+	for _, tag := range f.Tags {
+		if v, ok := strings.CutPrefix(tag, "target:"); ok {
+			return v
+		}
+	}
+	if n := len(f.EscalationPath); n > 0 {
+		return f.EscalationPath[n-1].ToSubject.Name
+	}
+	return ""
+}
+
+// heroSinkPriority returns the sort weight of an escalation sink for the hero slate. Lower
+// = surfaced first. cluster_admin and system_masters are full cluster takeover, so they sit
+// at the top; kube_system_secrets and node_escape are the next tier (control-plane-blast
+// radius); namespace_admin and token_mint round out the list.
+func heroSinkPriority(sink string) int {
+	switch sink {
+	case string(models.TargetClusterAdmin), "cluster_admin":
+		return 0
+	case string(models.TargetSystemMasters):
+		return 1
+	case string(models.TargetKubeSystemSecrets):
+		return 2
+	case string(models.TargetNodeEscape):
+		return 3
+	case string(models.TargetNamespaceAdmin):
+		return 4
+	case string(models.TargetTokenMint):
+		return 5
+	default:
+		return 6
+	}
+}
+
+// heroSinkLabel renders a sink slug as a human-readable phrase used inside the
+// one-line plain-English summary on each HeroChainCard.
+func heroSinkLabel(sink string) string {
+	switch sink {
+	case string(models.TargetClusterAdmin), "cluster_admin":
+		return "cluster-admin"
+	case string(models.TargetSystemMasters):
+		return "the system:masters group"
+	case string(models.TargetKubeSystemSecrets):
+		return "kube-system secrets"
+	case string(models.TargetNodeEscape):
+		return "node root (container escape)"
+	case string(models.TargetNamespaceAdmin):
+		return "namespace-admin"
+	case string(models.TargetTokenMint):
+		return "minted service-account tokens"
+	default:
+		if sink == "" {
+			return "a sensitive sink"
+		}
+		return strings.ReplaceAll(sink, "_", " ")
+	}
+}
+
+// heroChainSummary returns the one-line plain-English narrative shown on a hero card
+// ("ServiceAccount foo in namespace bar reaches cluster-admin in 2 hops via Pod Exec
+// → Token Theft."). Falls back gracefully when the chain has no hops or the subject
+// is missing, because both fields are nominally optional on Finding.
+//
+// The hop verbs are pulled from the Techniques glossary so they read as proper titles
+// ("Pod Exec") rather than internal slugs ("pod_exec"); when no glossary entry exists
+// we fall back to humanizing the slug in place. The sentence is intentionally short
+// because the hero panel already lists every hop in detail directly below it.
+func heroChainSummary(f models.Finding, sink string) string {
+	hops := len(f.EscalationPath)
+	subject := "An unknown subject"
+	if f.Subject != nil {
+		subject = subjectChainPhrase(*f.Subject)
+	}
+	target := heroSinkLabel(sink)
+	if hops == 0 {
+		return fmt.Sprintf("%s reaches %s.", subject, target)
+	}
+	via := chainViaPhrase(f.EscalationPath)
+	if hops == 1 {
+		if via != "" {
+			return fmt.Sprintf("%s reaches %s in 1 hop via %s.", subject, target, via)
+		}
+		return fmt.Sprintf("%s reaches %s in 1 hop.", subject, target)
+	}
+	if via != "" {
+		return fmt.Sprintf("%s reaches %s in %d hops via %s.", subject, target, hops, via)
+	}
+	return fmt.Sprintf("%s reaches %s in %d hops.", subject, target, hops)
+}
+
+// chainViaPhrase joins the per-hop technique titles with arrows ("Pod Exec → Token
+// Theft"). It caps the rendered chain at three steps and appends an ellipsis so a
+// 5-hop chain never blows out the hero card's single-line summary. Returns "" when
+// no hop has any usable label.
+func chainViaPhrase(hops []models.EscalationHop) string {
+	const maxParts = 3
+	titles := make([]string, 0, len(hops))
+	for _, hop := range hops {
+		title := actionTitle(hop.Action)
+		if title == "" {
+			continue
+		}
+		titles = append(titles, title)
+	}
+	if len(titles) == 0 {
+		return ""
+	}
+	if len(titles) > maxParts {
+		titles = append(titles[:maxParts], "…")
+	}
+	return strings.Join(titles, " → ")
+}
+
+// actionTitle returns the human-readable name for an EscalationHop.Action: the
+// Techniques-glossary Title when one is registered, otherwise a humanized version
+// of the slug ("pod_exec" → "Pod exec"). Empty input returns "".
+func actionTitle(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	if entry, ok := Techniques[slug]; ok && entry.Title != "" {
+		return entry.Title
+	}
+	parts := strings.Split(slug, "_")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		runes := []rune(p)
+		if i == 0 {
+			runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
+		}
+		parts[i] = string(runes)
+	}
+	return strings.Join(parts, " ")
+}
+
+// subjectChainPhrase returns a "<Kind> X in ns Y" phrase for use inside the
+// hero-chain narrative. ServiceAccount/User/Group all read naturally with this
+// pattern; cluster-scoped subjects (no namespace) omit the trailing clause.
+func subjectChainPhrase(s models.SubjectRef) string {
+	kind := s.Kind
+	if kind == "" {
+		kind = "Subject"
+	}
+	if s.Namespace == "" {
+		return fmt.Sprintf("%s `%s`", kind, s.Name)
+	}
+	return fmt.Sprintf("%s `%s` in namespace `%s`", kind, s.Name, s.Namespace)
+}
+
 // buildHeadline returns a data-driven h1 string and the short prose that sits under it.
 // The prose is returned as template.HTML because it contains safe, pre-escaped <strong> and <code> markup.
 func buildHeadline(s Summary, narratives []NarrativeCard, ns []Hotspot) (string, template.HTML) {
