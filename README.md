@@ -8,20 +8,23 @@
 
 Kubesplaining is an open-source Kubernetes security assessment CLI that reads a live cluster or a captured snapshot and tells you exactly how an attacker can move through it. Unlike scanners that stop at "this resource is misconfigured," it builds a multi-hop RBAC privilege-escalation graph from every non-system subject to four cluster-takeover sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`) and renders each chain with the actual verbs, evidence, and remediation. Outputs are risk-prioritized HTML, JSON, CSV, and SARIF reports for human review, GitHub code scanning, or CI delta gates.
 
-<!-- Asset coming in a follow-up; see issue/TODO -->
-![demo](docs/assets/demo.gif)
+<video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
 ## Install
 
-Each of these produces the same `kubesplaining` CLI. Pick whichever fits your workflow.
+Pick whichever fits your workflow.
 
-Docker (no install needed):
+From a fresh clone (easiest, no install needed):
 
 ```bash
-docker run ghcr.io/0hardik1/kubesplaining:latest scan --help
+git clone https://github.com/0hardik1/kubesplaining
+cd kubesplaining
+make scan
 ```
+
+`make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step.
 
 Krew (Kubernetes plugin manager, submission pending):
 
@@ -46,22 +49,6 @@ Most scanners overlap on "is this pod privileged?" The differentiator is whether
 | Multi-hop RBAC privesc graph | Yes (BFS over RBAC + pod state to 4 sinks, full hop chain) | No (per-binding flags only) | No | No |
 | Per-finding remediation (patch / Kyverno / Gatekeeper) | Yes (prose + kubectl patch + policy YAML, per rule) | Partial (control description) | Partial (text only) | Partial (text only) |
 | Snapshot diff for CI delta gates | Yes (`scan --baseline old.json`, fail only on *new* findings) | No | No | No |
-
-## Screenshots
-
-The privesc graph (hop-by-hop chains color-coded by severity attenuation):
-
-![Privesc graph](docs/assets/privesc-graph.png)
-
-Per-ServiceAccount "what can this principal actually do" panel (Cloudsplaining parity, ported to Kubernetes):
-
-![Per-SA permissions](docs/assets/sa-permissions.png)
-
-SARIF results surfaced as PR annotations in GitHub's code-scanning UI:
-
-![SARIF in GitHub](docs/assets/sarif-github.png)
-
-> The CLI run + report-open walkthrough video is preserved here while the animated GIF above is being produced: <video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
 
 Inspired by [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) at [BeyondTrust Phantom Labs](https://www.linkedin.com/company/beyondtrust-phantom-labs/) and his [Cloudsplaining](https://github.com/salesforce/cloudsplaining), which does the same job for AWS IAM. Kubesplaining reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings: explanation, not just detection.
 
@@ -113,7 +100,7 @@ kubesplaining scan-resource --input-file deployment.yaml
 
 ## Installation
 
-Pick the path that fits. They all produce the same `kubesplaining` CLI. The top-of-README install snippets cover Docker, Krew, and Homebrew; this section adds the source-based options.
+Pick the path that fits. They all produce the same `kubesplaining` CLI. The top-of-README install snippets cover the from-clone path, Krew, and Homebrew; this section adds Go install, pre-built binaries, and Docker.
 
 ### Go install
 
