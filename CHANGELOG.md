@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-16
+
+This release expands kubesplaining from a detection tool into a delta-gated, remediation-aware assessment platform. The headline additions are: an audit-log-driven least-privilege analyzer (the AWS IAM Access Advisor analog for Kubernetes RBAC), a snapshot-diff `diff` command and `scan --baseline` flag so CI fails only on *new* findings, CEL-based `--custom-rules` for org-specific detections, Kyverno and Gatekeeper policy generators that turn findings into enforceable admission rules, and a new `containersec` analyzer module covering resource limits, probes, lifecycle hooks, and image pinning. A composite GitHub Action (`action.yml`) wraps the SARIF scan flow so you can wire kubesplaining into a workflow without authoring `docker run` invocations by hand.
+
+### Added
+
+- **`diff` command + `scan --baseline`** for CI delta gates. `kubesplaining diff old.json new.json` reports only new findings between two snapshots; `scan --baseline previous-findings.json` runs an analysis and fails the build only on findings that did not exist in the baseline. Pairs with `--ci-mode` so PR pipelines stop drifting on legacy findings nobody plans to fix today.
+
+- **`--custom-rules` for CEL-based detections.** New `internal/analyzer/cel` module evaluates user-supplied CEL expressions against the snapshot, producing findings the same way built-in rules do. Ship a `.cel.yaml` rule next to your manifests; `kubesplaining scan --custom-rules ./rules/` picks them up. Example rules live in `examples/custom-rules/` (`no-default-namespace.cel.yaml`, `disallow-large-replica-counts.cel.yaml`).
+
+- **`leastprivilege` analyzer module (audit-log driven).** Opt in via `--audit-log <path>` (kube-apiserver JSON-lines, or EKS CloudWatch export via `--audit-source eks`). The module compares RBAC granted to each ServiceAccount against verbs actually exercised in the audit window and flags the delta: `KUBE-RBAC-UNUSED-ROLE-001`, `KUBE-RBAC-UNUSED-RULE-001`, `KUBE-RBAC-UNUSED-VERB-001`, `KUBE-RBAC-WILDCARD-USED-PARTIAL-001`. A focused mode (`--least-privilege-only`) hides every other tab and lands on the Least Privilege view. See [`docs/audit-logs.md`](docs/audit-logs.md) for setup on kubeadm / kind / EKS.
+
+- **`containersec` analyzer module.** New rules for resource limits absent, probes missing, lifecycle hook risk, and mutable image tags. Lives alongside `podsec` and shares its evidence schema.
+
+- **`compliance` framework tags + Compliance tab.** Findings now carry CIS Kubernetes Benchmark and NSA Kubernetes Hardening Guidance control IDs where applicable; the HTML report adds a Compliance tab grouped by framework so auditors can pivot the findings list onto their existing control matrix.
+
+- **Remediation generators (one library per policy engine).**
+  - `internal/remediation/kubectl-patch`: kubectl-patch payloads for podsec rules (drop `privileged`, fix host namespaces, etc.).
+  - `internal/remediation/kyverno`: Kyverno ClusterPolicy YAML for the same rule set, so you can paste the output into your policy bundle.
+  - `internal/remediation/gatekeeper`: OPA Gatekeeper ConstraintTemplate + Constraint pairs.
+  - `internal/remediation/rbac`: kubectl-patch and minimal-binding-diff generators for RBAC findings (smallest set of binding edits needed to remove a privesc edge).
+  Each generator is invoked from the per-finding card in the HTML report; the JSON output exposes the generated payload under `properties.remediation`.
+
+- **New analyzer rules across existing modules.**
+  - `podsec`: `KUBE-PODSEC-CAPS-001` (dangerous Linux capabilities), readOnly-root-filesystem hardening, seccomp profile assessment, `procMount` overrides, PV-based hostPath bypass detection, Pod Security Admission namespace label assessment.
+  - `secrets`: stale secret detection, cross-namespace secret access, TLS certificate expiry, ConfigMap credential heuristics.
+  - `network`: cross-namespace traffic map, IMDS-endpoint egress detection (`169.254.169.254`).
+  - `privesc`: CSR approval primitive (`KUBE-PRIVESC-011`) and the corresponding graph edges. A subject with `certificatesigningrequests/approval` can mint a high-privilege client cert; the analyzer now traces that to cluster-admin where applicable.
+  - `rbac`: stale-binding detection (dangling `roleRef`, missing ServiceAccount subjects) under the new `KUBE-RBAC-STALE-*` rule family.
+
+- **GitHub Action wrapper (`action.yml`).** Composite Action that pulls the pinned GHCR image and runs a scan against a live cluster (base64-encoded kubeconfig) or a snapshot JSON, with optional SARIF upload to GitHub code scanning. Drop into a workflow without hand-authoring the `docker run` form. Smoke-tested by `.github/workflows/action-smoke.yml`.
+
+- **Report enhancements.**
+  - Hero panel at the top of the HTML report highlights critical attack chains so the most actionable findings surface first.
+  - Top-5-fixes panel groups remediation candidates by subject and resource so an operator sees the smallest set of changes that closes the most chains.
+  - Per-subject capability cards in the Least Privilege tab spell out what a ServiceAccount can actually do.
+  - Per-finding scoring tooltip explains how the composite score (`base × exploitability × blast_radius + chain_modifier`) was assembled.
+  - Findings list capped to top 20 with category-balanced truncation so the report stays scannable; the full set remains in `findings.json`.
+  - Per-subject finding groups and Least Privilege tables collapse by default for a calmer first view.
+
+### Fixed
+
+- `leastprivilege` no longer emits zero-event findings when the audit log contains no events for a subject; the module is a no-op in that case.
+- Static-export HTML now gates JS-only interactivity copy (collapse/expand hints) so it does not appear when JavaScript is disabled.
+- Font sizing inside Least Privilege finding cards normalized.
+- Duplicate PersistentVolume entry removed from the glossary.
+- GitHub Action container now runs as the host UID to avoid permission-denied writes when mounting `${{ github.workspace }}`.
+- Action smoke test builds the image locally and skips the pull step when the image is already present.
+- `errcheck` warning silenced on the stderr truncation-notice write path.
+
+### Changed
+
+- The e2e fixture is now split into per-feature manifest files (`testdata/e2e/vulnerable/00-baseline.yaml` through `14-csr.yaml`) with matching `.expect` / `.rollout` expectation files, replacing the single `testdata/e2e/vulnerable.yaml`. `scripts/kind-e2e.sh` rolls up each fixture, waits for its rollout, and asserts the rule IDs from the per-file expectation list.
+
+### Documentation
+
+- README rewritten for adoption: hero paragraph names the multi-hop-RBAC-graph differentiator, copy-pasteable from-clone install snippet, vs-alternatives table positioning against kubescape / trivy / polaris, and inspiration credits for [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) at BeyondTrust Phantom Labs and [Ramesh Ramani](https://www.linkedin.com/in/rameshdotramani/) (who inspired the least-privilege mode).
+- New `docs/audit-logs.md` covers enabling audit logging on self-managed / kubeadm, kind, and EKS clusters and exporting from CloudWatch.
+- CLAUDE.md and README spell out CI gates not exercised by `make lint` (repo-wide golangci-lint, PR title length, repo-wide `go vet`).
+- README documents when the `leastprivilege` module fires (with a behavior matrix across `scan`, `--audit-log`, `--least-privilege-only`, and `make scan-lp`).
+
+### CI / Build
+
+- Multi-stage Dockerfile (`Dockerfile.goreleaser`) for smaller release images.
+- Release tag pattern in `.github/workflows/release.yml` tightened to match `v*.*.*` only.
+- `example-report.yml` Pages workflow publishes the uncapped report so the Least Privilege tab is populated on the hosted demo.
+- Dependabot bumps: `actions/setup-go` 5→6, `docker/setup-qemu-action` 3→4.
+
 ## [1.0.0] - 2026-04-30
 
 First public release.
@@ -54,5 +122,6 @@ The differentiator is **graph-based privilege-escalation path detection**: BFS f
 - Forbidden/Unauthorized list errors are downgraded to `CollectionWarnings` rather than aborting — locked-down clusters still produce a useful partial-snapshot report.
 - Vulnerability disclosure: GitHub Private Vulnerability Reporting only. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.1.0
 [1.0.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.0.0
