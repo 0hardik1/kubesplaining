@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **50 distinct rule IDs across 8 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **54 distinct rule IDs across 9 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 ## Findings Library — Implemented
 
@@ -58,6 +58,17 @@ These rules compare granted RBAC permissions against observed usage from a kube-
 | KUBE-PODSEC-SECCOMP-001 | MEDIUM | Container runs without a seccomp profile | `seccompProfile` missing or `Unconfined` at both pod and container level | Set `seccompProfile.type: RuntimeDefault` (or `Localhost` with a profile) |
 | KUBE-SA-DEFAULT-001 | MEDIUM | Default service account in use | Workload mounts the namespace `default` SA | Bind a dedicated least-privilege SA |
 | KUBE-IMAGE-LATEST-001 | LOW | Mutable image tag used | `:latest` or no tag | Pin to an immutable tag or digest |
+
+### Container Security ([internal/analyzer/containersec/analyzer.go](../internal/analyzer/containersec/analyzer.go))
+
+This module surfaces container-template settings that weaken runtime hardening without granting RBAC. Findings aggregate per workload (controller-owned pods are skipped to avoid duplicate findings, mirroring the podsec module). The image-pin rule is intentionally scoped to digest pinning so it does not duplicate `KUBE-IMAGE-LATEST-001` above, which already flags mutable image tags.
+
+| Rule ID | Sev | Title | What it detects | Remediation |
+| --- | --- | --- | --- | --- |
+| KUBE-CONTAINER-LIFECYCLE-001 | MEDIUM | Container declares a non-trivial lifecycle exec hook | `lifecycle.postStart.exec` or `lifecycle.preStop.exec` with a command beyond `sleep N` | Move the work into the image or an init container; if needed, replace inline `sh -c` with a small auditable script |
+| KUBE-CONTAINER-LIMITS-001 | MEDIUM | Container missing CPU / memory limits or requests | One or more of `resources.{limits,requests}.{cpu,memory}` is unset on a container template | Set explicit `requests` + `limits`; add a namespace `LimitRange` default and a `ResourceQuota` |
+| KUBE-CONTAINER-IMAGE-001 | MEDIUM | Container image is not digest-pinned and pulled `Always` | Image lacks `@sha256:` and `imagePullPolicy: Always` (explicit or kubelet default for `:latest`) | Pin to `registry/app@sha256:<digest>`; sign and verify with cosign / Sigstore |
+| KUBE-CONTAINER-PROBE-001 | LOW | Container has neither liveness nor readiness probe | Both `livenessProbe` and `readinessProbe` are absent on a container template | Add a readiness probe gated on real dependencies and a small liveness probe; tune `initialDelaySeconds` |
 
 ### Network Policy ([internal/analyzer/network/analyzer.go](../internal/analyzer/network/analyzer.go))
 
