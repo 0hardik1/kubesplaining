@@ -144,8 +144,15 @@ runs:
         # Workspace-relative output dir for the in-container CLI.
         IN_CONTAINER_OUTPUT="/workspace/${INPUT_OUTPUT_DIR#./}"
 
+        # Run as the host workspace owner so files written under /workspace
+        # (the report dir, scan-metadata.json) land with the caller's uid/gid
+        # and remain readable / cleanable by later workflow steps. The default
+        # distroless `nonroot` user (uid 65532) can't write to dirs owned by
+        # the GitHub runner (typically uid 1001), so without this the report
+        # writes fail with "permission denied".
         DOCKER_ARGS=(
           run --rm
+          --user "$(id -u):$(id -g)"
           -v "${GITHUB_WORKSPACE}:/workspace"
           -w /workspace
         )
