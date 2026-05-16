@@ -65,9 +65,11 @@ These rules compare granted RBAC permissions against observed usage from a kube-
 | --- | --- | --- | --- | --- |
 | KUBE-NETPOL-COVERAGE-001 | HIGH | Namespace has no NetworkPolicies | Non-system namespace with zero policies | Add a default-deny, then allow explicitly |
 | KUBE-NETPOL-WEAKNESS-002 | HIGH | NetworkPolicy permits internet egress | Egress rule targets `0.0.0.0/0` or `::/0` | Restrict to required CIDRs or services |
+| KUBE-NETPOL-IMDS-001 | HIGH | Workload egress can reach cloud IMDS `169.254.169.254` | No egress policy applies OR an explicit ipBlock admits the IMDS endpoint without an `except:` carve-out | Apply a default-deny-egress policy and carve out IMDS with `except: [169.254.169.254/32]`; pair with IMDSv2 hop-limit = 1 |
 | KUBE-NETPOL-COVERAGE-002 | MEDIUM | Workload is not selected by any NetworkPolicy | Pod in a policy-bearing namespace but no policy matches it | Add a selector or apply a baseline policy |
 | KUBE-NETPOL-COVERAGE-003 | MEDIUM | Ingress policies present but egress remains open | Namespace has ingress rules but no egress | Add explicit egress rules or a default-deny egress |
 | KUBE-NETPOL-WEAKNESS-001 | MEDIUM | NetworkPolicy allows ingress from all namespaces | Empty namespace selector in ingress | Use explicit namespace labels |
+| KUBE-NETPOL-CROSSNS-001 | MEDIUM | NetworkPolicy bridges a sensitive namespace | Ingress or egress peer's `namespaceSelector` matches a sensitive namespace (`kube-system`, `kube-public`, `kube-node-lease`, `default`, `gatekeeper-system`) other than the policy's own, or is empty (matches all) | Replace the cross-namespace peer with a narrow `matchLabels` + `podSelector` pair |
 
 ### Admission Webhooks ([internal/analyzer/admission/analyzer.go](../internal/analyzer/admission/analyzer.go))
 
