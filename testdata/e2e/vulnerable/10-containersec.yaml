@@ -1,0 +1,152 @@
+# Wave 1 slot #9: Container Security analyzer fixtures.
+#
+# These four Deployments demonstrate each KUBE-CONTAINER-* rule. Pods must roll
+# out on a kind cluster so the e2e script's `kubectl rollout status` wait
+# completes — every container therefore declares `command: ["sleep","infinity"]`
+# (the default busybox / alpine command would exit and the pod would CrashLoop).
+# Using `busybox` keeps image pulls fast and avoids depending on registry tags
+# that change.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: containersec-fixtures
+---
+# KUBE-CONTAINER-LIMITS-001: no resources block at all (full BestEffort).
+# Also satisfies probes (TCP socket on a port nothing listens on still counts as
+# a declared probe for the analyzer; the kubelet's probe failure does not break
+# the rollout because probes have grace periods that exceed the e2e wait).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: containersec-limits
+  namespace: containersec-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: containersec-limits
+  template:
+    metadata:
+      labels:
+        app: containersec-limits
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          livenessProbe:
+            exec:
+              command: ["true"]
+          readinessProbe:
+            exec:
+              command: ["true"]
+---
+# KUBE-CONTAINER-PROBE-001: full resources declared, no probes at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: containersec-probes
+  namespace: containersec-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: containersec-probes
+  template:
+    metadata:
+      labels:
+        app: containersec-probes
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+---
+# KUBE-CONTAINER-LIFECYCLE-001: postStart hook that runs `sh -c "touch ..."`,
+# a non-trivial command (not a simple `sleep`). The hook completes quickly so it
+# does not block the pod from going Ready.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: containersec-lifecycle
+  namespace: containersec-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: containersec-lifecycle
+  template:
+    metadata:
+      labels:
+        app: containersec-lifecycle
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+          livenessProbe:
+            exec:
+              command: ["true"]
+          readinessProbe:
+            exec:
+              command: ["true"]
+          lifecycle:
+            postStart:
+              exec:
+                command: ["sh", "-c", "touch /tmp/started && echo postStart-ran > /tmp/postStart.log"]
+---
+# KUBE-CONTAINER-IMAGE-001: mutable tag (:latest) with imagePullPolicy: Always.
+# The other three rules also fire on this Deployment but the expect file only
+# pins the four rule IDs (a single sample per rule is sufficient for the e2e
+# coverage check, not per-finding count).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: containersec-image
+  namespace: containersec-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: containersec-image
+  template:
+    metadata:
+      labels:
+        app: containersec-image
+    spec:
+      containers:
+        - name: app
+          image: busybox:latest
+          imagePullPolicy: Always
+          command: ["sleep", "infinity"]
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+          livenessProbe:
+            exec:
+              command: ["true"]
+          readinessProbe:
+            exec:
+              command: ["true"]

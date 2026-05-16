@@ -107,6 +107,20 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 		}
 	}
 
+	// KUBE-NETPOL-CROSSNS-001 — cross-namespace peers involving a sensitive namespace.
+	// Lives in crossns.go so it can grow without bloating the main Analyze method.
+	for _, finding := range emitCrossNSFindings(findCrossNamespacePairs(snapshot)) {
+		findings = appendUnique(findings, seen, finding)
+	}
+
+	// KUBE-NETPOL-IMDS-001 — workload egress can reach 169.254.169.254. The check
+	// reuses the same workload list assembled above so the same exclusion semantics
+	// apply (controller-owned pods are dropped in favor of their workload). Lives
+	// in imds_egress.go for the same hygiene reason as crossns.
+	for _, finding := range emitImdsFindings(findImdsReachable(snapshot, workloads)) {
+		findings = appendUnique(findings, seen, finding)
+	}
+
 	return findings, nil
 }
 

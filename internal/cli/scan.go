@@ -8,6 +8,7 @@ import (
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
+	"github.com/0hardik1/kubesplaining/internal/baseline"
 	"github.com/0hardik1/kubesplaining/internal/collector"
 	"github.com/0hardik1/kubesplaining/internal/connection"
 	"github.com/0hardik1/kubesplaining/internal/exclusions"
@@ -47,6 +48,8 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		leastPrivilegeOnly   bool
 		complianceFilters    []string
 		customRulesDir       string
+		baselineFile         string
+		baselineFormat       string
 	)
 
 	cmd := &cobra.Command{
@@ -163,12 +166,61 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 			printTruncationNotice(cmd.ErrOrStderr(), truncation)
 
-			if ciMode {
-				if summary.Critical > ciMaxCritical {
-					return fmt.Errorf("ci threshold exceeded: critical findings %d > %d", summary.Critical, ciMaxCritical)
+			// Baseline diff: when --baseline is set we always render and write
+			// the delta report alongside the main report so a reviewer can read
+			// "what changed since the last run" without invoking `kubesplaining diff`
+			// separately. In CI mode the diff also retargets the ci-max gates so
+			// they count Added findings only, not the absolute new-scan tally.
+			var diffResult *baseline.Result
+			if baselineFile != "" {
+				format, err := parseDiffFormat(baselineFormat)
+				if err != nil {
+					return err
 				}
-				if summary.High > ciMaxHigh {
-					return fmt.Errorf("ci threshold exceeded: high findings %d > %d", summary.High, ciMaxHigh)
+				oldFindings, err := baseline.LoadFindings(baselineFile)
+				if err != nil {
+					return fmt.Errorf("load baseline %s: %w", baselineFile, err)
+				}
+				r := baseline.Diff(oldFindings, findings)
+				diffResult = &r
+
+				diffPath, err := writeDiff(outputDir, format, r)
+				if err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "wrote %s (diff vs baseline: %s)\n", diffPath, diffHeadline(r)); err != nil {
+					return err
+				}
+			}
+
+			if ciMode {
+				// When a baseline is in play, the gate counts Added findings only:
+				// resolved findings cannot trip CI, and unchanged findings have
+				// already been accepted by a previous build. Without a baseline,
+				// the gate keeps its original full-scan semantics.
+				gateLabel := "ci threshold exceeded"
+				crit, high := summary.Critical, summary.High
+				if diffResult != nil {
+					addedSummary := baseline.SummarizeSeverities(diffResult.Added)
+					crit, high = addedSummary.Critical, addedSummary.High
+					gateLabel = "ci threshold exceeded (delta vs baseline)"
+				}
+
+				if crit > ciMaxCritical {
+					if diffResult != nil {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							":fire: regression: %d new critical findings vs baseline (max %d). Run `kubesplaining diff` for the per-finding breakdown.\n",
+							crit, ciMaxCritical)
+					}
+					return fmt.Errorf("%s: critical findings %d > %d", gateLabel, crit, ciMaxCritical)
+				}
+				if high > ciMaxHigh {
+					if diffResult != nil {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+							":fire: regression: %d new high findings vs baseline (max %d). Run `kubesplaining diff` for the per-finding breakdown.\n",
+							high, ciMaxHigh)
+					}
+					return fmt.Errorf("%s: high findings %d > %d", gateLabel, high, ciMaxHigh)
 				}
 			}
 
@@ -202,6 +254,8 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().BoolVar(&leastPrivilegeOnly, "least-privilege-only", false, "Focus mode: only emit least-privilege findings (UNUSED-*, WILDCARD-USED-PARTIAL-*, STALE-*) and open the Least Privilege tab by default. Requires --audit-log. Cluster-admin bindings are listed for review in the LP tab's inventory table instead of firing as findings.")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa. Empty = no filter; the Compliance tab still renders all controls.")
 	cmd.Flags().StringVar(&customRulesDir, "custom-rules", "", "Directory of user-supplied *.cel.yaml rules to evaluate alongside the built-in modules. See examples/custom-rules/ for the wire format.")
+	cmd.Flags().StringVar(&baselineFile, "baseline", "", "Path to a previous findings JSON file. When set, a diff.{txt,md,sarif} is written alongside the report and (in --ci-mode) ci-max-* gates count Added findings only, not the absolute scan tally.")
+	cmd.Flags().StringVar(&baselineFormat, "baseline-format", "text", "Format for the baseline diff sidecar: text|markdown|sarif")
 
 	return cmd
 }
