@@ -36,6 +36,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Build the container image locally from the in-tree Dockerfile and tag
+      # it as the `:main` reference the action expects. Lets the smoke test
+      # exercise the action end-to-end before a tagged release has pushed the
+      # image to GHCR (the action's pull step skips when the image already
+      # exists locally).
+      - name: Build kubesplaining image (local)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg VERSION=smoke \
+            --build-arg COMMIT="${GITHUB_SHA}" \
+            --build-arg DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t ghcr.io/0hardik1/kubesplaining:main \
+            .
+
       - name: Run kubesplaining action against minimal-risky fixture
         id: scan
         # `./` references the action defined in this repository so the smoke

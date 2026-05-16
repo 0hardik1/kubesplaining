@@ -109,12 +109,20 @@ runs:
 
     # Stage 2: pull the pinned image up front so the run step's failure modes
     # are limited to scan logic (and so the pull is logged separately, which
-    # is easier to debug than an opaque `docker run` failure).
+    # is easier to debug than an opaque `docker run` failure). If the image
+    # already exists locally (for instance, the smoke workflow builds it from
+    # the in-tree Dockerfile so the action can be exercised before a release
+    # has published the registry tag) we skip the pull.
     - name: Pull kubesplaining image
       shell: bash
       run: |
         set -euo pipefail
-        docker pull "ghcr.io/0hardik1/kubesplaining:${INPUT_VERSION}"
+        IMAGE="ghcr.io/0hardik1/kubesplaining:${INPUT_VERSION}"
+        if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+          echo "Image ${IMAGE} already present locally, skipping pull."
+        else
+          docker pull "${IMAGE}"
+        fi
       env:
         INPUT_VERSION: ${{ inputs.version }}
 
