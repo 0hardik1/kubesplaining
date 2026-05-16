@@ -877,3 +877,44 @@ func sourceBindingCmd(name string, obj map[string]any) string {
 	}
 	return "kubectl get rolebinding " + name + " -n " + ns + " -o yaml"
 }
+
+// renderScoringTooltip formats a one-line breakdown of how a finding's score was
+// produced, suitable for a `title="…"` attribute on the score badge in the HTML
+// report (STRATEGY.md:155, plan slot W1 #6). The composite formula is
+// `base × exploitability × blast_radius + chain_modifier = score`; when an
+// analyzer has populated Finding.ScoreFactors the breakdown is rendered in full,
+// otherwise the helper degrades gracefully to "Score 7.4" so legacy
+// hand-picked-score findings still get a (minimal) hoverable label.
+//
+// The output is plain text (no HTML), since browsers render `title` attributes
+// as text-only tooltips. Backed by BuildScoringTooltip from summary.go so the
+// struct shape stays canonical for any future expandable-row UI.
+func renderScoringTooltip(f models.Finding) string {
+	bd := BuildScoringTooltip(f)
+	if !bd.HasFactors {
+		return fmt.Sprintf("Score %s", formatScoreNum(bd.Score))
+	}
+	// Show "+ chain N.N" only when ChainModifier is non-zero, so simple findings
+	// with no chain amplification read as "base × exploit × blast = score".
+	if bd.ChainModifier == 0 {
+		return fmt.Sprintf("Score %s = base %s × exploit %s × blast %s",
+			formatScoreNum(bd.Score),
+			formatScoreNum(bd.Base),
+			formatScoreNum(bd.Exploitability),
+			formatScoreNum(bd.BlastRadius),
+		)
+	}
+	return fmt.Sprintf("Score %s = base %s × exploit %s × blast %s + chain %s",
+		formatScoreNum(bd.Score),
+		formatScoreNum(bd.Base),
+		formatScoreNum(bd.Exploitability),
+		formatScoreNum(bd.BlastRadius),
+		formatScoreNum(bd.ChainModifier),
+	)
+}
+
+// formatScoreNum renders a score / factor with one decimal place, matching the
+// `score` template helper used elsewhere in the report.
+func formatScoreNum(v float64) string {
+	return fmt.Sprintf("%.1f", v)
+}
