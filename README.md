@@ -414,6 +414,66 @@ The `standard` preset suppresses control-plane noise (kube-system, system:*, kub
 - **License**: [Apache-2.0](LICENSE)
 - **End-to-end verification**: `make e2e` provisions a local kind cluster with intentionally risky manifests in `testdata/` and asserts expected findings
 
+## Use the GitHub Action
+
+The repository ships a composite Action at `action.yml`, so you can wire kubesplaining into a workflow without authoring the `docker run` invocation yourself. The action pulls the pinned GHCR image, executes a scan against either a live cluster (via a base64-encoded kubeconfig) or a pre-collected snapshot JSON, and optionally uploads the SARIF result to GitHub code scanning.
+
+```yaml
+# .github/workflows/kubesplaining.yml
+name: Kubesplaining
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write   # required by upload-sarif
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Option A: scan a pre-collected snapshot checked into the repo.
+      - name: Scan offline snapshot
+        uses: 0hardik1/kubesplaining@main
+        with:
+          # Pin to a released tag (e.g. v1) once v1.0.0 ships. `main` tracks
+          # the development image and is fine for early adopters.
+          version: main
+          input-file: testdata/snapshots/minimal-risky.json
+          severity-threshold: medium
+          fail-on-critical: 'true'
+          upload-sarif: 'true'
+
+      # Option B: scan a live cluster. Store the kubeconfig as a base64
+      # secret (e.g. `cat ~/.kube/config | base64 | pbcopy`) under the
+      # `KUBE_CONFIG_B64` repository secret first.
+      # - name: Scan live cluster
+      #   uses: 0hardik1/kubesplaining@main
+      #   with:
+      #     kubeconfig: ${{ secrets.KUBE_CONFIG_B64 }}
+      #     severity-threshold: high
+      #     compliance: cis
+```
+
+Inputs (all optional unless noted):
+
+| Input | Default | Notes |
+| --- | --- | --- |
+| `version` | `main` | GHCR image tag. Bump to `v1` (or `latest`) once a release tag is published. |
+| `kubeconfig` | (none) | Base64-encoded kubeconfig for live scans. Omit when using `input-file`. |
+| `input-file` | (none) | Path (relative to the checkout) to a `kubesplaining download` snapshot JSON. |
+| `severity-threshold` | `medium` | `critical` / `high` / `medium` / `low` / `info`. |
+| `output-dir` | `./kubesplaining-report` | Created if missing. Holds `report.html`, `findings.json`, `findings.sarif`. |
+| `fail-on-critical` | `true` | Adds `--ci-mode --ci-max-critical 0`; flip to `false` to surface findings without failing the build. |
+| `upload-sarif` | `true` | Uploads `findings.sarif` via `github/codeql-action/upload-sarif@v3`. Requires `security-events: write`. |
+| `compliance` | (none) | Optional filter: `cis` or `nsa`. |
+
+Outputs: `report-dir` (absolute path to the report directory) and `sarif-file` (absolute path to `findings.sarif`, when emitted). The `.github/workflows/action-smoke.yml` workflow in this repo exercises the action against `testdata/snapshots/minimal-risky.json` on every PR that touches it.
+
 ## Credits
 
 - [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) — for the tool idea. His [Cloudsplaining](https://github.com/salesforce/cloudsplaining) inspired this project.
