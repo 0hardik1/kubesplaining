@@ -12,6 +12,7 @@ import (
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 )
 
 // buildLeastPrivilegeSection filters findings to the LP rule set, populates two top-of-
@@ -581,6 +582,272 @@ func dedupeStrings(in []string) []string {
 // out of evidence. Kept as a thin wrapper so the row builder reads cleanly.
 func formatVerbList(triples []map[string]string) template.HTML {
 	return renderVerbsGrouped(triplesToVR(triples))
+}
+
+// buildPerSubjectCapabilities composes one SubjectCapabilityCard per RBAC subject
+// (STRATEGY.md:32, plan slot W1 #7). The card answers "what can this principal
+// actually do AND where does it lead": aggregated EffectiveRules from
+// permissions.Aggregate (collapsed by resource for readability), the bindings the
+// subject is granted via, and any privesc paths the analyzer detected as
+// originating from this subject. ChainAmplified mirrors the engine's chain-modifier
+// signal so the template can surface a badge for subjects whose grants compose
+// into an exploitable path.
+//
+// Filter: we only emit a card for subjects that appear in at least one finding OR
+// hold a "cluster-admin equivalent" grant (cluster-scoped wildcard verb, or direct
+// binding to the built-in cluster-admin ClusterRole). This keeps the section
+// focused on the principals an operator should review without flooding the tab
+// with every default ServiceAccount in every namespace.
+func buildPerSubjectCapabilities(snapshot models.Snapshot, findings []models.Finding) []SubjectCapabilityCard {
+	if len(snapshot.Resources.RoleBindings)+len(snapshot.Resources.ClusterRoleBindings) == 0 {
+		return nil
+	}
+	effective := permissions.Aggregate(snapshot)
+	if len(effective) == 0 {
+		return nil
+	}
+
+	// Index findings by subject key so each card carries only the findings about
+	// its own principal. Build the privesc summary + highest severity in the same
+	// pass — both views are derived from the same finding slice.
+	type subjectIndex struct {
+		highest   models.Severity
+		hasFind   bool
+		privescs  []string
+		amplified bool
+	}
+	idx := map[string]*subjectIndex{}
+	for _, f := range findings {
+		if f.Subject == nil {
+			continue
+		}
+		key := f.Subject.Key()
+		entry := idx[key]
+		if entry == nil {
+			entry = &subjectIndex{}
+			idx[key] = entry
+		}
+		entry.hasFind = true
+		if f.Severity.Rank() > entry.highest.Rank() {
+			entry.highest = f.Severity
+		}
+		if strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-") {
+			entry.privescs = append(entry.privescs, summarizePrivescPath(f))
+			entry.amplified = true
+		}
+		for _, tag := range f.Tags {
+			if tag == "chain:amplified" {
+				entry.amplified = true
+				break
+			}
+		}
+	}
+
+	// Build the per-subject binding list once so each card can pull from it. The
+	// permissions package already gave us source bindings via EffectiveRule, but
+	// re-walking bindings here lets us include bindings whose Role has no rules
+	// (still visible to operators as "bound to <Role>") and preserves the
+	// distinction between RoleBinding and ClusterRoleBinding.
+	bindingsBySubject := map[string][]string{}
+	for _, rb := range snapshot.Resources.RoleBindings {
+		for _, s := range rb.Subjects {
+			ref := permissions.SubjectRef(s, rb.Namespace)
+			label := fmt.Sprintf("RoleBinding/%s/%s -> %s/%s", rb.Namespace, rb.Name, rb.RoleRef.Kind, rb.RoleRef.Name)
+			bindingsBySubject[ref.Key()] = append(bindingsBySubject[ref.Key()], label)
+		}
+	}
+	for _, crb := range snapshot.Resources.ClusterRoleBindings {
+		for _, s := range crb.Subjects {
+			ref := permissions.SubjectRef(s, "")
+			label := fmt.Sprintf("ClusterRoleBinding/%s -> %s/%s", crb.Name, crb.RoleRef.Kind, crb.RoleRef.Name)
+			bindingsBySubject[ref.Key()] = append(bindingsBySubject[ref.Key()], label)
+		}
+	}
+
+	cards := make([]SubjectCapabilityCard, 0, len(effective))
+	for key, perms := range effective {
+		entry := idx[key]
+		hasFinding := entry != nil && entry.hasFind
+		hasClusterAdmin := subjectHoldsClusterAdmin(perms, bindingsBySubject[key])
+		if !hasFinding && !hasClusterAdmin {
+			continue
+		}
+
+		card := SubjectCapabilityCard{
+			SubjectKind:  perms.Subject.Kind,
+			SubjectName:  perms.Subject.Name,
+			SubjectNs:    perms.Subject.Namespace,
+			SubjectLabel: subjectGroupLabel(&perms.Subject),
+		}
+		card.EffectiveVerbs, card.EffectiveRules = collapseEffectiveRules(perms.Rules)
+		card.Bindings = dedupeStrings(bindingsBySubject[key])
+		sort.Strings(card.Bindings)
+		if entry != nil {
+			card.PrivescPaths = entry.privescs
+			card.ChainAmplified = entry.amplified
+			card.HighestSeverity = entry.highest
+		}
+		cards = append(cards, card)
+	}
+
+	// Cards with privesc paths first (they're the actionable ones), then by
+	// highest severity, then by subject label for stable output.
+	sort.SliceStable(cards, func(i, j int) bool {
+		if cards[i].ChainAmplified != cards[j].ChainAmplified {
+			return cards[i].ChainAmplified
+		}
+		if cards[i].HighestSeverity.Rank() != cards[j].HighestSeverity.Rank() {
+			return cards[i].HighestSeverity.Rank() > cards[j].HighestSeverity.Rank()
+		}
+		return cards[i].SubjectLabel < cards[j].SubjectLabel
+	})
+
+	return cards
+}
+
+// summarizePrivescPath turns a KUBE-PRIVESC-PATH-* finding into the one-line chain
+// summary shown on the card. Falls back to a sink-only summary when EscalationPath
+// is empty (the privesc analyzer sometimes emits paths with no hop slice for
+// degenerate sink edges); the sink label is always derivable from the RuleID.
+func summarizePrivescPath(f models.Finding) string {
+	hops := len(f.EscalationPath)
+	sink := strings.TrimPrefix(f.RuleID, "KUBE-PRIVESC-PATH-")
+	sink = strings.ToLower(strings.ReplaceAll(sink, "-", "_"))
+	suffix := fmt.Sprintf("%s (%s, %d %s)", sink, f.Severity, hops, pluralizeHops(hops))
+	if hops == 0 {
+		return suffix
+	}
+	first := f.EscalationPath[0]
+	last := f.EscalationPath[hops-1]
+	// Some sinks ("kube_system_secrets", "node_escape") are synthetic and the
+	// privesc analyzer leaves their ToSubject Kind/Name empty. Falling back to
+	// the rule's sink slug keeps the chain summary readable in those cases.
+	toLabel := subjectGroupLabel(&last.ToSubject)
+	if last.ToSubject.Kind == "" && last.ToSubject.Name == "" {
+		toLabel = sink
+	}
+	return fmt.Sprintf("%s -> %s via %s -> %s",
+		subjectGroupLabel(&first.FromSubject),
+		toLabel,
+		first.Action,
+		suffix,
+	)
+}
+
+// pluralizeHops returns "hop" or "hops" based on count.
+func pluralizeHops(n int) string {
+	if n == 1 {
+		return "hop"
+	}
+	return "hops"
+}
+
+// collapseEffectiveRules turns the granular permissions.EffectiveRule list into
+// (uniqueVerbs, perResourceRows). Each row reads "verb,verb,... on resource@apiGroup"
+// so the card stays scannable: operators want to know "this SA can delete pods" not
+// "this SA has 13 separate rules". Wildcards stay verbatim ("*") so the threat is
+// obvious. Empty inputs yield nil for both, keeping the template gates honest.
+func collapseEffectiveRules(rules []permissions.EffectiveRule) ([]string, []string) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	type bucket struct {
+		apiGroup string
+		resource string
+		verbs    map[string]struct{}
+	}
+	buckets := map[string]*bucket{}
+	order := []string{}
+	verbsAll := map[string]struct{}{}
+	for _, r := range rules {
+		for _, ag := range zeroOrSelf(r.APIGroups) {
+			for _, res := range zeroOrSelf(r.Resources) {
+				key := ag + "|" + res
+				b, ok := buckets[key]
+				if !ok {
+					b = &bucket{apiGroup: ag, resource: res, verbs: map[string]struct{}{}}
+					buckets[key] = b
+					order = append(order, key)
+				}
+				for _, v := range r.Verbs {
+					b.verbs[v] = struct{}{}
+					verbsAll[v] = struct{}{}
+				}
+			}
+		}
+	}
+
+	verbs := make([]string, 0, len(verbsAll))
+	for v := range verbsAll {
+		verbs = append(verbs, v)
+	}
+	sort.Strings(verbs)
+
+	rows := make([]string, 0, len(order))
+	for _, k := range order {
+		b := buckets[k]
+		verbList := make([]string, 0, len(b.verbs))
+		for v := range b.verbs {
+			verbList = append(verbList, v)
+		}
+		sort.Strings(verbList)
+		ag := b.apiGroup
+		if ag == "" {
+			ag = "core"
+		}
+		rows = append(rows, fmt.Sprintf("%s on %s@%s", strings.Join(verbList, ","), b.resource, ag))
+	}
+	sort.Strings(rows)
+	return verbs, rows
+}
+
+// zeroOrSelf returns a single empty-string slice when the input is empty so the
+// "core" apiGroup or untyped resource still produces one bucket. Otherwise it
+// returns the input verbatim.
+func zeroOrSelf(in []string) []string {
+	if len(in) == 0 {
+		return []string{""}
+	}
+	return in
+}
+
+// subjectHoldsClusterAdmin returns true when the subject either holds a wildcard
+// grant (`*` verbs on `*` resources in `*` apiGroups) or is directly bound to the
+// built-in cluster-admin ClusterRole. Either case means "this principal is one
+// kubectl command from total cluster control"; we surface the card unconditionally
+// so the operator sees it. The bindings slice is pre-computed in
+// buildPerSubjectCapabilities to avoid a second walk.
+func subjectHoldsClusterAdmin(perms *permissions.EffectivePermissions, bindings []string) bool {
+	for _, b := range bindings {
+		if strings.Contains(b, "ClusterRole/cluster-admin") {
+			return true
+		}
+	}
+	for _, r := range perms.Rules {
+		if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcardOrEmpty(r.APIGroups) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWildcard returns true when the slice contains "*".
+func hasWildcard(in []string) bool {
+	for _, s := range in {
+		if s == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasWildcardOrEmpty returns true when the slice is empty (some RBAC authors treat
+// `apiGroups: []` as "all") or contains "*".
+func hasWildcardOrEmpty(in []string) bool {
+	if len(in) == 0 {
+		return true
+	}
+	return hasWildcard(in)
 }
 
 // wildcardTriples decodes a WILDCARD-USED-PARTIAL evidence payload into used/unused

@@ -416,9 +416,14 @@ type ScoringBreakdown struct {
 // aggregated EffectiveRules plus any privesc paths originating from that
 // subject (STRATEGY.md:32, plan slot W1 #7). The Cloudsplaining-equivalent
 // "what can this principal actually do" view, scoped to RBAC subjects rather
-// than IAM principals. Populated by buildPerSubjectCapabilities in summary.go;
-// Wave 0 stub returns nil so the {{ if .SubjectCapCards }} template gate keeps
-// the section absent.
+// than IAM principals. Populated by buildPerSubjectCapabilities in
+// leastprivilege_section.go.
+//
+// Bindings is the deduped list of (Cluster)Role names the subject is bound to
+// (rendered as "RoleBinding -> Role/<name>" / "ClusterRoleBinding -> ClusterRole/<name>").
+// ChainAmplified is true when at least one privesc path originates from this
+// subject; the template surfaces a badge so operators can prioritize subjects
+// with exploitable chains over those whose grants are merely broad.
 type SubjectCapabilityCard struct {
 	SubjectKind     string
 	SubjectName     string
@@ -426,7 +431,9 @@ type SubjectCapabilityCard struct {
 	SubjectLabel    string // pre-rendered display string e.g. "ServiceAccount/default/builder"
 	EffectiveVerbs  []string
 	EffectiveRules  []string // pre-rendered "verbs on resources@apiGroup" strings
+	Bindings        []string // pre-rendered "ClusterRoleBinding/<name> -> ClusterRole/<role>" strings
 	PrivescPaths    []string // chain summaries originating from this subject
+	ChainAmplified  bool     // true iff PrivescPaths is non-empty
 	HighestSeverity models.Severity
 }
 
