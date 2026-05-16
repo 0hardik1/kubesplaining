@@ -217,12 +217,6 @@ var Glossary = map[string]GlossaryEntry{
 		Short: "API resource for requesting a signed client / serving certificate from the cluster CA.",
 		Long:  "",
 	},
-	"PersistentVolume": {
-		Title:  "PersistentVolume",
-		Short:  "A cluster-scoped storage handle. PVs that wrap hostPath bypass Pod Security Admission.",
-		Long:   template.HTML(`<p>A <strong>PersistentVolume</strong> is a cluster-scoped storage object that a PersistentVolumeClaim binds to. PVs come from many sources: CSI drivers, NFS, iSCSI, and (dangerously) <code>hostPath</code>. The Pod Security Admission controller inspects the PodSpec only and never follows the PVC -> PV indirection, so a PV that wraps a sensitive hostPath (<code>/</code>, <code>/etc</code>, <code>/var/lib/kubelet</code>, the container runtime sockets) becomes an unobservable node-escape primitive: a Pod in a Baseline- or Restricted-enforced namespace can mount the equivalent of a sensitive hostPath simply by claiming the PV.</p><p>PVs are non-namespaced. Whoever can create or modify PVs can therefore expose sensitive node directories to any tenant in the cluster, regardless of namespace boundaries.</p>`),
-		DocURL: "https://kubernetes.io/docs/concepts/storage/persistent-volumes/",
-	},
 }
 
 // Techniques maps a privesc-action key (matching the Action strings in
