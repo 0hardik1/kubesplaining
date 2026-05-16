@@ -1,0 +1,36 @@
+# no-default-namespace: flag any workload deployed to the "default" namespace.
+#
+# Why: the default namespace is meant for ad-hoc experimentation, not for
+# production workloads. Anything landing there usually means a missing
+# `namespace:` field in the manifest, which makes the workload invisible to
+# namespace-scoped RBAC, NetworkPolicy, and ResourceQuota.
+#
+# This file is also a working example of the kubesplaining CEL rule format.
+# Copy it, change the id / expression / match, and drop it into a directory
+# you point at with `kubesplaining scan --custom-rules <dir>`.
+id: CUSTOM-NS-DEFAULT-001
+title: Workload deployed to the default namespace
+severity: medium
+category: defense_evasion
+description: |
+  Workloads should live in a dedicated namespace so namespace-scoped policy
+  (RBAC, NetworkPolicy, ResourceQuota, PodSecurity admission) applies cleanly.
+  The default namespace gets no such policy out of the box.
+remediation: |
+  Move the workload into a dedicated namespace via `metadata.namespace: <ns>`
+  in the manifest, or recreate it under `kubectl --namespace <ns> apply -f`.
+match:
+  # Apply to the common workload kinds. Leaving this empty would also pick up
+  # Services, Namespaces themselves, etc., which is rarely what you want for a
+  # "workload location" rule.
+  kinds:
+    - Pod
+    - Deployment
+    - StatefulSet
+    - DaemonSet
+    - Job
+    - CronJob
+# The expression returns true when a finding should fire. `resource` is the
+# matched Kubernetes object as a generic dict so any field is reachable by
+# JSON path (no schema declaration required).
+expression: resource.metadata.namespace == "default"

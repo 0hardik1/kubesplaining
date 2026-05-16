@@ -53,6 +53,11 @@ func New() *Engine {
 // Config tunes engine construction parameters like the privesc graph search depth.
 type Config struct {
 	MaxPrivescDepth int
+	// CustomRulesDir is the directory the CEL-based "custom-rules" module loads
+	// *.cel.yaml files from. Empty means "skip loading"; the module remains
+	// registered but evaluates to zero findings, keeping the JSON / HTML output
+	// byte-identical to a build that never received the flag.
+	CustomRulesDir string
 }
 
 // NewWithConfig constructs an Engine with the default module set, applying cfg to tunable
