@@ -73,6 +73,12 @@ func TestAnalyzerFindsCoverageAndWeakPolicies(t *testing.T) {
 	assertRulePresent(t, findings, "KUBE-NETPOL-COVERAGE-001")
 	assertRulePresent(t, findings, "KUBE-NETPOL-WEAKNESS-001")
 	assertRulePresent(t, findings, "KUBE-NETPOL-WEAKNESS-002")
+	// Spot-check that the remediation generator was wired in: every emitted
+	// finding for the rules we own should now carry a structured
+	// RemediationHint. We assert on COVERAGE-001 specifically because it's
+	// the most representative (a non-pod-spec, namespace-scoped finding).
+	assertRuleHasRemediationHint(t, findings, "KUBE-NETPOL-COVERAGE-001")
+	assertRuleHasRemediationHint(t, findings, "KUBE-NETPOL-WEAKNESS-002")
 }
 
 func TestAnalyzerFindsUncoveredWorkload(t *testing.T) {
@@ -124,4 +130,26 @@ func assertRulePresent(t *testing.T, findings []models.Finding, ruleID string) {
 	}
 
 	t.Fatalf("expected rule %s to be present, findings=%v", ruleID, findings)
+}
+
+// assertRuleHasRemediationHint verifies that the analyzer wired the
+// remediation generator into the per-finding emit path: every finding for
+// the given rule must carry a non-nil RemediationHint with a populated
+// Patch field.
+func assertRuleHasRemediationHint(t *testing.T, findings []models.Finding, ruleID string) {
+	t.Helper()
+
+	for _, finding := range findings {
+		if finding.RuleID != ruleID {
+			continue
+		}
+		if finding.RemediationHint == nil {
+			t.Fatalf("rule %s finding %s: RemediationHint is nil", ruleID, finding.ID)
+		}
+		if finding.RemediationHint.Patch == nil {
+			t.Fatalf("rule %s finding %s: RemediationHint.Patch is nil", ruleID, finding.ID)
+		}
+		return
+	}
+	t.Fatalf("rule %s not present so RemediationHint assertion is vacuous", ruleID)
 }

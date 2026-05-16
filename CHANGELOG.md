@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Structured remediation hints across every analyzer.** All eight modules (podsec, rbac, privesc, network, admission, secrets+configmap, serviceaccount, containersec) now attach a `RemediationHint` to each finding with one or more of: a `kubectl patch` payload (strategic-merge / merge / JSON), a Kyverno `ClusterPolicy`, a Gatekeeper `ConstraintTemplate` + `Constraint`, or a unified RBAC diff. JSON/SARIF expose the whole struct; HTML renders a per-finding "Structured remediation" section with collapsible `<details>` blocks per surface.
+
+- **`--remediation-patches` opt-in flag.** Added to `scan`, `scan-resource`, and `report`. Off by default. Pass the flag to populate the hint on each emitted finding; the same flag controls render-time inclusion in `report` so a JSON saved with hints renders cleanly with or without them.
+
+### Changed
+
+- **BREAKING (in 0.x): RemediationHint emission is now opt-in.** Earlier builds attached hints unconditionally for the podsec, rbac, and privesc modules. They are now gated behind `--remediation-patches` for consistency with the five new module wirings. To restore prior behavior pass `--remediation-patches` on `scan` / `scan-resource` / `report`.
+
 ## [1.1.0] - 2026-05-16
 
 This release expands kubesplaining from a detection tool into a delta-gated, remediation-aware assessment platform. The headline additions are: an audit-log-driven least-privilege analyzer (the AWS IAM Access Advisor analog for Kubernetes RBAC), a snapshot-diff `diff` command and `scan --baseline` flag so CI fails only on *new* findings, CEL-based `--custom-rules` for org-specific detections, Kyverno and Gatekeeper policy generators that turn findings into enforceable admission rules, and a new `containersec` analyzer module covering resource limits, probes, lifecycle hooks, and image pinning. A composite GitHub Action (`action.yml`) wraps the SARIF scan flow so you can wire kubesplaining into a workflow without authoring `docker run` invocations by hand.

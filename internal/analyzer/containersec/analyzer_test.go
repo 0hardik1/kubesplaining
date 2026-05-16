@@ -57,6 +57,16 @@ func TestAnalyzerFiresAllFourRules(t *testing.T) {
 	assertRulePresent(t, findings, "KUBE-CONTAINER-PROBE-001")
 	assertRulePresent(t, findings, "KUBE-CONTAINER-LIFECYCLE-001")
 	assertRulePresent(t, findings, "KUBE-CONTAINER-IMAGE-001")
+
+	// Every container-security finding should carry a structured
+	// RemediationHint (set by appendUnique via remediation.ForContainerSec) so
+	// the HTML and JSON outputs ship the kubectl patch alongside the prose
+	// remediation. Empty hint means the wiring regressed.
+	for _, f := range findings {
+		if f.RemediationHint == nil || f.RemediationHint.Patch == nil {
+			t.Errorf("finding %s missing RemediationHint.Patch: %+v", f.RuleID, f)
+		}
+	}
 }
 
 // TestAnalyzerIgnoresHardenedWorkload locks in the negative case: a fully-hardened

@@ -59,6 +59,7 @@ func TestAnalyzerFindsDefaultServiceAccountPermissions(t *testing.T) {
 
 	assertRulePresent(t, findings, "KUBE-SA-DEFAULT-002")
 	assertRulePresent(t, findings, "KUBE-SA-PRIVILEGED-002")
+	assertRuleHasRemediationHint(t, findings, "KUBE-SA-DEFAULT-002")
 }
 
 func TestAnalyzerFindsDaemonSetUsage(t *testing.T) {
@@ -97,4 +98,22 @@ func assertRulePresent(t *testing.T, findings []models.Finding, ruleID string) {
 		}
 	}
 	t.Fatalf("expected rule %s to be present, findings=%v", ruleID, findings)
+}
+
+// assertRuleHasRemediationHint locates the named rule in the findings slice and
+// fails if its RemediationHint is unset. Wired in after the SA analyzer was
+// taught to populate Finding.RemediationHint via the remediation package; this
+// is the regression guard for that wiring.
+func assertRuleHasRemediationHint(t *testing.T, findings []models.Finding, ruleID string) {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.RuleID != ruleID {
+			continue
+		}
+		if finding.RemediationHint == nil {
+			t.Fatalf("rule %s: RemediationHint is nil, expected populated hint", ruleID)
+		}
+		return
+	}
+	t.Fatalf("rule %s not found in findings, cannot check RemediationHint", ruleID)
 }

@@ -2,7 +2,9 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **55 distinct rule IDs across 9 modules**. Rule IDs are a public surface — they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **55 distinct rule IDs across 9 modules**. Rule IDs are a public surface: they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+
+**Structured remediation hints.** Every rule below also ships with an optional `RemediationHint` (kubectl patch, Kyverno / Gatekeeper policy, or RBAC diff) when you pass `--remediation-patches` to `scan`, `scan-resource`, or `report`. The hint appears in JSON / SARIF and as a "Structured remediation" section in the HTML report. Off by default to keep the output minimal; see the per-rule "Remediation" column for the human-readable summary that always renders.
 
 ## Findings Library — Implemented
 

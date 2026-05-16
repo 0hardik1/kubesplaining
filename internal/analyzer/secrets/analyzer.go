@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -203,11 +204,15 @@ func configMapFinding(configMap models.ConfigMapSnapshot, ruleID string, severit
 	}
 }
 
-// appendUnique deduplicates by Finding.ID before appending.
+// appendUnique deduplicates by Finding.ID before appending. The structured
+// RemediationHint is attached here so every secret / configmap finding picks
+// up the rule-keyed patch, Kyverno policy, or command suggestion from the
+// remediation package without each emit-site repeating the wiring.
 func appendUnique(findings []models.Finding, seen map[string]struct{}, finding models.Finding) []models.Finding {
 	if _, ok := seen[finding.ID]; ok {
 		return findings
 	}
 	seen[finding.ID] = struct{}{}
+	finding.RemediationHint = remediation.ForSecrets(finding.RuleID, finding)
 	return append(findings, finding)
 }

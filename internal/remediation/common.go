@@ -59,18 +59,28 @@ func patchTargetFromFinding(finding models.Finding) (models.PatchTarget, bool) {
 	}, true
 }
 
-// apiVersionForKind returns the apiVersion string we expect for each workload
-// kind the podsec analyzer emits findings against. Pods are core/v1; the apps
-// kinds are apps/v1; the batch kinds are batch/v1. Anything unknown returns
-// the empty string so JSON consumers can spot the gap.
+// apiVersionForKind returns the apiVersion string we expect for each Kubernetes
+// kind kubesplaining emits findings against. Workload kinds (Pod, apps,
+// batch) are the legacy podsec set. The non-workload kinds were added when
+// the network, admission, secrets, serviceaccount, and containersec
+// remediation generators landed. Anything unknown returns the empty string so
+// JSON consumers can spot the gap.
 func apiVersionForKind(kind string) string {
 	switch kind {
-	case "Pod":
+	case "Pod", "ConfigMap", "Secret", "ServiceAccount", "Namespace":
 		return "v1"
 	case "Deployment", "DaemonSet", "StatefulSet", "ReplicaSet":
 		return "apps/v1"
 	case "Job", "CronJob":
 		return "batch/v1"
+	case "NetworkPolicy":
+		return "networking.k8s.io/v1"
+	case "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration":
+		return "admissionregistration.k8s.io/v1"
+	case "Role", "RoleBinding":
+		return "rbac.authorization.k8s.io/v1"
+	case "ClusterRole", "ClusterRoleBinding":
+		return "rbac.authorization.k8s.io/v1"
 	default:
 		return ""
 	}
@@ -153,6 +163,78 @@ func wrapPodPatch(kind string, podSpecFragment map[string]any) (json.RawMessage,
 		return nil, fmt.Errorf("marshal pod patch: %w", err)
 	}
 	return bytes, nil
+}
+
+// jsonPatchHint wraps an RFC-6902 JSON-patch operation list into a full
+// RemediationHint. Use for surgical edits to list elements (webhook configs,
+// ConfigMap data keys) where strategic-merge cannot express a single-element
+// removal. Returns nil when ops cannot be marshalled.
+func jsonPatchHint(target models.PatchTarget, ops []map[string]any) *models.RemediationHint {
+	body, err := json.Marshal(ops)
+	if err != nil {
+		return nil
+	}
+	return &models.RemediationHint{
+		Patch: &models.KubectlPatch{
+			Type:    "json",
+			Target:  target,
+			Body:    body,
+			Command: renderKubectlPatchCommand(target, "json", body),
+		},
+	}
+}
+
+// mergeHint wraps a pre-built RFC-7396 merge patch body (any partial-object
+// JSON) into a full RemediationHint. Use when the patch target is not a
+// pod-spec wrapper (NetworkPolicy, ConfigMap, Secret, Webhook config) and the
+// caller has already shaped the merge body. Returns nil on marshal failure.
+func mergeHint(target models.PatchTarget, body map[string]any) *models.RemediationHint {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	return &models.RemediationHint{
+		Patch: &models.KubectlPatch{
+			Type:    "merge",
+			Target:  target,
+			Body:    raw,
+			Command: renderKubectlPatchCommand(target, "merge", raw),
+		},
+	}
+}
+
+// strategicHintRaw is the non-pod-spec variant of strategicHint (in podsec.go):
+// it wraps a pre-built strategic-merge body directly, without the
+// workload-kind envelope. Use for resources whose strategic-merge body has no
+// pod-spec wrapping (NetworkPolicy, ServiceAccount, etc.).
+func strategicHintRaw(target models.PatchTarget, body map[string]any) *models.RemediationHint {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	return &models.RemediationHint{
+		Patch: &models.KubectlPatch{
+			Type:    "strategic",
+			Target:  target,
+			Body:    raw,
+			Command: renderKubectlPatchCommand(target, "strategic", raw),
+		},
+	}
+}
+
+// commandOnlyHint returns a RemediationHint whose Patch is just a
+// pre-rendered shell command (no body). Use for cases where the operator
+// action is a `kubectl delete` / `cmctl renew` / `kubectl label` one-liner
+// rather than a true patch payload. Body is left empty so JSON consumers can
+// distinguish "command-only" from "structured patch."
+func commandOnlyHint(target models.PatchTarget, command string) *models.RemediationHint {
+	return &models.RemediationHint{
+		Patch: &models.KubectlPatch{
+			Type:    "merge",
+			Target:  target,
+			Command: command,
+		},
+	}
 }
 
 // containerSecurityContextPatch builds a strategic-merge patch fragment that

@@ -17,16 +17,17 @@ import (
 // artifacts from a previously produced findings JSON file without re-running analysis.
 func NewReportCmd() *cobra.Command {
 	var (
-		inputFile         string
-		outputDir         string
-		outputFormats     []string
-		severityThreshold string
-		exclusionsFile    string
-		exclusionsPreset  string
-		metadataFile      string
-		maxFindings       int
-		allFindings       bool
-		complianceFilters []string
+		inputFile          string
+		outputDir          string
+		outputFormats      []string
+		severityThreshold  string
+		exclusionsFile     string
+		exclusionsPreset   string
+		metadataFile       string
+		maxFindings        int
+		allFindings        bool
+		complianceFilters  []string
+		remediationPatches bool
 	)
 
 	cmd := &cobra.Command{
@@ -45,6 +46,17 @@ func NewReportCmd() *cobra.Command {
 			findings, err := report.ReadFindings(inputFile)
 			if err != nil {
 				return err
+			}
+
+			// Mirror the engine: structured remediation hints are opt-in. An
+			// input JSON produced with --remediation-patches will carry them;
+			// strip on regen when the operator did not pass the flag here so
+			// the regenerated HTML/SARIF/JSON match what scan would emit at
+			// the same flag setting.
+			if !remediationPatches {
+				for i := range findings {
+					findings[i].RemediationHint = nil
+				}
 			}
 
 			filtered := make([]models.Finding, 0, len(findings))
@@ -128,6 +140,7 @@ func NewReportCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the regenerated report to the top N findings by severity/score; 0 disables.")
 	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the regenerated report; overrides --max-findings")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
+	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Preserve structured remediation hints in the regenerated report. Off by default; pass the flag when regenerating a scan that was run with --remediation-patches.")
 
 	return cmd
 }

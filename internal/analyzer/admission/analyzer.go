@@ -11,6 +11,7 @@ import (
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer/admission/mitigation"
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,17 +21,24 @@ import (
 type Analyzer struct{}
 
 // webhookContext carries identity metadata for a mutating webhook so findings can point back at its configuration.
+// WebhookIndex is the position of the webhook inside the configuration's
+// Webhooks slice. It is threaded through to Finding.Evidence so the remediation
+// generator can emit a precise JSON-patch path like /webhooks/<index>/failurePolicy.
 type webhookContext struct {
-	ConfigKind string
-	ConfigName string
-	Webhook    admissionregistrationv1.MutatingWebhook
+	ConfigKind   string
+	ConfigName   string
+	WebhookIndex int
+	Webhook      admissionregistrationv1.MutatingWebhook
 }
 
 // validatingWebhookContext carries identity metadata for a validating webhook so findings can point back at its configuration.
+// WebhookIndex is the position of the webhook inside the configuration's
+// Webhooks slice, threaded into Finding.Evidence for the same reason as in webhookContext.
 type validatingWebhookContext struct {
-	ConfigKind string
-	ConfigName string
-	Webhook    admissionregistrationv1.ValidatingWebhook
+	ConfigKind   string
+	ConfigName   string
+	WebhookIndex int
+	Webhook      admissionregistrationv1.ValidatingWebhook
 }
 
 // New returns a new admission analyzer.
@@ -49,14 +57,24 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	seen := map[string]struct{}{}
 
 	for _, cfg := range snapshot.Resources.MutatingWebhookConfigs {
-		for _, webhook := range cfg.Webhooks {
-			ctx := webhookContext{ConfigKind: "MutatingWebhookConfiguration", ConfigName: cfg.Name, Webhook: webhook}
+		for i, webhook := range cfg.Webhooks {
+			ctx := webhookContext{
+				ConfigKind:   "MutatingWebhookConfiguration",
+				ConfigName:   cfg.Name,
+				WebhookIndex: i,
+				Webhook:      webhook,
+			}
 			findings = analyzeMutating(ctx, findings, seen)
 		}
 	}
 	for _, cfg := range snapshot.Resources.ValidatingWebhookConfigs {
-		for _, webhook := range cfg.Webhooks {
-			ctx := validatingWebhookContext{ConfigKind: "ValidatingWebhookConfiguration", ConfigName: cfg.Name, Webhook: webhook}
+		for i, webhook := range cfg.Webhooks {
+			ctx := validatingWebhookContext{
+				ConfigKind:   "ValidatingWebhookConfiguration",
+				ConfigName:   cfg.Name,
+				WebhookIndex: i,
+				Webhook:      webhook,
+			}
 			findings = analyzeValidating(ctx, findings, seen)
 		}
 	}
@@ -65,13 +83,15 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	// strips this finding when --admission-mode=off, so the analyzer can stay
 	// admission-unaware: emit unconditionally when conditions are met.
 	if shouldEmitNoPolicyEngineFinding(snapshot) {
-		findings = append(findings, postureFinding(
+		posture := postureFinding(
 			"KUBE-ADMISSION-NO-POLICY-ENGINE-001",
 			models.SeverityMedium,
 			scoring.MinScoreForSeverity(models.SeverityMedium),
 			contentNoPolicyEngine(),
 			"no_policy_engine",
-		))
+		)
+		posture.RemediationHint = remediation.ForAdmission(posture.RuleID, posture)
+		findings = append(findings, posture)
 	}
 
 	return findings, nil
@@ -137,7 +157,7 @@ func analyzeMutating(ctx webhookContext, findings []models.Finding, seen map[str
 	if interceptsSecurityCriticalResources(webhook.Rules) && webhook.FailurePolicy != nil && *webhook.FailurePolicy == admissionregistrationv1.Ignore {
 		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
 			"KUBE-ADMISSION-001", models.SeverityHigh, 7.9,
-			map[string]any{"failurePolicy": webhook.FailurePolicy, "rules": webhook.Rules},
+			failurePolicyEvidence(ctx.WebhookIndex, webhook.Name, webhook.FailurePolicy, webhook.Rules),
 			"failurePolicyIgnore",
 			contentAdmission001(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
@@ -145,7 +165,7 @@ func analyzeMutating(ctx webhookContext, findings []models.Finding, seen map[str
 	if selectorHasBypassableObjectMatch(webhook.ObjectSelector) {
 		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
 			"KUBE-ADMISSION-002", models.SeverityMedium, 6.1,
-			map[string]any{"objectSelector": webhook.ObjectSelector},
+			objectSelectorEvidence(ctx.WebhookIndex, webhook.Name, webhook.ObjectSelector),
 			"objectSelector",
 			contentAdmission002(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
@@ -153,7 +173,7 @@ func analyzeMutating(ctx webhookContext, findings []models.Finding, seen map[str
 	if selectorExcludesSensitiveNamespaces(webhook.NamespaceSelector) {
 		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
 			"KUBE-ADMISSION-003", models.SeverityMedium, 6.4,
-			map[string]any{"namespaceSelector": webhook.NamespaceSelector},
+			namespaceSelectorEvidence(ctx.WebhookIndex, webhook.Name, webhook.NamespaceSelector),
 			"namespaceSelector",
 			contentAdmission003(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
@@ -167,7 +187,7 @@ func analyzeValidating(ctx validatingWebhookContext, findings []models.Finding, 
 	if interceptsSecurityCriticalResources(webhook.Rules) && webhook.FailurePolicy != nil && *webhook.FailurePolicy == admissionregistrationv1.Ignore {
 		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
 			"KUBE-ADMISSION-001", models.SeverityHigh, 7.9,
-			map[string]any{"failurePolicy": webhook.FailurePolicy, "rules": webhook.Rules},
+			failurePolicyEvidence(ctx.WebhookIndex, webhook.Name, webhook.FailurePolicy, webhook.Rules),
 			"failurePolicyIgnore",
 			contentAdmission001(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
@@ -175,7 +195,7 @@ func analyzeValidating(ctx validatingWebhookContext, findings []models.Finding, 
 	if selectorHasBypassableObjectMatch(webhook.ObjectSelector) {
 		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
 			"KUBE-ADMISSION-002", models.SeverityMedium, 6.1,
-			map[string]any{"objectSelector": webhook.ObjectSelector},
+			objectSelectorEvidence(ctx.WebhookIndex, webhook.Name, webhook.ObjectSelector),
 			"objectSelector",
 			contentAdmission002(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
@@ -183,12 +203,87 @@ func analyzeValidating(ctx validatingWebhookContext, findings []models.Finding, 
 	if selectorExcludesSensitiveNamespaces(webhook.NamespaceSelector) {
 		findings = appendUnique(findings, seen, webhookFinding(ctx.ConfigKind, ctx.ConfigName, webhook.Name,
 			"KUBE-ADMISSION-003", models.SeverityMedium, 6.4,
-			map[string]any{"namespaceSelector": webhook.NamespaceSelector},
+			namespaceSelectorEvidence(ctx.WebhookIndex, webhook.Name, webhook.NamespaceSelector),
 			"namespaceSelector",
 			contentAdmission003(ctx.ConfigKind, ctx.ConfigName, webhook.Name)))
 	}
 
 	return findings
+}
+
+// failurePolicyEvidence builds the Evidence map for KUBE-ADMISSION-001. It
+// always carries the failurePolicy and the rule list so the report keeps the
+// original detection context, and additionally surfaces webhook_index +
+// webhook_name so the remediation generator can target the exact webhook in
+// the configuration's positional Webhooks slice.
+func failurePolicyEvidence(idx int, name string, failurePolicy *admissionregistrationv1.FailurePolicyType, rules []admissionregistrationv1.RuleWithOperations) map[string]any {
+	return map[string]any{
+		"webhook_index": idx,
+		"webhook_name":  name,
+		"failurePolicy": failurePolicy,
+		"rules":         rules,
+	}
+}
+
+// objectSelectorEvidence builds the Evidence map for KUBE-ADMISSION-002.
+// webhook_index is included for symmetry even though the remediation hint for
+// this rule is a Kyverno policy (no positional patch is possible).
+func objectSelectorEvidence(idx int, name string, selector *metav1.LabelSelector) map[string]any {
+	return map[string]any{
+		"webhook_index":  idx,
+		"webhook_name":   name,
+		"objectSelector": selector,
+	}
+}
+
+// namespaceSelectorEvidence builds the Evidence map for KUBE-ADMISSION-003. It
+// includes the positional indices (expr_index, value_index) of the first
+// offending NotIn / DoesNotExist clause so the remediation generator can emit
+// a JSON `remove` op against the precise list slot.
+func namespaceSelectorEvidence(idx int, name string, selector *metav1.LabelSelector) map[string]any {
+	evidence := map[string]any{
+		"webhook_index":     idx,
+		"webhook_name":      name,
+		"namespaceSelector": selector,
+	}
+	if eidx, vidx, excluded, ok := firstSensitiveExclusion(selector); ok {
+		evidence["expr_index"] = eidx
+		if vidx >= 0 {
+			evidence["value_index"] = vidx
+		}
+		evidence["excluded_namespace"] = excluded
+	}
+	return evidence
+}
+
+// firstSensitiveExclusion locates the first NotIn / DoesNotExist clause inside
+// a namespaceSelector that mentions kube-system (or any `-system` suffix). It
+// returns the matchExpressions index, the values index (or -1 for
+// DoesNotExist, which has no values list), the offending namespace string, and
+// ok=true. ok=false when no such clause exists or the selector is nil.
+func firstSensitiveExclusion(selector *metav1.LabelSelector) (int, int, string, bool) {
+	if selector == nil {
+		return 0, 0, "", false
+	}
+	for i, expr := range selector.MatchExpressions {
+		if expr.Key != "kubernetes.io/metadata.name" {
+			continue
+		}
+		switch expr.Operator {
+		case metav1.LabelSelectorOpNotIn:
+			for j, value := range expr.Values {
+				if value == "kube-system" || strings.HasSuffix(value, "-system") {
+					return i, j, value, true
+				}
+			}
+		case metav1.LabelSelectorOpDoesNotExist:
+			// DoesNotExist has no Values slice, so we cannot point at a list
+			// index. value_index=-1 signals "no positional remove possible,"
+			// which the remediation generator interprets as a fallback case.
+			return i, -1, "(any namespace label)", true
+		}
+	}
+	return 0, 0, "", false
 }
 
 // interceptsSecurityCriticalResources reports whether any rule intercepts create/update on pod-like resources, which is the case that matters for fail-open risks.
@@ -299,11 +394,15 @@ func webhookFinding(configKind, configName, webhookName, ruleID string, severity
 	}
 }
 
-// appendUnique deduplicates by Finding.ID before appending.
+// appendUnique deduplicates by Finding.ID before appending. The
+// RemediationHint is attached here (rather than at every call site) so the
+// analyzer's per-rule blocks stay focused on detection: every webhook finding
+// goes through this funnel and picks up its structured fix in one place.
 func appendUnique(findings []models.Finding, seen map[string]struct{}, finding models.Finding) []models.Finding {
 	if _, ok := seen[finding.ID]; ok {
 		return findings
 	}
 	seen[finding.ID] = struct{}{}
+	finding.RemediationHint = remediation.ForAdmission(finding.RuleID, finding)
 	return append(findings, finding)
 }
