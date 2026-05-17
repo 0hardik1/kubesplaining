@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **55 distinct rule IDs across 9 modules**. Rule IDs are a public surface: they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **63 distinct rule IDs across 10 modules**. Rule IDs are a public surface: they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 **Structured remediation hints.** Every rule below also ships with an optional `RemediationHint` (kubectl patch, Kyverno / Gatekeeper policy, or RBAC diff) when you pass `--remediation-patches` to `scan`, `scan-resource`, or `report`. The hint appears in JSON / SARIF and as a "Structured remediation" section in the HTML report. Off by default to keep the output minimal; see the per-rule "Remediation" column for the human-readable summary that always renders.
 
@@ -138,10 +138,25 @@ These findings are emitted **per `(source subject, sink)` pair** found by BFS on
 | KUBE-PRIVESC-PATH-NODE-ESCAPE | CRITICAL (9.4) | `<subject>` can reach node escape in N hop(s) | Ability to create/exec a pod with privileged / hostPID / hostNetwork / hostIPC / sensitive hostPath |
 | KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS | HIGH (8.6) | `<subject>` can reach kube-system secrets in N hop(s) | Cluster-wide or kube-system `get`/`list` on secrets |
 | KUBE-PRIVESC-PATH-NAMESPACE-ADMIN | HIGH (7.6) | `<subject>` can reach namespace-admin in `<ns>` in N hop(s) | Namespace-scoped `create rolebindings` or `bind/escalate roles` (one sink per affected namespace) |
+| KUBE-PRIVESC-PATH-AWS-IAM-ROLE | HIGH (8.0) | `<subject>` can assume an external AWS IAM role in N hop(s) | Reserved for paths terminating at an external `aws-iam` node introduced by an IRSA binding. EKS-only. The rule ID is wired in `analyzer.go` and `targetScoring` but does not currently emit: the pathfinder only terminates at `IsSink` nodes and the external IAM node is `IsSink=false`, so cloud chains today surface as `KUBE-PRIVESC-PATH-SYSTEM-MASTERS` (when aws-auth maps the role onward) with the IRSA hop visible in `escalation_path`. A future pass can promote no-outbound-edge external nodes to sinks. |
 
 Edge techniques that can appear in a hop chain: `KUBE-PRIVESC-001` (pod create), `-005` (secrets read), `-008` (impersonate), `-009` (bind/escalate), `-010` (rolebinding modify), `-011` (CSR create + approve), `-012` (nodes/proxy), `-014` (serviceaccounts/token), `-017` (wildcard), plus `KUBE-ESCAPE-00{1,2,3,4,5,6,8}` / `KUBE-HOSTPATH-001` for the pod-escape terminal edge. `system:*` subjects are skipped as traversable intermediates so paths do not launder through the control plane.
 
 Each path finding ships with an `escalation_path` array: one `EscalationHop` per step, with `from_subject`, `to_subject`, `action`, `permission`, and a human-readable `gains` line.
+
+### Cloud Provider Integration: EKS ([internal/analyzer/cloud/eks/](../internal/analyzer/cloud/eks/))
+
+These rules fire only when the snapshot's `metadata.cloudProvider` resolves to `eks`. The collector auto-detects EKS from node labels (`eks.amazonaws.com/nodegroup`, `eks.amazonaws.com/compute-type`); operators can force or disable detection with `--cloud-provider auto|eks|gke|aks|none` on `scan`. Cloud findings also feed the privesc BFS, so an IRSA-annotated ServiceAccount whose IAM role is mapped onward via aws-auth surfaces as a `KUBE-PRIVESC-PATH-AWS-IAM-ROLE` (terminal) or chains into `KUBE-PRIVESC-PATH-SYSTEM-MASTERS` when aws-auth maps the same ARN to `system:masters`.
+
+| Rule ID | Sev | Title | What it detects | Remediation |
+| --- | --- | --- | --- | --- |
+| KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001 | HIGH | aws-auth maps IAM principal to `system:masters` | `kube-system/aws-auth` ConfigMap has a `mapRoles` or `mapUsers` entry whose `groups` includes `system:masters` (the built-in cluster-admin group on EKS) | Remove the `system:masters` group from the entry; create a least-privilege ClusterRoleBinding for the IAM principal instead, or use AWS Access Entries which sidestep aws-auth entirely |
+| KUBE-CLOUD-AWSAUTH-OVERBROAD-001 | MEDIUM | aws-auth maps IAM principal to a group bound to cluster-admin | Entry's custom group (not `system:masters`) is the subject of a ClusterRoleBinding whose `roleRef` is the built-in `cluster-admin` ClusterRole. Indirect admin reach via aws-auth + a custom group | Replace the cluster-admin ClusterRoleBinding for that group with a scoped ClusterRole, or drop the IAM principal's aws-auth membership |
+| KUBE-CLOUD-AWSAUTH-PARSE-ERROR-001 | INFO | aws-auth ConfigMap contains malformed YAML | `mapRoles` or `mapUsers` payload fails YAML decode. Diagnostic only: surfaces that downstream aws-auth detectors skipped this key | Repair the malformed YAML so kubesplaining can re-evaluate it; validate with `yq` / `yamllint` before re-applying |
+| KUBE-CLOUD-IRSA-ADMIN-ROLE-001 | HIGH | ServiceAccount bound to admin-flavored IAM role via IRSA | SA's `eks.amazonaws.com/role-arn` annotation points at an IAM role matching `AWSReservedSSO_AdministratorAccess_<hex>` (score 9.2, reason `reserved-sso-admin`) or a role name containing `Administrator`, `FullAccess`, or `PowerUserAccess` (score 7.8, reason `admin-substring`) | Replace the admin role with a least-privilege IAM role scoped to the API actions the workload actually needs; trust policy should pin the SA's OIDC subject |
+| KUBE-CLOUD-IRSA-MISSING-001 | LOW | Pod talks to AWS but its ServiceAccount has no IRSA annotation | Pod (or controller pod template) has AWS-SDK hints (image basename `aws-cli`/`awscli`/`aws-sdk` or `amazon/aws-*` prefix, or any `AWS_*` env var other than `AWS_REGION`/`AWS_DEFAULT_REGION`) AND the SA it would run as carries no `eks.amazonaws.com/role-arn` annotation | Create a least-privilege IAM role for the workload and annotate its ServiceAccount with `eks.amazonaws.com/role-arn` so AWS SDK calls hit STS AssumeRoleWithWebIdentity instead of falling back to the node IAM role |
+| KUBE-CLOUD-IMDS-PIVOT-001 | HIGH | Pod can reach IMDS without IRSA carve-out (EKS node-IAM pivot) | Provider is EKS AND `network.IMDSReachable` says the pod can reach `169.254.169.254` AND the pod's SA has no IRSA annotation AND the pod is not scheduled to a Fargate node (`eks.amazonaws.com/compute-type=fargate`) | Bind the SA to a least-privileged IRSA role AND apply an egress NetworkPolicy that carves IMDS out (`except: [169.254.169.254/32]`); enforce IMDSv2 hop-limit 1 on the EKS nodegroup |
+| KUBE-CLOUD-PROVIDER-UNKNOWN-001 | INFO | Cloud provider could not be detected | Reserved diagnostic for clusters where node labels do not match any known provider shape. Currently emitted only via explicit override; the auto-detection path stays silent on unknown providers | None: operator may pass `--cloud-provider none` to suppress the slot, or supply the correct provider via `--cloud-provider <eks\|gke\|aks>` to enable provider-specific rules |
 
 ## Findings Library — Planned
 
@@ -167,4 +182,4 @@ The following rules are on the roadmap but not yet implemented. See [PLAN.md](..
 
 **Namespace Isolation** — per-namespace security score, cross-namespace risk matrix.
 
-**Cloud Provider** — EKS aws-auth + IRSA trust-policy cross-check; GKE Workload Identity; AKS managed identities; IMDS exposure edges in the escalation graph.
+**Cloud Provider** (remaining): GKE Workload Identity; AKS managed identities. (EKS aws-auth + IRSA + IMDS-pivot + privesc cloud-identity edges shipped in slot #15 above.)

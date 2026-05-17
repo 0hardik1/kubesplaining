@@ -337,6 +337,19 @@ var ruleControls = map[string][]models.FrameworkRef{
 		cis("5.1.8", "Limit use of the Bind, Impersonate and Escalate permissions in the Kubernetes cluster"),
 		nsa("Authorization", "Role-based access control"),
 	},
+
+	// --- Cloud Provider Integration (EKS) -----------------------------------------
+	// aws-auth ConfigMap mappings into system:masters / cluster-admin groups are direct
+	// analogs of the in-cluster overbroad-binding rules: both auditors and operators
+	// expect them under the same CIS 5.1.1 / NSA IAM controls.
+	"KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001": {
+		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
+		nsa("Authentication", "Identity and access management"),
+	},
+	"KUBE-CLOUD-AWSAUTH-OVERBROAD-001": {
+		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
+		nsa("Authentication", "Identity and access management"),
+	},
 }
 
 // ControlsFor returns the registered framework controls for a rule ID, or nil when no entry

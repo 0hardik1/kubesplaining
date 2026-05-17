@@ -75,6 +75,17 @@ kind create cluster --name "${KIND_CLUSTER_NAME}" --kubeconfig "${KUBECONFIG_PAT
             -e 's/^/    /'
 ok "cluster ready"
 
+step "Stamping EKS node labels so DetectCloudProvider classifies as eks"
+# Slot #15 covers Cloud Provider Integration (EKS). The kind nodes do not
+# carry the AWS-managed eks.amazonaws.com/nodegroup label on their own, so
+# the collector would classify the cluster as "unknown" and skip every
+# KUBE-CLOUD-* rule. Stamping the label here is the minimum touch needed
+# to drive the cloud analyzers from the e2e fixtures; the labels are
+# harmless for every other slot (no analyzer keys off them).
+kubectl --kubeconfig "${KUBECONFIG_PATH}" label nodes --all \
+  eks.amazonaws.com/nodegroup=kind-test --overwrite >/dev/null
+ok "kind nodes labeled eks.amazonaws.com/nodegroup=kind-test"
+
 step "Applying vulnerable manifests"
 # `kubectl apply -f <dir>` recurses through the directory and applies every
 # YAML/JSON file in lexical order. Each Wave 1 analyzer slot adds its own
@@ -188,11 +199,30 @@ step "Running kubesplaining scan --all-findings (assertion coverage)"
   --output-format html,json,csv | prefix_ok
 SUMMARY_LINE=$(grep -m1 "^findings:" "${SCAN_LOG}" 2>/dev/null || echo "")
 
+step "Running kubesplaining scan --exclusions-preset=minimal (cloud-rule coverage)"
+# Slot #15 (Cloud Provider Integration: EKS) lands rules whose canonical
+# Resource lives in kube-system (the aws-auth ConfigMap). The default
+# "standard" exclusions preset drops every kube-system-anchored finding, so
+# we re-scan with the "minimal" preset for the cloud assertions only. The
+# preset still excludes system:* / kubeadm:* subjects so the privesc-graph
+# regression tests against the standard-preset scan above remain stable.
+"${ROOT_DIR}/bin/kubesplaining" scan \
+  --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --output-dir "${ROOT_DIR}/.tmp/e2e-report-minimal" \
+  --exclusions-preset minimal \
+  --all-findings \
+  --output-format json >/dev/null
+ok "minimal-preset scan written for cloud-rule assertions"
+
 step "Verifying expected rule IDs"
 # Each *.expect file under testdata/e2e/expectations/ lists rule IDs one per
 # line. The baseline file carries the set 00-baseline.yaml produces; Wave 1
 # analyzer slots add their own <feature>.expect alongside the workload shard.
 # Lines starting with '#' and blank lines are skipped.
+#
+# Cloud-eks assertions (slot #15) route against the minimal-preset scan so
+# the aws-auth ConfigMap finding (anchored in kube-system) is not dropped.
+# Every other expectation file routes against the standard-preset scan.
 #
 # Historically excluded by the baseline fixture (kept for reviewers landing
 # new shards): KUBE-PODSEC-PROCMOUNT-001 — K8s 1.32+ requires hostUsers: false
@@ -200,23 +230,41 @@ step "Verifying expected rule IDs"
 # on kind (mount-product-files.sh hits a permission-denied under the remapped
 # UID). Detection is covered by analyzer unit tests in
 # internal/analyzer/podsec/analyzer_test.go.
-EXPECTED_RULES=()
-shopt -s nullglob
-for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.expect; do
+collect_rules() {
+  # collect_rules <path-to-.expect-file> appends each non-blank, non-comment
+  # rule-ID line to the provided array variable name.
+  local file="$1" var="$2" line
   while IFS= read -r line; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "${line}" ]] && continue
-    EXPECTED_RULES+=("${line}")
-  done < "${f}"
+    eval "${var}+=(\"\${line}\")"
+  done < "${file}"
+}
+
+STD_RULES=()
+CLOUD_RULES=()
+shopt -s nullglob
+for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.expect; do
+  base="$(basename "${f}" .expect)"
+  if [[ "${base}" == "cloud-eks" ]]; then
+    collect_rules "${f}" CLOUD_RULES
+  else
+    collect_rules "${f}" STD_RULES
+  fi
 done
 shopt -u nullglob
 
 missing=()
-for rule in "${EXPECTED_RULES[@]}"; do
+for rule in "${STD_RULES[@]}"; do
   if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
     missing+=("${rule}")
+  fi
+done
+for rule in "${CLOUD_RULES[@]}"; do
+  if ! rg -q "\"rule_id\":\s*\"${rule}\"" "${ROOT_DIR}/.tmp/e2e-report-minimal/findings.json"; then
+    missing+=("${rule} (minimal-preset scan)")
   fi
 done
 if (( ${#missing[@]} > 0 )); then
@@ -224,7 +272,7 @@ if (( ${#missing[@]} > 0 )); then
   printf '  - %s\n' "${missing[@]}" >&2
   exit 1
 fi
-ok "all ${#EXPECTED_RULES[@]} expected rule IDs present"
+ok "all $(( ${#STD_RULES[@]} + ${#CLOUD_RULES[@]} )) expected rule IDs present"
 
 # Regression guard for issue #48: a namespace-scoped RoleBinding granting
 # `create rolebindings` MUST NOT produce a cluster-admin path finding. The
