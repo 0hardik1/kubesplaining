@@ -153,6 +153,12 @@ type GraphLane struct {
 // any layout work — Height is grown to match the wrapped line count. AriaLabel is the per-node
 // accessible name announced by screen readers; without it every <g> would share a generic label
 // like "Entry point" / "Abused capability" / "Impact" and be indistinguishable while tabbing.
+//
+// External tags entry nodes whose Subject is a non-Kubernetes identity (a cloud-IAM
+// principal: AWS IAM role / user surfaced by the cloud analyzer or by Unit 4's privesc
+// graph external nodes). The template uses it to switch the stroke color and shape so
+// the AWS-origin attack-paths visually stand out from RBAC subjects; the JS payload
+// carries it forward as an attribute so the side-panel filter can scope by external.
 type GraphNode struct {
 	ID        string
 	Kind      string
@@ -161,6 +167,7 @@ type GraphNode struct {
 	Width     int
 	Height    int
 	SevClass  string // crit | high | med
+	External  bool   // true when this entry node represents an external (cloud-IAM) identity
 	AriaLabel string
 	Lines     []GraphTextLine
 }

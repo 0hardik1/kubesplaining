@@ -151,10 +151,11 @@ func buildReconShape(s models.Snapshot) ReconShape {
 
 	if cloud := strings.TrimSpace(s.Metadata.CloudProvider); cloud != "" && !strings.EqualFold(cloud, "none") {
 		region := mostCommonNodeLabel(s.Resources.Nodes, "topology.kubernetes.io/region")
+		providerLabel := cloudProviderDisplayName(cloud)
 		if region != "" {
-			shape.CloudLabel = strings.ToUpper(cloud) + " / " + region
+			shape.CloudLabel = providerLabel + " / " + region
 		} else {
-			shape.CloudLabel = strings.ToUpper(cloud)
+			shape.CloudLabel = providerLabel
 		}
 	} else if c := cloudFromNodes(s.Resources.Nodes); c != "" {
 		shape.CloudLabel = c
@@ -194,6 +195,23 @@ func distroFromVersion(clusterVersion, kubeletVersion string) string {
 		return "AKS " + v
 	}
 	return v
+}
+
+// cloudProviderDisplayName turns the snapshot's lowercase Metadata.CloudProvider
+// slug ("eks" / "gke" / "aks") into the marketing-style label a pentester reads
+// faster than an uppercased acronym. Unknown / empty values fall back to the
+// uppercased original (preserving the prior behavior for anything that isn't one
+// of the three managed flavors the cloud analyzer detects).
+func cloudProviderDisplayName(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "eks":
+		return "Amazon EKS"
+	case "gke":
+		return "Google GKE"
+	case "aks":
+		return "Azure AKS"
+	}
+	return strings.ToUpper(provider)
 }
 
 // cloudFromNodes infers a cloud-provider label from the first node's ProviderID

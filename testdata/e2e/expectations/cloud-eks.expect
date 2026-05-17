@@ -1,0 +1,27 @@
+# Wave 1 slot #15: Cloud Provider Integration (EKS).
+# See testdata/e2e/vulnerable/15-cloud-eks.yaml for the workloads + aws-auth
+# ConfigMap + IRSA-annotated SA that trigger these rules. The kind cluster is
+# labeled eks.amazonaws.com/nodegroup by scripts/kind-e2e.sh so the
+# collector's DetectCloudProvider classifies it as "eks". The assertions
+# below run against .tmp/e2e-report-minimal so the aws-auth ConfigMap finding
+# (anchored in kube-system) is not dropped by the standard exclusions preset.
+KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001
+KUBE-CLOUD-IRSA-ADMIN-ROLE-001
+KUBE-CLOUD-IRSA-MISSING-001
+KUBE-CLOUD-IMDS-PIVOT-001
+KUBE-NETPOL-IMDS-001
+KUBE-PRIVESC-PATH-AWS-IAM-ROLE
+
+# KUBE-PRIVESC-PATH-SYSTEM-MASTERS also fires here via the cloud chain
+# (ServiceAccount cloud-eks-test/eks-admin-irsa -> external aws-iam role ->
+# system_masters sink), with the irsa_assume_role and aws_auth_admin hops
+# visible in the EscalationPath array. The rule ID is already asserted by
+# baseline.expect against the standard-preset scan, so we do not repeat it
+# here.
+#
+# KUBE-PRIVESC-PATH-AWS-IAM-ROLE fires for the shorter "SA can assume this
+# IAM role" chain that terminates at the external AWS IAM node itself. The
+# pathfinder treats external IAM nodes as sinks (so they are captured) and
+# continues traversal through them when they have aws-auth outbound edges,
+# so the longer SA -> IRSA -> aws-auth -> system_masters chain also surfaces
+# separately as KUBE-PRIVESC-PATH-SYSTEM-MASTERS.

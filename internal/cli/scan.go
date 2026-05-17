@@ -51,6 +51,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		baselineFile         string
 		baselineFormat       string
 		remediationPatches   bool
+		cloudProvider        string
 	)
 
 	cmd := &cobra.Command{
@@ -96,6 +97,22 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			snapshot, err := loadOrCollectSnapshot(cmd, build, connFlags, inputFile, namespaces, excludeNamespaces, includeManagedFields, parallelism)
 			if err != nil {
 				return err
+			}
+
+			// --cloud-provider overrides the collector / manifest auto-detection.
+			// "auto" keeps whatever was detected; "none" forces detectors off; the
+			// concrete provider names pin detection so an operator can opt in even
+			// when the snapshot lacks the usual heuristic signals (e.g. an EKS
+			// cluster without aws-auth in kube-system).
+			switch cloudProvider {
+			case "auto":
+				// keep whatever the collector / manifest loader populated
+			case "none":
+				snapshot.Metadata.CloudProvider = "none"
+			case "eks", "gke", "aks":
+				snapshot.Metadata.CloudProvider = cloudProvider
+			default:
+				return fmt.Errorf("invalid --cloud-provider %q (must be auto, eks, gke, aks, or none)", cloudProvider)
 			}
 
 			usageIdx, usageWarnings, err := usage.LoadAuditLog(
@@ -259,6 +276,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringVar(&baselineFile, "baseline", "", "Path to a previous findings JSON file. When set, a diff.{txt,md,sarif} is written alongside the report and (in --ci-mode) ci-max-* gates count Added findings only, not the absolute scan tally.")
 	cmd.Flags().StringVar(&baselineFormat, "baseline-format", "text", "Format for the baseline diff sidecar: text|markdown|sarif")
 	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Attach structured remediation hints (kubectl patch, Kyverno / Gatekeeper policy, RBAC diff) to every finding. Adds to JSON/SARIF output and the 'Structured remediation' section in HTML. Off by default.")
+	cmd.Flags().StringVar(&cloudProvider, "cloud-provider", "auto", "Cloud provider hint for cloud-aware detectors: auto|eks|gke|aks|none. 'auto' keeps the collector / manifest-loader auto-detection; the concrete names override it; 'none' forces detectors off.")
 
 	return cmd
 }

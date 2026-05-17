@@ -202,6 +202,44 @@ func exceptCoversIMDS(except []string, addr net.IP) bool {
 	return false
 }
 
+// IMDSReachable reports whether a single workload-like target can reach the IMDS
+// endpoint. This is the public boundary for cross-module use: the cloud module's
+// IMDS-pivot rule layers cloud-specific correlations (IRSA presence, Fargate
+// carve-out) on top of this answer without re-implementing NetworkPolicy
+// semantics. Keep the signature minimal so callers don't have to know about the
+// network module's internal workload type.
+//
+// Returns:
+//   - reachable: true when the workload's effective egress posture admits 169.254.169.254.
+//   - reason: "no-egress-policy" or "explicit-allow" when reachable, "" otherwise.
+//   - offenderCIDR: the CIDR that admits IMDS (populated only for reason="explicit-allow").
+//   - offenderPolicy: "ns/name" of the offending NetworkPolicy (populated only for
+//     reason="explicit-allow"); "" otherwise.
+//
+// Implementation thinly wraps findImdsReachable with a one-element workload slice
+// so the same selector / ipBlock / except logic applies. System namespaces are
+// suppressed here too (matching the in-module behavior).
+func IMDSReachable(snapshot models.Snapshot, kind, name, namespace string, workloadLabels map[string]string) (bool, string, string, string) {
+	wl := workload{Kind: kind, Name: name, Namespace: namespace, Labels: workloadLabels}
+	results := findImdsReachable(snapshot, []workload{wl})
+	if len(results) == 0 {
+		return false, "", "", ""
+	}
+	r := results[0]
+	offenderPolicy := ""
+	if r.OffenderPolicyName != "" {
+		offenderPolicy = fmt.Sprintf("%s/%s", r.OffenderPolicyNamespace, r.OffenderPolicyName)
+	}
+	var reason string
+	switch r.Reason {
+	case imdsReasonNoEgressPolicy:
+		reason = "no-egress-policy"
+	case imdsReasonExplicitAllow:
+		reason = "explicit-allow"
+	}
+	return true, reason, r.OffenderCIDR, offenderPolicy
+}
+
 // emitImdsFindings materializes one models.Finding per imdsFinding returned by
 // findImdsReachable.
 func emitImdsFindings(items []imdsFinding) []models.Finding {

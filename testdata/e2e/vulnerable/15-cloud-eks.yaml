@@ -1,0 +1,130 @@
+# Fixture for slot #15 (Cloud Provider Integration: EKS first).
+#
+# This bundle drives the new KUBE-CLOUD-* rule family and the cloud-identity
+# extension to the privesc BFS. The fixture is provider-shape only: nothing
+# here actually talks to AWS. The collector's DetectCloudProvider classifies
+# the cluster as "eks" because scripts/kind-e2e.sh stamps the
+# eks.amazonaws.com/nodegroup label onto the kind nodes before the scan.
+#
+# Scenarios exercised, paired to the rules they fire:
+#
+# 1) aws-auth ConfigMap in kube-system maps arn:aws:iam::123456789012:role/AdministratorAccess
+#    to system:masters. Fires KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001.
+#
+# 2) ServiceAccount eks-admin-irsa in cloud-eks-test is annotated with the
+#    same AdministratorAccess role ARN. The role name contains the substring
+#    "Administrator" so ARNAdminLikely flags it with reason=admin-substring
+#    and the rule fires at HIGH severity (score 7.8).
+#
+# 3) Deployment imds-pivot-app uses a NON-IRSA SA (the namespace default SA),
+#    runs the public.ecr.aws/aws-cli/aws-cli image as a long-running idle
+#    container, AND the namespace has no egress NetworkPolicy. This triggers
+#    three independent rules in one fixture:
+#      - KUBE-CLOUD-IRSA-MISSING-001  (AWS-SDK image + no IRSA annotation)
+#      - KUBE-CLOUD-IMDS-PIVOT-001    (EKS + IRSA-less + IMDS reachable)
+#      - KUBE-NETPOL-IMDS-001         (legacy network rule, no-egress-policy)
+#
+# 4) Because the IRSA ARN in (2) equals the aws-auth ARN in (1), the privesc
+#    BFS produces a chain: ServiceAccount -> external:aws-iam:...:role/
+#    AdministratorAccess -> sink:system_masters. The chain emits
+#    KUBE-PRIVESC-PATH-SYSTEM-MASTERS for the SA (with the IRSA hop visible
+#    in the EscalationPath array).
+#
+# All workloads are deliberately benign so kind can schedule them: no
+# hostNetwork, no privileged, no hostPath. The container images come from
+# stable public registries the kind nodes can pull.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloud-eks-test
+---
+# Scenario (1): aws-auth ConfigMap mapping an IAM principal to system:masters.
+# The EKS API server only reads the kube-system/aws-auth ConfigMap, so the
+# analyzer scopes itself to that exact location. mapRoles is a YAML list
+# stored as a string under the data.mapRoles key.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: arn:aws:iam::123456789012:role/AdministratorAccess
+      username: admin-bot
+      groups:
+        - system:masters
+  mapUsers: |
+    - userarn: arn:aws:iam::123456789012:user/ops-readonly
+      username: ops-readonly
+      groups:
+        - readonly-ops
+---
+# Scenario (2): ServiceAccount carrying the IRSA annotation pointing at an
+# admin-flavored IAM role. The ARN's role-name part is "AdministratorAccess"
+# which is matched by the admin-substring regex; the same ARN appears in
+# scenario (1) so the privesc BFS can stitch SA -> external IAM ->
+# system:masters. automountServiceAccountToken=true keeps the IRSA
+# token-projection story realistic (a pod mounting this SA would actually
+# receive the token).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eks-admin-irsa
+  namespace: cloud-eks-test
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/AdministratorAccess
+automountServiceAccountToken: true
+---
+# A small idle pod mounting eks-admin-irsa so the SA shows up as a subject
+# the privesc BFS considers (CloudIdentity construction does the rest).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: irsa-admin-app
+  namespace: cloud-eks-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: irsa-admin-app
+  template:
+    metadata:
+      labels:
+        app: irsa-admin-app
+    spec:
+      serviceAccountName: eks-admin-irsa
+      containers:
+        - name: app
+          image: nginx:1.27.5
+          ports:
+            - containerPort: 80
+---
+# Scenario (3): IMDS-pivot + IRSA-missing + legacy NetPol-IMDS combo.
+# - serviceAccountName is unset, so the pod runs as the namespace "default" SA.
+# - The default SA has no IRSA annotation, so IMDS-pivot and IRSA-missing both fire.
+# - No NetworkPolicy applies to the namespace, so network.IMDSReachable returns
+#   reachable=true with reason=no-egress-policy, which feeds both
+#   KUBE-NETPOL-IMDS-001 and the IMDS-pivot rule.
+# - The image is a stable AWS CLI image; AWSSDKImageHint matches the "aws-cli"
+#   basename token. command=[sleep, 3600] keeps the container idle so kind
+#   doesn't churn restart loops.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imds-pivot-app
+  namespace: cloud-eks-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imds-pivot-app
+  template:
+    metadata:
+      labels:
+        app: imds-pivot-app
+    spec:
+      containers:
+        - name: app
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          command: ["sleep", "3600"]

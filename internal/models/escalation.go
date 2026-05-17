@@ -10,6 +10,7 @@ const (
 	TargetNodeEscape        EscalationTarget = "node_escape"
 	TargetSystemMasters     EscalationTarget = "system_masters"
 	TargetTokenMint         EscalationTarget = "token_mint"
+	TargetAWSIAMRole        EscalationTarget = "aws_iam_role"
 )
 
 // EscalationGraph is the directed privilege-escalation graph: subject nodes, sink nodes, and labeled edges.
@@ -20,9 +21,11 @@ type EscalationGraph struct {
 
 // EscalationNode represents either a subject (with Subject populated) or a terminal sink (IsSink=true) in the graph.
 type EscalationNode struct {
-	ID              string           `json:"id"`
-	Subject         SubjectRef       `json:"subject,omitempty"`
-	IsSystem        bool             `json:"is_system,omitempty"` // built-in control-plane subjects; not traversed during path search
+	ID       string     `json:"id"`
+	Subject  SubjectRef `json:"subject,omitempty"`
+	IsSystem bool       `json:"is_system,omitempty"` // built-in control-plane subjects; not traversed during path search
+	// external (non-Kubernetes) subject such as a cloud IAM role; not seeded as a BFS source this slot
+	IsExternal      bool             `json:"is_external,omitempty"`
 	IsSink          bool             `json:"is_sink,omitempty"`
 	Target          EscalationTarget `json:"target,omitempty"`           // set only when IsSink is true
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin to identify which namespace the sink represents
