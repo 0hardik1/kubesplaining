@@ -25,6 +25,13 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		if node.IsSink || node.IsSystem {
 			continue
 		}
+		// External (cloud-IAM) subjects are added by Unit 4 as terminal-ish
+		// nodes reachable from cluster ServiceAccounts via IRSA edges; they
+		// must never be seeded as BFS sources or every external identity in
+		// aws-auth would generate spurious "external -> sink" paths.
+		if node.IsExternal {
+			continue
+		}
 		sources = append(sources, id)
 	}
 	sort.Strings(sources)

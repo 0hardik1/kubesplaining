@@ -19,6 +19,7 @@ package analyzer
 import (
 	"github.com/0hardik1/kubesplaining/internal/analyzer/admission"
 	celmod "github.com/0hardik1/kubesplaining/internal/analyzer/cel"
+	"github.com/0hardik1/kubesplaining/internal/analyzer/cloud"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/containersec"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/leastprivilege"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
@@ -58,4 +59,8 @@ var DefaultModules = []func(cfg Config) Module{
 	// when CustomRulesDir is empty, matching the "registered but silent"
 	// pattern the containersec stub above uses.
 	func(cfg Config) Module { return celmod.New(cfg.CustomRulesDir) },
+	// cloud dispatches per-provider detectors (EKS today; GKE/AKS reserved).
+	// Silent when CloudProvider is empty or "none", so the module ships clean
+	// for self-managed clusters.
+	func(_ Config) Module { return cloud.New() },
 }
