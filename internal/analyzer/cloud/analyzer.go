@@ -15,6 +15,13 @@ import (
 // consumes contentProviderUnknown (or replace with the new helpers).
 var _ = contentProviderUnknown
 
+// _ references the IMDS-pivot content helper (KUBE-CLOUD-IMDS-PIVOT-001). The
+// rule is detected in internal/analyzer/cloud/eks/imds_pivot.go; the cloud-side
+// helper holds the shared prose so a future coordinator can consume it without
+// the eks sub-package needing to import its parent (which would create a cycle
+// since cloud → eks). Drop once the coordinator wires content through.
+var _ = contentImdsPivot001
+
 // Analyzer dispatches cloud-provider-specific detectors based on the snapshot's
 // detected (or operator-overridden) CloudProvider metadata field.
 type Analyzer struct{}

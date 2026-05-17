@@ -91,6 +91,8 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 		}
 	}
 
+	addCloudEdges(graph, snapshot)
+
 	return graph
 }
 
@@ -450,6 +452,10 @@ func ensureSubjectNode(graph *models.EscalationGraph, ref models.SubjectRef) {
 }
 
 // isSystemSubject flags built-in control-plane subjects so path search does not traverse them.
+// Note: external cloud-IAM nodes carry IDs prefixed "external:aws-iam:" (see
+// cloud_edges.go) and never flow through ensureSubjectNode, so isSystemSubject
+// is never asked about them. The "external:" prefix is therefore non-system by
+// construction; the pathfinder skips them by checking node.IsExternal directly.
 func isSystemSubject(ref models.SubjectRef) bool {
 	if strings.HasPrefix(ref.Name, "system:") {
 		return true

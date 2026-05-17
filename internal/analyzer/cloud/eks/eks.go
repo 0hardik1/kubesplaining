@@ -5,10 +5,14 @@ package eks
 import "github.com/0hardik1/kubesplaining/internal/models"
 
 // Analyze runs all EKS-specific analyzers and returns the combined findings.
-// Currently a no-op skeleton; Units 1, 2, 3 populate it.
+// Each sub-analyzer is self-gating: aws-auth returns nil when the aws-auth
+// ConfigMap is absent; IRSA emits per-SA findings only when the annotation is
+// present; IMDS-pivot is provider-gated and Fargate-aware. The dispatcher in
+// internal/analyzer/cloud/analyzer.go is responsible for the outer provider gate.
 func Analyze(snapshot models.Snapshot) []models.Finding {
-	_ = snapshot
 	var findings []models.Finding
-	// future: append aws-auth, IRSA, IMDS-pivot findings here
+	findings = append(findings, AnalyzeAWSAuth(snapshot)...)
+	findings = append(findings, AnalyzeIRSA(snapshot)...)
+	findings = append(findings, AnalyzeIMDSPivot(snapshot)...)
 	return findings
 }

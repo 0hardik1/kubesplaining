@@ -218,6 +218,40 @@ var Glossary = map[string]GlossaryEntry{
 		Long:   template.HTML(`<p>A <strong>CertificateSigningRequest</strong> (CSR) carries an x509 signing request that asks the cluster's CA to issue a certificate. The signer is named via <code>spec.signerName</code> (e.g. <code>kubernetes.io/kube-apiserver-client</code> for API authentication, <code>kubernetes.io/kubelet-serving</code> for node serving certs). The CSR's Subject DN is attacker-controlled: the <code>CN</code> becomes the authenticated User and each <code>O</code> (Organization) becomes a Group.</p><p>Two RBAC verbs control the lifecycle: <code>create</code> on <code>certificatesigningrequests</code> lets you submit a CSR, and <code>update</code>/<code>patch</code> on the <code>certificatesigningrequests/approval</code> subresource lets you mark it Approved. The kube-controller-manager then signs whatever was approved. Holding both verbs is equivalent to cluster-admin: submit a CSR with <code>O=system:masters</code>, self-approve, retrieve the signed cert, and authenticate as <code>system:masters</code> (which the apiserver hard-codes as cluster-admin). Cert lifetime is whatever the signer applies (often a year), and revoking the original RBAC grant does not invalidate already-issued certs.</p>`),
 		DocURL: "https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/",
 	},
+	// Cloud-provider entries (EKS / AWS). Surface IAM concepts that show up as
+	// external Subjects on KUBE-CLOUD-* findings and as external nodes in the
+	// privesc graph, so a reader following an IRSA or aws-auth chain has the
+	// background to read the side panel without context-switching to AWS docs.
+	"AWSAccount": {
+		Title:  "AWS Account",
+		Short:  "Top-level container for AWS resources and IAM identities.",
+		Long:   template.HTML(`<p>An <strong>AWS account</strong> is the billing and isolation boundary that owns every IAM role, IAM user, and AWS resource an EKS cluster touches. Cross-account access requires explicit trust-policy statements, so the account number in an ARN is the first thing to check when an IAM principal shows up in an aws-auth mapping or IRSA annotation.</p>`),
+		DocURL: "https://docs.aws.amazon.com/general/latest/gr/accts.html",
+	},
+	"IAMRole": {
+		Title:  "AWS IAM Role",
+		Short:  "AWS identity that pods can assume via IRSA.",
+		Long:   template.HTML(`<p>An <strong>AWS IAM role</strong> is an assumable identity in an AWS account: it carries a permissions policy plus a trust policy that names who may assume it. On EKS, the trust policy can name the cluster's OIDC issuer, so a Kubernetes ServiceAccount with the matching <code>eks.amazonaws.com/role-arn</code> annotation can call <code>sts:AssumeRoleWithWebIdentity</code> and receive short-lived AWS credentials.</p><p>Because the role's permissions apply to whatever workload mounts the SA, an over-broad IAM role (e.g. one with <code>AdministratorAccess</code>) becomes an AWS-side privilege escalation primitive routed through Kubernetes.</p>`),
+		DocURL: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html",
+	},
+	"IAMUser": {
+		Title:  "AWS IAM User",
+		Short:  "AWS human / programmatic identity, often mapped via aws-auth.",
+		Long:   template.HTML(`<p>An <strong>AWS IAM user</strong> is a long-lived identity, typically representing a human or a CI system, that authenticates with an access-key pair. On EKS, the <code>aws-auth</code> ConfigMap can map an IAM user ARN to one or more Kubernetes groups: if those groups include <code>system:masters</code>, or if any of them is bound to <code>cluster-admin</code>, that AWS user is effectively cluster-admin without ever appearing in <code>kubectl get clusterrolebindings</code>.</p>`),
+		DocURL: "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users.html",
+	},
+	"IMDSEndpoint": {
+		Title:  "EC2 Instance Metadata Service",
+		Short:  "Link-local credential endpoint (169.254.169.254); reachable by default from EC2-backed pods.",
+		Long:   template.HTML(`<p>The <strong>EC2 Instance Metadata Service</strong> (IMDS) is a link-local HTTP service at <code>169.254.169.254</code> that returns the EC2 instance's attached IAM role credentials, among other metadata. On an EKS worker node, that role is typically the node IAM role with permissions like <code>ec2:DescribeInstances</code> and <code>ecr:GetAuthorizationToken</code>, plus whatever the operator added.</p><p>Pods inherit the host's network unless a NetworkPolicy blocks egress to <code>169.254.169.254/32</code>: a compromised pod can curl IMDS, steal node-role credentials, and pivot into AWS. IMDSv2 (token-based) mitigates SSRF but does not block in-cluster pod access.</p>`),
+		DocURL: "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html",
+	},
+	"IRSA": {
+		Title:  "IAM Roles for Service Accounts",
+		Short:  "EKS mechanism that lets a Kubernetes SA assume an AWS IAM role via STS.",
+		Long:   template.HTML(`<p><strong>IAM Roles for Service Accounts</strong> (IRSA) is the EKS-native way to give a Kubernetes ServiceAccount AWS permissions without putting long-lived credentials into a Secret. The SA is annotated with <code>eks.amazonaws.com/role-arn=arn:aws:iam::&lt;acct&gt;:role/&lt;role&gt;</code>, the cluster's OIDC provider signs the projected SA token, and the AWS SDK calls <code>sts:AssumeRoleWithWebIdentity</code> to exchange the token for time-bounded AWS credentials.</p><p>IRSA is the preferred alternative to mounting node-role credentials via IMDS, because it scopes AWS access per-workload. The risk is the same as any RBAC grant: an over-broad IAM role attached to a low-trust SA is an AWS privilege-escalation primitive.</p>`),
+		DocURL: "https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html",
+	},
 }
 
 // Techniques maps a privesc-action key (matching the Action strings in
@@ -356,6 +390,41 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Pivot to other pods on the same node via the container runtime socket", Cmd: "crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps"},
 		},
 	},
+	// Cloud-provider (EKS) techniques. The keys mirror the Action strings on the
+	// privesc edges that Unit 4 wires into the graph, so a chain hop with
+	// Action="irsa_assume_role" looks its explainer up here directly.
+	"irsa_assume_role": {
+		Title: "Assume AWS IAM Role via IRSA",
+		Plain: template.HTML(`<p>A pod whose ServiceAccount is annotated with <code>eks.amazonaws.com/role-arn</code> can call <code>sts:AssumeRoleWithWebIdentity</code> with the projected SA token and receive short-lived AWS credentials for the named IAM role. The exchange happens entirely in user-space inside the pod, so anyone with exec on that pod (or with create-pod rights in the namespace) inherits the IAM role's permissions.</p><p>What the attacker gains depends on the IAM role's policy. If the role carries <code>AdministratorAccess</code>, <code>PowerUserAccess</code>, or any <code>*:*</code> grant, this is an AWS-account-wide takeover routed through Kubernetes.</p>`),
+		Mitre: "T1078.004 — Valid Accounts: Cloud Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Find ServiceAccounts annotated with an IRSA role ARN", Cmd: "kubectl get sa -A -o json | jq -r '.items[] | select(.metadata.annotations.\"eks.amazonaws.com/role-arn\") | .metadata.namespace + \"/\" + .metadata.name + \" -> \" + .metadata.annotations.\"eks.amazonaws.com/role-arn\"'"},
+			{Note: "Land a shell on a pod that uses one of those SAs", Cmd: "kubectl exec -it <pod-with-irsa-sa> -- /bin/sh"},
+			{Note: "The pod's AWS SDK already exchanges the projected token for STS credentials; confirm the assumed identity", Cmd: "aws sts get-caller-identity"},
+			{Note: "Probe what the assumed role can do in AWS", Cmd: "aws iam list-attached-role-policies --role-name <role-from-arn>"},
+		},
+	},
+	"imds_node_role_pivot": {
+		Title: "Steal node IAM role via IMDS",
+		Plain: template.HTML(`<p>EC2-backed EKS worker nodes attach an IAM role to the instance and expose its credentials at the link-local IMDS endpoint <code>169.254.169.254</code>. Pods inherit the host's network unless a NetworkPolicy denies egress to that IP, so a compromised pod can curl IMDS, parse out the node-role credentials, and act in AWS as the node.</p><p>The node role is typically broader than any single workload's IRSA role: it can pull from ECR, describe EC2 instances, and is often given additional grants for cluster-autoscaler / EBS-CSI / external-dns. This is a credential-theft chain (SSRF to cloud creds) rather than a Kubernetes RBAC chain.</p>`),
+		Mitre: "T1552.005 — Unsecured Credentials: Cloud Instance Metadata API",
+		AttackerSteps: []AttackerStep{
+			{Note: "From inside a pod, fetch the IMDSv2 token then read the role credentials", Cmd: "TOKEN=$(curl -s -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60'); curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/iam/security-credentials/"},
+			{Note: "Read the credentials JSON for the node role returned above", Cmd: "curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/iam/security-credentials/<role-name>"},
+			{Note: "Export the stolen credentials and act as the node role in AWS", Cmd: "export AWS_ACCESS_KEY_ID=...; export AWS_SECRET_ACCESS_KEY=...; export AWS_SESSION_TOKEN=...; aws sts get-caller-identity"},
+		},
+	},
+	"aws_auth_admin": {
+		Title: "AWS IAM principal granted cluster-admin via aws-auth",
+		Plain: template.HTML(`<p>EKS authenticates AWS IAM principals into Kubernetes via the <code>kube-system/aws-auth</code> ConfigMap. Each entry under <code>mapRoles</code> / <code>mapUsers</code> ties an IAM role or user ARN to a Kubernetes username and a list of groups. If that group list contains <code>system:masters</code>, the IAM principal is hard-coded as cluster-admin by the apiserver. If it contains any group bound to <code>cluster-admin</code> via a ClusterRoleBinding, the effect is the same: the IAM principal can do anything in the cluster.</p><p>This grant is invisible to <code>kubectl get clusterrolebindings</code>: the mapping lives in a ConfigMap and the resulting identity is synthesized at request-time by the EKS aws-iam-authenticator.</p>`),
+		Mitre: "T1078 — Valid Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the AWS identity you control", Cmd: "aws sts get-caller-identity"},
+			{Note: "Refresh the EKS kubeconfig context for the target cluster", Cmd: "aws eks update-kubeconfig --name <cluster> --region <region>"},
+			{Note: "Prove cluster-admin reach", Cmd: "kubectl auth can-i --list"},
+			{Note: "Read every Secret cluster-wide", Cmd: "kubectl get secrets -A"},
+		},
+	},
 }
 
 // Categories maps a RiskCategory to plain-language explainer copy used on the impact-lane nodes.
@@ -446,6 +515,13 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "wildcard_permission"
 	case f.RuleID == "KUBE-RBAC-OVERBROAD-001":
 		return "bound_to_cluster_admin"
+	case f.RuleID == "KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001",
+		f.RuleID == "KUBE-CLOUD-AWSAUTH-OVERBROAD-001":
+		return "aws_auth_admin"
+	case f.RuleID == "KUBE-CLOUD-IRSA-ADMIN-ROLE-001":
+		return "irsa_assume_role"
+	case f.RuleID == "KUBE-CLOUD-IMDS-PIVOT-001":
+		return "imds_node_role_pivot"
 	case strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-"):
 		// Fall back to the chain's first hop, already handled above; if no hops, leave empty.
 		return ""
@@ -458,6 +534,13 @@ func TechniqueKeyForFinding(f models.Finding) string {
 func GlossaryKeyForSubject(ref *models.SubjectRef) string {
 	if ref == nil {
 		return ""
+	}
+	// External cloud-IAM principals show up as Kind="User" with an ARN-shaped
+	// Name (set by the cloud analyzer's aws-auth findings and Unit 4's privesc
+	// graph external nodes). Route them to IAMRole / IAMUser before the generic
+	// User entry so the side panel teaches AWS identity rather than k8s User.
+	if cloudKey := cloudIAMKeyForName(ref.Name); cloudKey != "" {
+		return cloudKey
 	}
 	switch ref.Kind {
 	case "ServiceAccount", "User", "Group":
@@ -475,11 +558,42 @@ func GlossaryKeyForResource(ref *models.ResourceRef) string {
 	if ref == nil {
 		return ""
 	}
+	// External cloud-IAM principals can also surface as a Resource on some
+	// cloud findings (e.g. the IRSA-mapped role attached to a SA). Map by ARN
+	// shape the same way as the subject side.
+	if cloudKey := cloudIAMKeyForName(ref.Name); cloudKey != "" {
+		return cloudKey
+	}
 	switch ref.Kind {
 	case "Pod", "Deployment", "DaemonSet", "StatefulSet", "ReplicaSet", "Job",
 		"Secret", "ConfigMap", "Namespace", "PersistentVolume",
 		"ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding":
 		return ref.Kind
+	}
+	return ""
+}
+
+// cloudIAMKeyForName returns "IAMRole" / "IAMUser" / "" by sniffing the AWS-style
+// identity string the cloud analyzer puts on Subject/Resource Name. Two prefixes
+// surface in practice: a literal ARN ("arn:aws:iam::123:role/foo") and the
+// synthetic "external:aws-iam:..." form Unit 4 uses for graph nodes. Both carry
+// the discriminating substring (":role/" vs ":user/") in the body of the string,
+// so we look at that rather than parsing each form.
+func cloudIAMKeyForName(name string) string {
+	if name == "" {
+		return ""
+	}
+	hasAWS := strings.HasPrefix(name, "arn:aws:iam:") ||
+		strings.HasPrefix(name, "external:aws-iam:") ||
+		strings.Contains(name, "arn:aws:iam")
+	if !hasAWS {
+		return ""
+	}
+	switch {
+	case strings.Contains(name, ":role/"):
+		return "IAMRole"
+	case strings.Contains(name, ":user/"):
+		return "IAMUser"
 	}
 	return ""
 }
