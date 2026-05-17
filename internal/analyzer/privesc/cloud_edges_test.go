@@ -65,8 +65,8 @@ func TestAddCloudEdgesIRSAOnly(t *testing.T) {
 	if !node.IsExternal {
 		t.Errorf("external node should have IsExternal=true; got %+v", node)
 	}
-	if node.IsSink {
-		t.Errorf("external node should NOT be a sink; got IsSink=true")
+	if !node.IsSink {
+		t.Errorf("external node should be a sink (terminal for IRSA paths); got IsSink=false")
 	}
 	if node.Target != models.TargetAWSIAMRole {
 		t.Errorf("external node Target = %q, want %q", node.Target, models.TargetAWSIAMRole)

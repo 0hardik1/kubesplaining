@@ -114,7 +114,15 @@ func bfsToSinks(
 				if existing, ok := sinks[edge.To]; !ok || len(nextPath) < len(existing) {
 					sinks[edge.To] = nextPath
 				}
-				continue
+				// External sinks (cloud IAM nodes) can also carry outbound edges
+				// from aws-auth mappings (external IAM -> sinkSystemMasters or
+				// sinkClusterAdmin). Continue traversal so the deeper chain is
+				// also captured as a separate, longer path. Non-external sinks
+				// have no outbound edges in this graph, so the enqueue below is
+				// a no-op for them.
+				if !neighbor.IsExternal {
+					continue
+				}
 			}
 
 			if neighbor.IsSystem {
@@ -134,7 +142,10 @@ func buildPath(graph *models.EscalationGraph, source models.SubjectRef, target m
 	current := source
 	for i, step := range chain {
 		var next models.SubjectRef
-		if node, ok := graph.Nodes[step.nodeID]; ok && !node.IsSink {
+		// External (cloud-IAM) nodes are sinks-with-a-Subject: the ARN itself is
+		// the meaningful "ToSubject" for the hop, unlike the synthetic outcome
+		// sinks (sinkClusterAdmin, sinkSystemMasters, ...) whose Subject is empty.
+		if node, ok := graph.Nodes[step.nodeID]; ok && (!node.IsSink || node.IsExternal) {
 			next = node.Subject
 		}
 		hops = append(hops, models.EscalationHop{

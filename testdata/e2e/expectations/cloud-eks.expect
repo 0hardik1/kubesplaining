@@ -10,6 +10,7 @@ KUBE-CLOUD-IRSA-ADMIN-ROLE-001
 KUBE-CLOUD-IRSA-MISSING-001
 KUBE-CLOUD-IMDS-PIVOT-001
 KUBE-NETPOL-IMDS-001
+KUBE-PRIVESC-PATH-AWS-IAM-ROLE
 
 # KUBE-PRIVESC-PATH-SYSTEM-MASTERS also fires here via the cloud chain
 # (ServiceAccount cloud-eks-test/eks-admin-irsa -> external aws-iam role ->
@@ -18,11 +19,9 @@ KUBE-NETPOL-IMDS-001
 # baseline.expect against the standard-preset scan, so we do not repeat it
 # here.
 #
-# KUBE-PRIVESC-PATH-AWS-IAM-ROLE is reserved by the privesc analyzer for
-# paths terminating at an external AWS IAM node, but the BFS in
-# internal/analyzer/privesc/pathfinder.go only terminates at IsSink nodes
-# and the external IAM node from internal/analyzer/privesc/cloud_edges.go
-# is IsSink=false (it can be an intermediate hop toward a real sink like
-# sinkSystemMasters, never a terminus on its own). A future privesc-engine
-# pass can promote IsExternal nodes to sinks when they carry no outbound
-# edges; the fixture already exercises the substrate for that follow-up.
+# KUBE-PRIVESC-PATH-AWS-IAM-ROLE fires for the shorter "SA can assume this
+# IAM role" chain that terminates at the external AWS IAM node itself. The
+# pathfinder treats external IAM nodes as sinks (so they are captured) and
+# continues traversal through them when they have aws-auth outbound edges,
+# so the longer SA -> IRSA -> aws-auth -> system_masters chain also surfaces
+# separately as KUBE-PRIVESC-PATH-SYSTEM-MASTERS.
