@@ -137,6 +137,8 @@ func contentForTarget(source models.SubjectRef, target models.EscalationTarget, 
 		return contentKubeSystemSecretsPath(source, hops)
 	case models.TargetSystemMasters:
 		return contentSystemMastersPath(source, hops)
+	case models.TargetAWSIAMRole:
+		return contentAWSIAMRolePath(source, hops)
 	default:
 		return contentGenericPath(source, target, hops)
 	}
@@ -160,6 +162,11 @@ func targetScoring(target models.EscalationTarget, hops int) (models.Severity, f
 		// Namespace-admin is a real privesc but bounded to a single namespace, so it scores
 		// below cluster-admin but above the generic fallback.
 		base, severity, ruleID = 7.6, models.SeverityHigh, "KUBE-PRIVESC-PATH-NAMESPACE-ADMIN"
+	case models.TargetAWSIAMRole:
+		// Cluster SA can reach an external AWS IAM role. Severity reflects that the
+		// blast radius is the IAM role's policies, not the Kubernetes cluster itself,
+		// but the role is still real cloud-account access so it sits at High / 8.0.
+		base, severity, ruleID = 8.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-AWS-IAM-ROLE"
 	default:
 		base, severity, ruleID = 7.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-GENERIC"
 	}
@@ -210,6 +217,8 @@ func targetLabel(target models.EscalationTarget) string {
 		return "system:masters"
 	case models.TargetNamespaceAdmin:
 		return "namespace-admin"
+	case models.TargetAWSIAMRole:
+		return "AWS IAM role"
 	default:
 		return string(target)
 	}

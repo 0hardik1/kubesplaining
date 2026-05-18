@@ -684,6 +684,12 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 	snapshot.Metadata.NamespacesScanned = c.scannedNamespaces(snapshot.Resources.Namespaces)
 	snapshot.Metadata.CollectionDurationSecond = time.Since(start).Seconds()
 
+	if snapshot.Metadata.CloudProvider == "" || snapshot.Metadata.CloudProvider == "none" {
+		if detected := DetectCloudProvider(snapshot); detected != "" {
+			snapshot.Metadata.CloudProvider = detected
+		}
+	}
+
 	if len(snapshot.Resources.Namespaces) == 0 && len(fatals) > 0 {
 		return snapshot, errors.Join(fatals...)
 	}

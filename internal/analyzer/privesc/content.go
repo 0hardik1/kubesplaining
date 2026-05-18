@@ -386,6 +386,44 @@ func contentNamespaceAdminPath(source models.SubjectRef, namespace string, hops 
 	}
 }
 
+func contentAWSIAMRolePath(source models.SubjectRef, hops []models.EscalationHop) ruleContent {
+	hopCount := len(hops)
+	steps := make([]string, 0, hopCount+2)
+	steps = append(steps, fmt.Sprintf("Attacker compromises any workload mounting `%s`.", source.Key()))
+	for _, hop := range hops {
+		steps = append(steps, hopNarrative(hop))
+	}
+	steps = append(steps, "Final step: the IRSA-projected token is exchanged at the AWS STS endpoint (`sts:AssumeRoleWithWebIdentity`) for an AWS access-key/secret/session-token triple authenticated as the IAM role. The attacker can now invoke any AWS API the role's policies allow, from inside or outside the cluster.")
+	return ruleContent{
+		Title: "ServiceAccount can reach external AWS IAM role",
+		Scope: models.Scope{
+			Level:  models.ScopeCluster,
+			Detail: fmt.Sprintf("Source `%s` -> external AWS IAM role: scope is the union of every action the IAM role's attached policies allow, outside the Kubernetes API surface.", source.Key()),
+		},
+		Description: fmt.Sprintf("Subject `%s` has a privesc path that ends at an external AWS IAM role. The terminal hop is `irsa_assume_role`: the cluster's OIDC provider issues a JWT for the ServiceAccount, and AWS STS exchanges that JWT for IAM role credentials. Once the attacker holds those credentials, the cluster's RBAC layer is no longer the perimeter; the IAM role's attached policies are. Real IRSA roles in production commonly grant S3 read/write, DynamoDB, KMS Decrypt, or worse, and admin-flavored roles short-circuit the entire AWS account boundary.\n\n"+
+			"The chain (%d hop(s); each step uses an explicit primitive the engine validated):\n%s\n\n"+
+			"This finding does NOT score AWS-side risk: the IAM role's policies live in the cloud account, not the snapshot. A separate cloud-side review (Cloudsplaining, IAM Access Analyzer, or `aws iam simulate-principal-policy`) is required to convert this into a concrete impact statement.",
+			source.Key(), hopCount, formatHopList(hops)),
+		Impact:         "Compromise of this SA yields AWS account access scoped by the IAM role's policies. Even least-privilege IRSA roles routinely grant data-plane reads (S3, DynamoDB, KMS) that turn cluster compromise into data exfiltration; admin-flavored roles turn it into account takeover.",
+		AttackScenario: steps,
+		Remediation:    fmt.Sprintf("Tighten the IRSA role: review its trust policy and attached permissions, then break the chain at the weakest hop. Concretely: %s.", hopsRemediation(hops)),
+		RemediationSteps: []string{
+			"Audit the IAM role's trust policy: `aws iam get-role --role-name <role>` and confirm the `Condition` block restricts `sub` to exactly this ServiceAccount (e.g. `system:serviceaccount:<ns>:<sa>`). A wildcard or missing condition lets *any* SA in the cluster mint role credentials.",
+			"Apply least-privilege actions on the role's attached policies. Replace `Action: \"*\"` or `Resource: \"*\"` with the minimum set the workload actually uses (CloudTrail data-event logs + IAM Access Analyzer findings are the canonical inputs).",
+			"Tag and audit role usage with CloudTrail. Set `aws_iam_role_last_used` to alert on any AssumeRole event not originating from the expected SA's OIDC sub.",
+			fmt.Sprintf("Break the in-cluster chain: %s.", hopsRemediation(hops)),
+			"Wire admission policy: a Kyverno rule that fails any new ServiceAccount whose `eks.amazonaws.com/role-arn` annotation points at an admin-flavored role (AdministratorAccess, PowerUserAccess, AWSReservedSSO_AdministratorAccess_*) outside an explicit allowlist.",
+		},
+		LearnMore: []models.Reference{
+			{Title: "AWS: IAM Roles for Service Accounts (IRSA)", URL: "https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html"},
+			{Title: "AWS: Restrict an IRSA role to a single ServiceAccount", URL: "https://docs.aws.amazon.com/eks/latest/userguide/cross-account-access.html"},
+			refHackTricksRBAC,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1098, mitreT1552_007},
+	}
+}
+
 func contentGenericPath(source models.SubjectRef, target models.EscalationTarget, hops []models.EscalationHop) ruleContent {
 	hopCount := len(hops)
 	steps := make([]string, 0, hopCount+2)

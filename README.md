@@ -258,6 +258,15 @@ Useful for:
 - **Air-gapped review**: analyze a production cluster without bringing kubeconfig off the jumphost.
 - **Manifest scans**: `kubesplaining scan-resource --input-file deployment.yaml` runs the same analyzers against a single YAML, no cluster needed.
 
+### Privacy posture for snapshots
+
+The collector never reads raw Secret values (only metadata) and blanks every ConfigMap value through `redactConfigMapValues` so keys survive but payloads do not. Two well-known kube-system ConfigMaps are carve-outs and are stored verbatim because the analyzers that consume them need the values:
+
+- `kube-system/aws-auth`: the EKS `mapRoles` / `mapUsers` payload (IAM role and user ARNs, mapped Kubernetes usernames and groups) is read by the cloud `aws-auth` analyzers to name the IAM principal that has cluster-admin reach. A snapshot from an EKS cluster therefore contains the cluster's IAM-to-RBAC trust map verbatim.
+- `kube-system/coredns`: the Corefile value is substring-matched by `KUBE-CONFIGMAP-002` to detect rewrite directives and external DNS forwarders (`forward . 8.8.8.8`, `forward . 1.1.1.1`, `forward . tls://...`).
+
+Treat snapshot files (and any HTML/JSON/CSV/SARIF reports generated from them) as sensitive when sharing across teams or storing in CI artifact buckets, especially on EKS clusters where the aws-auth carve-out exposes account IDs, IAM role inventory, and SSO group naming conventions. Every other ConfigMap value (including ones not on this allow-list) is blanked.
+
 ## Least-Privilege analyzer (audit-log driven)
 
 The `leastprivilege` module compares the RBAC permissions a ServiceAccount **has** (from the snapshot) against the ones it has **actually exercised** (from a kube-apiserver audit log) and flags the delta. It's the analog of AWS IAM Access Advisor for Kubernetes RBAC.

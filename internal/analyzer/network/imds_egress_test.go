@@ -244,6 +244,90 @@ func TestIMDSEmitsForLinkLocalRange(t *testing.T) {
 	}
 }
 
+// TestIMDSEmitsForHostNetworkWithDenyAllEgress proves the most important
+// false-negative fix in this slot: a hostNetwork pod in a namespace whose
+// NetworkPolicy denies egress to everything STILL fires the rule because
+// host-network pods ride the node netns and NetPol does not apply to them.
+// Before this guard, kubesplaining would report "IMDS unreachable" while the
+// pod was effectively one curl away from the node IAM role.
+func TestIMDSEmitsForHostNetworkWithDenyAllEgress(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Namespaces: []corev1.Namespace{
+				{ObjectMeta: metav1.ObjectMeta{Name: "monitoring"}},
+			},
+			DaemonSets: []appsv1.DaemonSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "node-exporter", Namespace: "monitoring"},
+					Spec: appsv1.DaemonSetSpec{
+						Template: corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "node-exporter"}},
+							Spec:       corev1.PodSpec{HostNetwork: true},
+						},
+					},
+				},
+			},
+			NetworkPolicies: []networkingv1.NetworkPolicy{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "default-deny-egress", Namespace: "monitoring"},
+					Spec: networkingv1.NetworkPolicySpec{
+						PodSelector: metav1.LabelSelector{},
+						PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+					},
+				},
+			},
+		},
+	}
+
+	findings, err := New().Analyze(context.Background(), snapshot)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	got := findRule(findings, "KUBE-NETPOL-IMDS-001")
+	if got.RuleID == "" {
+		t.Fatalf("expected KUBE-NETPOL-IMDS-001 to fire on hostNetwork DaemonSet despite deny-all egress, got %v", ruleIDs(findings))
+	}
+	if !strings.Contains(string(got.Evidence), `"reason":"host-network"`) {
+		t.Fatalf("expected reason=host-network for hostNetwork workload, got %s", string(got.Evidence))
+	}
+}
+
+// TestIMDSReachableReturnsHostNetworkReasonViaPublicAPI guards the exported
+// IMDSReachable wrapper that the cloud module calls into. When the wrapper is
+// invoked with hostNetwork=true, the reason MUST be "host-network" so the
+// IMDS-pivot rule and downstream consumers do not silently fall back to one
+// of the NetPol-flavored reasons.
+func TestIMDSReachableReturnsHostNetworkReasonViaPublicAPI(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Namespaces: []corev1.Namespace{
+				{ObjectMeta: metav1.ObjectMeta{Name: "monitoring"}},
+			},
+			NetworkPolicies: []networkingv1.NetworkPolicy{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "default-deny-egress", Namespace: "monitoring"},
+					Spec: networkingv1.NetworkPolicySpec{
+						PodSelector: metav1.LabelSelector{},
+						PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+					},
+				},
+			},
+		},
+	}
+
+	reachable, reason, _, _ := IMDSReachable(snapshot, "Pod", "node-exporter", "monitoring", map[string]string{"app": "node-exporter"}, true)
+	if !reachable {
+		t.Fatalf("expected IMDSReachable to report reachable=true for hostNetwork pod, got reachable=false")
+	}
+	if reason != "host-network" {
+		t.Fatalf("expected reason=host-network, got %q", reason)
+	}
+}
+
 // TestIMDSSkipsSystemNamespaces verifies that system namespaces (kube-system,
 // kube-public, kube-node-lease) are NOT scanned for IMDS reachability. Control
 // plane components routinely need IMDS access and would otherwise drown the

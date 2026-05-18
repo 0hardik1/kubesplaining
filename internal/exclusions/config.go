@@ -128,6 +128,13 @@ var wave1RulePrefixes = []string{
 	// "KUBE-CONFIGMAP-CREDS-*",  // W1 #12 ConfigMap heuristics
 	// "KUBE-PV-HOSTPATH-*",      // W1 #11 PV hostPath bypass
 	// "KUBE-PSA-LABELS-*",       // W1 #11 PSA namespace label assessment
+	//
+	// Cloud-provider (EKS) bundle, landed in the feat/cloud-provider-eks slot.
+	// The rules surface by default — operators who want them muted can re-add
+	// the patterns below to their own exclusions file. Documented here so the
+	// standard preset reserves the slots and future bundle PRs do not collide.
+	// "KUBE-CLOUD-*",                  // cloud module (aws-auth, IRSA, IMDS, provider)
+	// "KUBE-PRIVESC-PATH-AWS-*",       // cloud-flavored privesc paths added by Unit 4
 }
 
 // Preset returns one of the built-in exclusion profiles. "standard" (default) suppresses built-in

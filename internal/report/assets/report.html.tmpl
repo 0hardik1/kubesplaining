@@ -1811,11 +1811,11 @@
             {{ range .Graph.Nodes }}
               {{ $node := . }}
               {{ if eq .Kind "entry" }}
-                <g class="kp-node kp-node-entry" data-node-id="{{ .ID }}" data-kind="entry" data-sev="{{ .SevClass }}" tabindex="0" role="button" aria-label="{{ .AriaLabel }}">
+                <g class="kp-node kp-node-entry{{ if .External }} kp-node-external{{ end }}" data-node-id="{{ .ID }}" data-kind="entry" data-sev="{{ .SevClass }}"{{ if .External }} data-external="1"{{ end }} tabindex="0" role="button" aria-label="{{ .AriaLabel }}">
                   <title>{{ .AriaLabel }}</title>
-                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="10"
+                  <rect class="kp-node-rect" x="{{ .X }}" y="{{ .Y }}" width="{{ .Width }}" height="{{ .Height }}" rx="{{ if .External }}2{{ else }}10{{ end }}"
                         fill="#151c2c"
-                        stroke="{{ if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"
+                        stroke="{{ if .External }}#ff9900{{ else if eq .SevClass "crit" }}#ff5568{{ else if eq .SevClass "high" }}#ff9a3c{{ else }}#6ab7ff{{ end }}"
                         stroke-opacity="0.55"/>
                   <circle class="kp-sev-dot kp-sev-{{ .SevClass }}" cx="{{ add .X 13 }}" cy="{{ add .Y 22 }}" r="4"/>
                   {{ range .Lines }}

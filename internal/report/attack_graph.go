@@ -31,6 +31,12 @@ type entryInfo struct {
 	representative models.Finding
 	hasRep         bool
 	entryKind      string // "Subject" | "Resource" — used by the JS filter chips.
+	// external flags entries whose Subject (or Resource) is a non-Kubernetes
+	// cloud-IAM identity, e.g. an AWS IAM role ARN surfaced by the cloud module.
+	// The attack-graph renderer uses this to give external nodes a distinct
+	// stroke color and diamond shape so AWS-origin attack paths stand out from
+	// RBAC subjects in the same lane.
+	external bool
 }
 
 // buildAttackGraph composes a 3-column flow diagram (entries → capabilities → impacts) from findings.
@@ -147,7 +153,13 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 			case f.Resource != nil:
 				kind = "Resource"
 			}
-			e = &entryInfo{Key: key, Title: title, Subtitle: subtitle, SevClass: severityClass(f.Severity), entryKind: kind}
+			external := false
+			if f.Subject != nil && cloudIAMKeyForName(f.Subject.Name) != "" {
+				external = true
+			} else if f.Resource != nil && cloudIAMKeyForName(f.Resource.Name) != "" {
+				external = true
+			}
+			e = &entryInfo{Key: key, Title: title, Subtitle: subtitle, SevClass: severityClass(f.Severity), entryKind: kind, external: external}
 			entries[key] = e
 		}
 		if !e.hasRep {
@@ -254,6 +266,10 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 			{class: "node-sub", lineHeight: 14, leadIn: 18, lines: subLines},
 			{class: "node-meta", lineHeight: 14, leadIn: 17, lines: metaLines},
 		}, 12)
+		aria := "Entry point: " + e.Title + ". " + e.Meta + "."
+		if e.external {
+			aria = "External entry point: " + e.Title + ". " + e.Meta + "."
+		}
 		entryNodeList = append(entryNodeList, GraphNode{
 			ID:        "entry-" + slugify(k),
 			Kind:      "entry",
@@ -261,7 +277,8 @@ func buildAttackGraph(findings []models.Finding) (AttackGraph, GraphPayload) {
 			Width:     laneEntryW,
 			Height:    height,
 			SevClass:  e.SevClass,
-			AriaLabel: "Entry point: " + e.Title + ". " + e.Meta + ".",
+			External:  e.external,
+			AriaLabel: aria,
 			Lines:     lines,
 		})
 	}

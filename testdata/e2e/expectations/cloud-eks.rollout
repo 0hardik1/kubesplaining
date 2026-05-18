@@ -1,0 +1,5 @@
+# Wave 1 slot #15 workloads: wait for the IRSA-bound SA pod and the
+# IRSA-less AWS-CLI pod to roll out before scanning so the snapshot reflects
+# both pods (and their SA / namespace context) consistently.
+deploy/irsa-admin-app:cloud-eks-test
+deploy/imds-pivot-app:cloud-eks-test

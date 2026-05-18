@@ -53,12 +53,19 @@ import (
 const imdsIP = "169.254.169.254"
 
 // imdsReason captures why a particular pod / workload fired KUBE-NETPOL-IMDS-001.
-// Helps the report and tests distinguish the two structural causes.
+// Helps the report and tests distinguish the three structural causes.
 type imdsReason string
 
 const (
 	imdsReasonNoEgressPolicy imdsReason = "no-egress-policy"
 	imdsReasonExplicitAllow  imdsReason = "explicit-allow"
+	// imdsReasonHostNetwork fires when a pod (or controller pod template) uses
+	// the host network. NetworkPolicies do not apply to host-network pods, so
+	// the pod shares the node's netns and can reach IMDS regardless of any
+	// per-namespace egress posture. Reported separately from no-egress-policy
+	// so operators can distinguish "namespace allows everything" from "this
+	// workload is exempt from NetPol entirely."
+	imdsReasonHostNetwork imdsReason = "host-network"
 )
 
 // imdsFinding is one workload-level IMDS-reachability finding before it is
@@ -81,6 +88,18 @@ func findImdsReachable(snapshot models.Snapshot, workloads []workload) []imdsFin
 
 	for _, wl := range workloads {
 		if isSystemNamespace(wl.Namespace) {
+			continue
+		}
+		if wl.IsHostNetwork {
+			// hostNetwork pods share the node's network namespace; NetPol does
+			// not filter their traffic. They can reach IMDS regardless of any
+			// egress policy applied at the pod level. Emit before the NetPol
+			// check so the reason is reported as host-network rather than the
+			// misleading no-egress-policy / explicit-allow.
+			out = append(out, imdsFinding{
+				Workload: wl,
+				Reason:   imdsReasonHostNetwork,
+			})
 			continue
 		}
 		policies := policiesByNS[wl.Namespace]
@@ -200,6 +219,51 @@ func exceptCoversIMDS(except []string, addr net.IP) bool {
 		}
 	}
 	return false
+}
+
+// IMDSReachable reports whether a single workload-like target can reach the IMDS
+// endpoint. This is the public boundary for cross-module use: the cloud module's
+// IMDS-pivot rule layers cloud-specific correlations (IRSA presence, Fargate
+// carve-out) on top of this answer without re-implementing NetworkPolicy
+// semantics. Keep the signature minimal so callers don't have to know about the
+// network module's internal workload type.
+//
+// `hostNetwork` is the pod's spec.hostNetwork (or the controller pod template's).
+// When true, NetworkPolicy is bypassed and IMDS is always reachable; callers MUST
+// pass it through so the host-network reason surfaces correctly rather than the
+// misleading no-egress-policy / explicit-allow.
+//
+// Returns:
+//   - reachable: true when the workload's effective egress posture admits 169.254.169.254.
+//   - reason: "no-egress-policy", "explicit-allow", or "host-network" when reachable, "" otherwise.
+//   - offenderCIDR: the CIDR that admits IMDS (populated only for reason="explicit-allow").
+//   - offenderPolicy: "ns/name" of the offending NetworkPolicy (populated only for
+//     reason="explicit-allow"); "" otherwise.
+//
+// Implementation thinly wraps findImdsReachable with a one-element workload slice
+// so the same selector / ipBlock / except logic applies. System namespaces are
+// suppressed here too (matching the in-module behavior).
+func IMDSReachable(snapshot models.Snapshot, kind, name, namespace string, workloadLabels map[string]string, hostNetwork bool) (bool, string, string, string) {
+	wl := workload{Kind: kind, Name: name, Namespace: namespace, Labels: workloadLabels, IsHostNetwork: hostNetwork}
+	results := findImdsReachable(snapshot, []workload{wl})
+	if len(results) == 0 {
+		return false, "", "", ""
+	}
+	r := results[0]
+	offenderPolicy := ""
+	if r.OffenderPolicyName != "" {
+		offenderPolicy = fmt.Sprintf("%s/%s", r.OffenderPolicyNamespace, r.OffenderPolicyName)
+	}
+	var reason string
+	switch r.Reason {
+	case imdsReasonNoEgressPolicy:
+		reason = "no-egress-policy"
+	case imdsReasonExplicitAllow:
+		reason = "explicit-allow"
+	case imdsReasonHostNetwork:
+		reason = "host-network"
+	}
+	return true, reason, r.OffenderCIDR, offenderPolicy
 }
 
 // emitImdsFindings materializes one models.Finding per imdsFinding returned by

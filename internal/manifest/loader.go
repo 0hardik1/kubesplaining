@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/0hardik1/kubesplaining/internal/collector"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -45,6 +46,12 @@ func LoadSnapshot(path string, resourceTypeHint string) (models.Snapshot, error)
 		}
 		if err := appendObject(&snapshot, raw, resourceTypeHint); err != nil {
 			return models.Snapshot{}, err
+		}
+	}
+
+	if snapshot.Metadata.CloudProvider == "" || snapshot.Metadata.CloudProvider == "none" {
+		if detected := collector.DetectCloudProvider(snapshot); detected != "" {
+			snapshot.Metadata.CloudProvider = detected
 		}
 	}
 

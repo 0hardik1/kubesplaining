@@ -27,6 +27,11 @@ type workload struct {
 	Name      string
 	Namespace string
 	Labels    map[string]string
+	// IsHostNetwork is true when the pod (or controller's pod template) sets
+	// `spec.hostNetwork: true`. NetworkPolicies do not apply to host-network
+	// pods (they share the node's network namespace), so the IMDS-reachability
+	// check has to short-circuit before the NetPol selector traversal.
+	IsHostNetwork bool
 }
 
 // New returns a new network-policy analyzer.
@@ -134,50 +139,56 @@ func collectWorkloads(snapshot models.Snapshot) []workload {
 			continue
 		}
 		workloads = append(workloads, workload{
-			Kind:      "Pod",
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
-			Labels:    pod.Labels,
+			Kind:          "Pod",
+			Name:          pod.Name,
+			Namespace:     pod.Namespace,
+			Labels:        pod.Labels,
+			IsHostNetwork: pod.Spec.HostNetwork,
 		})
 	}
 	for _, deployment := range snapshot.Resources.Deployments {
 		workloads = append(workloads, workload{
-			Kind:      "Deployment",
-			Name:      deployment.Name,
-			Namespace: deployment.Namespace,
-			Labels:    deployment.Spec.Template.Labels,
+			Kind:          "Deployment",
+			Name:          deployment.Name,
+			Namespace:     deployment.Namespace,
+			Labels:        deployment.Spec.Template.Labels,
+			IsHostNetwork: deployment.Spec.Template.Spec.HostNetwork,
 		})
 	}
 	for _, daemonSet := range snapshot.Resources.DaemonSets {
 		workloads = append(workloads, workload{
-			Kind:      "DaemonSet",
-			Name:      daemonSet.Name,
-			Namespace: daemonSet.Namespace,
-			Labels:    daemonSet.Spec.Template.Labels,
+			Kind:          "DaemonSet",
+			Name:          daemonSet.Name,
+			Namespace:     daemonSet.Namespace,
+			Labels:        daemonSet.Spec.Template.Labels,
+			IsHostNetwork: daemonSet.Spec.Template.Spec.HostNetwork,
 		})
 	}
 	for _, statefulSet := range snapshot.Resources.StatefulSets {
 		workloads = append(workloads, workload{
-			Kind:      "StatefulSet",
-			Name:      statefulSet.Name,
-			Namespace: statefulSet.Namespace,
-			Labels:    statefulSet.Spec.Template.Labels,
+			Kind:          "StatefulSet",
+			Name:          statefulSet.Name,
+			Namespace:     statefulSet.Namespace,
+			Labels:        statefulSet.Spec.Template.Labels,
+			IsHostNetwork: statefulSet.Spec.Template.Spec.HostNetwork,
 		})
 	}
 	for _, job := range snapshot.Resources.Jobs {
 		workloads = append(workloads, workload{
-			Kind:      "Job",
-			Name:      job.Name,
-			Namespace: job.Namespace,
-			Labels:    job.Spec.Template.Labels,
+			Kind:          "Job",
+			Name:          job.Name,
+			Namespace:     job.Namespace,
+			Labels:        job.Spec.Template.Labels,
+			IsHostNetwork: job.Spec.Template.Spec.HostNetwork,
 		})
 	}
 	for _, cronJob := range snapshot.Resources.CronJobs {
 		workloads = append(workloads, workload{
-			Kind:      "CronJob",
-			Name:      cronJob.Name,
-			Namespace: cronJob.Namespace,
-			Labels:    cronJob.Spec.JobTemplate.Spec.Template.Labels,
+			Kind:          "CronJob",
+			Name:          cronJob.Name,
+			Namespace:     cronJob.Namespace,
+			Labels:        cronJob.Spec.JobTemplate.Spec.Template.Labels,
+			IsHostNetwork: cronJob.Spec.JobTemplate.Spec.Template.Spec.HostNetwork,
 		})
 	}
 
