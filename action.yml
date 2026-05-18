@@ -212,7 +212,7 @@ runs:
     # `fail-on-critical=true` still surfaces a red workflow.
     - name: Upload SARIF to GitHub code scanning
       if: ${{ always() && inputs.upload-sarif == 'true' && steps.run.outputs.sarif-file != '' }}
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@v4
       with:
         sarif_file: ${{ steps.run.outputs.sarif-file }}
         category: kubesplaining
