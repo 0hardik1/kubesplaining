@@ -89,6 +89,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started. Partial items list wha
 ### Cloud Provider Integration ([internal/analyzer/cloud/](internal/analyzer/cloud/analyzer.go))
 - [x] EKS: aws-auth mapping (`KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001`, `KUBE-CLOUD-AWSAUTH-OVERBROAD-001`, `KUBE-CLOUD-AWSAUTH-PARSE-ERROR-001`), IRSA trust-policy cross-check (`KUBE-CLOUD-IRSA-ADMIN-ROLE-001`, `KUBE-CLOUD-IRSA-MISSING-001`), IMDS exposure (`KUBE-CLOUD-IMDS-PIVOT-001`). Per-rule logic in [internal/analyzer/cloud/eks/](internal/analyzer/cloud/eks/). `--cloud-provider auto|eks|gke|aks|none` on `scan` controls dispatch; the collector's `DetectCloudProvider` keys off `eks.amazonaws.com/{nodegroup,compute-type}` node labels for the auto path.
 - [ ] EKS: API server endpoint exposure (public LB / NodePort indicators).
+- [ ] EKS: Access Entries (post-2023 replacement for the aws-auth ConfigMap). The current `KUBE-CLOUD-AWSAUTH-*` family reads `kube-system/aws-auth` only, so clusters fully migrated to Access Entries are invisible to the IAM-to-RBAC class of rules. Detection requires calling the EKS `ListAccessEntries` / `DescribeAccessEntry` API (the entries live in the AWS control plane, not in the cluster snapshot), so this needs either a side-car AWS API mode or a separate `--aws-credentials` opt-in path that the offline scanner does not have today. Documented as a known limitation under the `KUBE-CLOUD-AWSAUTH-*` block in [docs/findings.md](docs/findings.md).
 - [ ] GKE: Workload Identity, metadata concealment
 - [ ] AKS: AAD pod identity, managed identities
 

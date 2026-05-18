@@ -305,6 +305,20 @@ func contentNetpolIMDS001(item imdsFinding) ruleContent {
 			"They exfiltrate secrets and pivot inside the cloud account using the worker node's role permissions.",
 			"They optionally open an outbound C2 channel to attacker infrastructure; the same lack of egress restriction allows the outbound TLS connection.",
 		}
+	case imdsReasonHostNetwork:
+		title = fmt.Sprintf("Workload `%s` uses `hostNetwork: true`, so 169.254.169.254 (cloud IMDS) is reachable regardless of NetworkPolicy", rid)
+		description = fmt.Sprintf("Workload `%s` runs in namespace `%s` with `spec.hostNetwork: true`, which means its pods share the node's network namespace. NetworkPolicies do not apply to host-network pods (they operate on the pod's own netns), so any egress restriction defined in this namespace is bypassed. The pod can open connections to `169.254.169.254` exactly as if it were running on the node directly.\n\n"+
+			"hostNetwork is commonly enabled for cluster infrastructure: CNI agents, monitoring daemons (`node-exporter`, Datadog Agent), log shippers, ingress controllers. These workloads usually need it, but they also become the highest-value pivot targets in the cluster because they sit on the node IAM identity with no NetPol gating.\n\n"+
+			"The NetworkPolicy-layer defense does not exist for these pods. The only defenses are (a) keep their image surface area and RBAC tight so the pod is hard to compromise, (b) on AWS set IMDSv2 hop-limit = 1 at the nodegroup so even host-network requests through the node's NIC are denied at the hypervisor, and (c) where the workload truly does not need cloud credentials, drop `hostNetwork: true` in favor of a host-network-less alternative.",
+			rid, wl.Namespace)
+		impact = "A compromised host-network pod inherits the node's IMDS reachability with zero NetworkPolicy enforcement; container RCE -> cloud-account compromise is a single curl, even when the namespace looks tightly locked down."
+		scenario = []string{
+			fmt.Sprintf("Attacker gains RCE in `%s` (host-network pod, often a monitoring sidecar or CNI helper).", rid),
+			"They issue `curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/` from inside the pod. The request is served by the node's network stack, not the pod's, so any namespace-level egress NetworkPolicy is irrelevant.",
+			"They scrape the node IAM role's STS credentials and call `aws sts get-caller-identity` to enumerate reach.",
+			"They pivot into the cloud account: list other clusters' worker-node roles, read RDS secrets, enumerate S3 buckets, depending on the node IAM scope.",
+			"The operator's NetworkPolicy is intact in `kubectl get netpol` and looks correct in dashboards, masking that this specific workload is exempt.",
+		}
 	case imdsReasonExplicitAllow:
 		offender := item.OffenderCIDR
 		offenderPolicy := fmt.Sprintf("%s/%s", item.OffenderPolicyNamespace, item.OffenderPolicyName)
@@ -329,18 +343,11 @@ func contentNetpolIMDS001(item imdsFinding) ruleContent {
 			Level:  models.ScopeWorkload,
 			Detail: fmt.Sprintf("Workload `%s`: egress to `%s` is reachable.", rid, imdsIP),
 		},
-		Description:    description,
-		Impact:         impact,
-		AttackScenario: scenario,
-		Remediation:    "Apply or tighten an egress NetworkPolicy in the workload's namespace that denies `169.254.169.254/32` explicitly, and pair it with IMDSv2 hop-limit = 1 at the node layer.",
-		RemediationSteps: []string{
-			fmt.Sprintf("Apply a default-deny-egress policy in `%s` (`podSelector: {}`, `policyTypes: [Egress]`).", wl.Namespace),
-			"Add an explicit DNS allow policy (UDP/TCP 53 to kube-system) so application hostname resolution still works.",
-			"For each workload that requires legitimate outbound, add a tight `to:` clause. Prefer `namespaceSelector + podSelector` for in-cluster destinations and an `ipBlock` with `except: [169.254.169.254/32]` for genuine internet reach.",
-			fmt.Sprintf("Validate from inside the pod: `kubectl exec %s -n %s -- curl --max-time 3 http://169.254.169.254/` must time out.", wl.Name, wl.Namespace),
-			"On AWS, set the launch-template `HttpPutResponseHopLimit = 1` so IMDSv2 token requests from pods routed via the node's network namespace are denied at the hypervisor.",
-			"Add a Kyverno or Gatekeeper policy that rejects any new NetworkPolicy whose egress ipBlock contains `169.254.169.254` without an `except:` carve-out.",
-		},
+		Description:      description,
+		Impact:           impact,
+		AttackScenario:   scenario,
+		Remediation:      remediationForIMDSReason(item.Reason, wl.Namespace),
+		RemediationSteps: remediationStepsForIMDSReason(item),
 		LearnMore: []models.Reference{
 			refNetworkPolicies,
 			refIMDSv2,
@@ -348,5 +355,41 @@ func contentNetpolIMDS001(item imdsFinding) ruleContent {
 			{Title: "Calico GlobalNetworkPolicy reference", URL: "https://docs.tigera.io/calico/latest/reference/resources/globalnetworkpolicy"},
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1552_005, mitreT1078_004, mitreT1041, mitreT1071},
+	}
+}
+
+// remediationForIMDSReason returns the high-level remediation string tuned to
+// the structural cause that fired KUBE-NETPOL-IMDS-001. NetworkPolicy advice
+// only helps for pod-network workloads; host-network workloads need node-layer
+// defenses instead.
+func remediationForIMDSReason(reason imdsReason, _ string) string {
+	if reason == imdsReasonHostNetwork {
+		return "NetworkPolicy cannot gate host-network pods. Drop `hostNetwork: true` if the workload does not strictly require it, otherwise enforce IMDSv2 hop-limit = 1 at the nodegroup so the IAM credentials path is denied at the hypervisor."
+	}
+	return "Apply or tighten an egress NetworkPolicy in the workload's namespace that denies `169.254.169.254/32` explicitly, and pair it with IMDSv2 hop-limit = 1 at the node layer."
+}
+
+// remediationStepsForIMDSReason returns the imperative remediation steps tuned
+// to the structural cause. The host-network path is intentionally different
+// from the NetPol path: there is no namespace-level NetPol that helps, so the
+// steps focus on dropping hostNetwork and on node-layer IMDSv2 enforcement.
+func remediationStepsForIMDSReason(item imdsFinding) []string {
+	wl := item.Workload
+	if item.Reason == imdsReasonHostNetwork {
+		return []string{
+			fmt.Sprintf("Audit why `%s/%s/%s` needs `hostNetwork: true`. Common reasons (CNI helper, host-port log shipper) are legitimate; most application workloads do not.", wl.Kind, wl.Namespace, wl.Name),
+			"If hostNetwork is not strictly required, remove it from the pod template and re-deploy under namespace-level NetworkPolicy controls.",
+			"If hostNetwork must stay, on AWS set the launch-template `HttpPutResponseHopLimit = 1` for the EKS nodegroup so IMDSv2 token requests originating from host-network pods are denied at the hypervisor (PacketTTL = 1 prevents the second hop the token request needs).",
+			"Bind the workload's ServiceAccount to a least-privileged IRSA role so it never needs to fall back to the node IAM role.",
+			fmt.Sprintf("Validate from inside the pod: `kubectl exec %s -n %s -- curl --max-time 3 http://169.254.169.254/latest/meta-data/iam/security-credentials/` must time out (it will succeed today).", wl.Name, wl.Namespace),
+		}
+	}
+	return []string{
+		fmt.Sprintf("Apply a default-deny-egress policy in `%s` (`podSelector: {}`, `policyTypes: [Egress]`).", wl.Namespace),
+		"Add an explicit DNS allow policy (UDP/TCP 53 to kube-system) so application hostname resolution still works.",
+		"For each workload that requires legitimate outbound, add a tight `to:` clause. Prefer `namespaceSelector + podSelector` for in-cluster destinations and an `ipBlock` with `except: [169.254.169.254/32]` for genuine internet reach.",
+		fmt.Sprintf("Validate from inside the pod: `kubectl exec %s -n %s -- curl --max-time 3 http://169.254.169.254/` must time out.", wl.Name, wl.Namespace),
+		"On AWS, set the launch-template `HttpPutResponseHopLimit = 1` so IMDSv2 token requests from pods routed via the node's network namespace are denied at the hypervisor.",
+		"Add a Kyverno or Gatekeeper policy that rejects any new NetworkPolicy whose egress ipBlock contains `169.254.169.254` without an `except:` carve-out.",
 	}
 }

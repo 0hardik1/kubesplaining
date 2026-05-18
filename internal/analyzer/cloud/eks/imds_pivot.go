@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -33,9 +34,16 @@ const irsaAnnotation = "eks.amazonaws.com/role-arn"
 // fargateComputeTypeLabel is the node label EKS attaches to Fargate-backed
 // nodes. Fargate nodes do not expose IMDS to pods, so pods scheduled there
 // have no IMDS-pivot story.
+//
+// fargateProviderIDPrefix is the kubelet-supplied `spec.providerID` prefix that
+// the EKS control plane sets on Fargate-backed Node objects (e.g.
+// `aws:///fargate/<id>`). Unlike the label, providerID is not patchable by
+// users with `nodes/patch`, so it is the trustworthy signal. EC2 nodes carry
+// the shape `aws:///<az>/<instance-id>` and never match this prefix.
 const (
 	fargateComputeTypeLabel = "eks.amazonaws.com/compute-type"
 	fargateComputeTypeValue = "fargate"
+	fargateProviderIDPrefix = "aws:///fargate/"
 )
 
 // imdsPivotWorkload is a label-bearing reference to a pod or controlling workload.
@@ -50,6 +58,7 @@ type imdsPivotWorkload struct {
 	SAName         string // ServiceAccount name; defaults to "default" when unset
 	NodeName       string // populated only for Pod workloads when scheduled
 	IsScheduledPod bool   // true only when Kind == "Pod" AND NodeName != ""
+	IsHostNetwork  bool   // mirrors network.workload.IsHostNetwork so we forward it to IMDSReachable
 }
 
 // AnalyzeIMDSPivot emits KUBE-CLOUD-IMDS-PIVOT-001 findings for the snapshot.
@@ -66,7 +75,7 @@ func AnalyzeIMDSPivot(snapshot models.Snapshot) []models.Finding {
 
 	out := make([]models.Finding, 0)
 	for _, wl := range workloads {
-		reachable, reason, offenderCIDR, _ := network.IMDSReachable(snapshot, wl.Kind, wl.Name, wl.Namespace, wl.Labels)
+		reachable, reason, offenderCIDR, _ := network.IMDSReachable(snapshot, wl.Kind, wl.Name, wl.Namespace, wl.Labels, wl.IsHostNetwork)
 		if !reachable {
 			continue
 		}
@@ -170,6 +179,7 @@ func collectIMDSPivotWorkloads(snapshot models.Snapshot) []imdsPivotWorkload {
 			SAName:         saName,
 			NodeName:       pod.Spec.NodeName,
 			IsScheduledPod: pod.Spec.NodeName != "",
+			IsHostNetwork:  pod.Spec.HostNetwork,
 		})
 	}
 	for _, deployment := range snapshot.Resources.Deployments {
@@ -200,12 +210,13 @@ func workloadFromTemplate(kind, name, namespace string, template corev1.PodTempl
 		saName = "default"
 	}
 	return imdsPivotWorkload{
-		Kind:        kind,
-		Name:        name,
-		Namespace:   namespace,
-		Labels:      template.Labels,
-		SANamespace: namespace,
-		SAName:      saName,
+		Kind:          kind,
+		Name:          name,
+		Namespace:     namespace,
+		Labels:        template.Labels,
+		SANamespace:   namespace,
+		SAName:        saName,
+		IsHostNetwork: template.Spec.HostNetwork,
 	}
 }
 
@@ -235,12 +246,28 @@ func saKey(namespace, name string) string {
 	return namespace + "/" + name
 }
 
-// fargateNodeSet returns a set of node names that carry the Fargate compute-type
-// label. Used to skip pods that are already scheduled onto a Fargate node, since
-// Fargate does not expose IMDS to pods.
+// fargateNodeSet returns a set of node names that are Fargate-backed. The
+// authoritative signal is `node.Spec.ProviderID` (`aws:///fargate/<id>`),
+// which the EKS control plane sets at node-registration time and which users
+// with `nodes/patch` cannot rewrite. When providerID is set but does NOT
+// match the Fargate prefix, the node is provably EC2 and the label is
+// ignored (this prevents an attacker who can patch node labels from silencing
+// the IMDS-pivot rule on real EC2 nodes). The legacy
+// `eks.amazonaws.com/compute-type=fargate` label is honored only as a fallback
+// for snapshots where providerID is empty (older fixtures, pre-registration
+// state); in those cases there is nothing more trustworthy to consult.
 func fargateNodeSet(nodes []corev1.Node) map[string]bool {
 	out := make(map[string]bool)
 	for _, node := range nodes {
+		if strings.HasPrefix(node.Spec.ProviderID, fargateProviderIDPrefix) {
+			out[node.Name] = true
+			continue
+		}
+		if node.Spec.ProviderID != "" {
+			// providerID is set to a non-Fargate shape: the node is EC2,
+			// regardless of any (mutable) label claim to the contrary.
+			continue
+		}
 		if node.Labels[fargateComputeTypeLabel] == fargateComputeTypeValue {
 			out[node.Name] = true
 		}

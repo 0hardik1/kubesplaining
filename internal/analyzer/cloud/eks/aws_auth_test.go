@@ -179,6 +179,93 @@ func TestAnalyzeAWSAuth_MalformedYAML_ReturnsParseError(t *testing.T) {
 	}
 }
 
+// TestAnalyzeAWSAuth_OverbroadViaCustomWildcardClusterRole proves the fix for
+// the literal "cluster-admin" hardcode: a CRB binding an aws-auth group to a
+// CUSTOM ClusterRole that grants verbs:[*], resources:[*], apiGroups:[*] is
+// effectively cluster-admin and must surface as an OVERBROAD finding. The
+// evidence should name the actual binding and the actual ClusterRole so the
+// operator can distinguish "via built-in cluster-admin" from "via custom
+// super-admin role".
+func TestAnalyzeAWSAuth_OverbroadViaCustomWildcardClusterRole(t *testing.T) {
+	t.Parallel()
+	mapUsers := `- userarn: arn:aws:iam::555555555555:user/platform
+  username: platform
+  groups:
+    - platform-admins
+`
+	snap := models.NewSnapshot()
+	snap.Resources.ConfigMaps = []models.ConfigMapSnapshot{
+		{Name: "aws-auth", Namespace: "kube-system", Data: map[string]string{"mapUsers": mapUsers}},
+	}
+	snap.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "platform-admin-binding"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "platform-super-admin"},
+			Subjects:   []rbacv1.Subject{{Kind: "Group", Name: "platform-admins"}},
+		},
+	}
+	snap.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "platform-super-admin"},
+			Rules: []rbacv1.PolicyRule{
+				{Verbs: []string{"*"}, Resources: []string{"*"}, APIGroups: []string{"*"}},
+			},
+		},
+	}
+
+	findings := AnalyzeAWSAuth(snap)
+	matched := findingsByRule(findings, "KUBE-CLOUD-AWSAUTH-OVERBROAD-001")
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 OVERBROAD finding for custom wildcard ClusterRole, got %d (total %d)", len(matched), len(findings))
+	}
+	ev := string(matched[0].Evidence)
+	if !strings.Contains(ev, `"viaBinding":"platform-admin-binding"`) {
+		t.Fatalf("evidence missing viaBinding=platform-admin-binding: %s", ev)
+	}
+	if !strings.Contains(ev, `"viaClusterRole":"platform-super-admin"`) {
+		t.Fatalf("evidence missing viaClusterRole=platform-super-admin (the custom wildcard role name should appear so operators don't think this was via cluster-admin): %s", ev)
+	}
+}
+
+// TestAnalyzeAWSAuth_NarrowCustomClusterRoleNotFlagged is the negative companion
+// to the wildcard case: a custom ClusterRole that wildcards verbs but only on a
+// narrow resource list is NOT admin-equivalent and must not produce an OVERBROAD
+// finding. Without this guard, the analyzer would false-positive on common
+// patterns like SecretReaders (verbs: [*] on secrets in core API group).
+func TestAnalyzeAWSAuth_NarrowCustomClusterRoleNotFlagged(t *testing.T) {
+	t.Parallel()
+	mapUsers := `- userarn: arn:aws:iam::666666666666:user/sre
+  username: sre
+  groups:
+    - secret-readers
+`
+	snap := models.NewSnapshot()
+	snap.Resources.ConfigMaps = []models.ConfigMapSnapshot{
+		{Name: "aws-auth", Namespace: "kube-system", Data: map[string]string{"mapUsers": mapUsers}},
+	}
+	snap.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "sre-secret-readers"},
+			RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "secret-reader"},
+			Subjects:   []rbacv1.Subject{{Kind: "Group", Name: "secret-readers"}},
+		},
+	}
+	snap.Resources.ClusterRoles = []rbacv1.ClusterRole{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "secret-reader"},
+			Rules: []rbacv1.PolicyRule{
+				{Verbs: []string{"*"}, Resources: []string{"secrets"}, APIGroups: []string{""}},
+			},
+		},
+	}
+
+	findings := AnalyzeAWSAuth(snap)
+	matched := findingsByRule(findings, "KUBE-CLOUD-AWSAUTH-OVERBROAD-001")
+	if len(matched) != 0 {
+		t.Fatalf("expected 0 OVERBROAD findings for narrow custom ClusterRole (verbs:[*] on secrets only), got %d (evidence: %s)", len(matched), matched[0].Evidence)
+	}
+}
+
 func TestAnalyzeAWSAuth_WrongNamespace_Silent(t *testing.T) {
 	t.Parallel()
 	mapRoles := `- rolearn: arn:aws:iam::444444444444:role/Admin

@@ -29,6 +29,7 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/analyzer/cloud"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -41,8 +42,13 @@ const irsaAnnotation = "eks.amazonaws.com/role-arn"
 
 // fargateNodeLabel is the AWS-managed label that distinguishes Fargate nodes
 // from EC2-backed managed nodes. Value "fargate" means Fargate; "ec2" or
-// missing means EC2.
-const fargateNodeLabel = "eks.amazonaws.com/compute-type"
+// missing means EC2. The label is user-mutable, so the analyzer also checks
+// node.Spec.ProviderID, which the EKS control plane sets and which users with
+// `nodes/patch` cannot rewrite.
+const (
+	fargateNodeLabel        = "eks.amazonaws.com/compute-type"
+	fargateProviderIDPrefix = "aws:///fargate/"
+)
 
 // addCloudEdges augments the graph with IRSA, aws-auth, and IMDS-pivot edges.
 // Safe to call on any snapshot: when no cloud identities are present (and no
@@ -145,8 +151,9 @@ func addIRSAEdge(graph *models.EscalationGraph, identity models.CloudIdentity) {
 
 // addAWSAuthEdges wires external IAM principal -> cluster sinks for the
 // aws-auth-derived MappedGroups list. system:masters is hard-coded; other
-// groups are followed through ClusterRoleBindings whose roleRef points at
-// the built-in cluster-admin ClusterRole.
+// groups are followed through ClusterRoleBindings whose roleRef points at the
+// built-in cluster-admin ClusterRole OR at any custom ClusterRole with a
+// triple-wildcard rule (verbs:[*], resources:[*], apiGroups:[*]).
 func addAWSAuthEdges(graph *models.EscalationGraph, snapshot models.Snapshot, identity models.CloudIdentity) {
 	if identity.ARN == "" {
 		return
@@ -165,36 +172,40 @@ func addAWSAuthEdges(graph *models.EscalationGraph, snapshot models.Snapshot, id
 			})
 			continue
 		}
-		if !groupBoundToClusterAdmin(snapshot, group) {
+		roleName, ok := groupBoundToAdminEquivalentRole(snapshot, group)
+		if !ok {
 			continue
 		}
 		addEdge(graph, externalID, sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-CLOUD-AWSAUTH-001",
 			Action:      "aws_auth_admin",
-			Permission:  "mapped to group " + group + " bound to cluster-admin",
-			Description: fmt.Sprintf("external IAM principal %s is mapped to group %s, which is bound to cluster-admin via a ClusterRoleBinding", identity.ARN, group),
+			Permission:  fmt.Sprintf("mapped to group %s bound to ClusterRole %s", group, roleName),
+			Description: fmt.Sprintf("external IAM principal %s is mapped to group %s, which is bound to ClusterRole %s (admin-equivalent) via a ClusterRoleBinding", identity.ARN, group, roleName),
 		})
 	}
 }
 
-// groupBoundToClusterAdmin reports whether any ClusterRoleBinding lists the
-// given group as a subject and points at the built-in cluster-admin
-// ClusterRole. The check is intentionally narrow: only the canonical
-// "cluster-admin" ClusterRole counts as the terminal target; other admin-like
-// custom ClusterRoles would be picked up by the in-cluster RBAC analyzer's
-// own edges.
-func groupBoundToClusterAdmin(snapshot models.Snapshot, group string) bool {
+// groupBoundToAdminEquivalentRole reports whether any ClusterRoleBinding lists
+// the given group as a subject and points at an admin-equivalent ClusterRole.
+// "Admin-equivalent" means either the built-in `cluster-admin` or any custom
+// ClusterRole that has a `verbs:[*], resources:[*], apiGroups:[*]` rule. The
+// returned roleName is the actual ClusterRole the binding points at, so the
+// edge description can disambiguate built-in from custom admin paths.
+func groupBoundToAdminEquivalentRole(snapshot models.Snapshot, group string) (string, bool) {
 	for _, binding := range snapshot.Resources.ClusterRoleBindings {
-		if binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != "cluster-admin" {
+		if binding.RoleRef.Kind != "ClusterRole" {
+			continue
+		}
+		if !permissions.IsAdminEquivalentClusterRole(binding.RoleRef.Name, snapshot.Resources.ClusterRoles) {
 			continue
 		}
 		for _, subject := range binding.Subjects {
 			if subject.Kind == "Group" && subject.Name == group {
-				return true
+				return binding.RoleRef.Name, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
 // addIMDSPivotEdges wires SA -> sinkNodeEscape for every pod that meets all of:
@@ -209,8 +220,20 @@ func addIMDSPivotEdges(graph *models.EscalationGraph, snapshot models.Snapshot) 
 	}
 
 	// Build a node-name -> Fargate? lookup so per-pod Fargate detection is O(1).
+	// Prefer the kubelet-supplied providerID (set by the EKS control plane and
+	// not user-patchable) over the label (which any nodes/patch holder can
+	// flip). When providerID is set to a non-Fargate shape, the label is
+	// ignored entirely so an attacker who can patch node labels cannot
+	// silence the IMDS-pivot rule on a real EC2 node.
 	fargateNodes := map[string]bool{}
 	for _, node := range snapshot.Resources.Nodes {
+		if strings.HasPrefix(node.Spec.ProviderID, fargateProviderIDPrefix) {
+			fargateNodes[node.Name] = true
+			continue
+		}
+		if node.Spec.ProviderID != "" {
+			continue
+		}
 		if node.Labels[fargateNodeLabel] == "fargate" {
 			fargateNodes[node.Name] = true
 		}
@@ -231,7 +254,7 @@ func addIMDSPivotEdges(graph *models.EscalationGraph, snapshot models.Snapshot) 
 		if saHasIRSAAnnotation(snapshot, saName, pod.Namespace) {
 			continue
 		}
-		reachable, reason, _, _ := network.IMDSReachable(snapshot, "Pod", pod.Name, pod.Namespace, podLabels(pod))
+		reachable, reason, _, _ := network.IMDSReachable(snapshot, "Pod", pod.Name, pod.Namespace, podLabels(pod), pod.Spec.HostNetwork)
 		if !reachable {
 			continue
 		}

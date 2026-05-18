@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	"gopkg.in/yaml.v3"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -52,7 +53,7 @@ func AnalyzeAWSAuth(snapshot models.Snapshot) []models.Finding {
 	// build this index once even when no custom groups are present; in the
 	// hot path (only system:masters mappings, which is the more common
 	// misconfig), the map is built but never queried.
-	crbsByGroup := indexClusterRoleBindingsByGroup(snapshot.Resources.ClusterRoleBindings)
+	crbsByGroup := indexClusterRoleBindingsByGroup(snapshot.Resources.ClusterRoleBindings, snapshot.Resources.ClusterRoles)
 
 	for _, key := range []string{awsAuthKeyRoles, awsAuthKeyUsers} {
 		raw, present := cm.Data[key]
@@ -77,11 +78,11 @@ func AnalyzeAWSAuth(snapshot models.Snapshot) []models.Finding {
 				if group == "" {
 					continue
 				}
-				crbName, hit := crbsByGroup[group]
+				match, hit := crbsByGroup[group]
 				if !hit {
 					continue
 				}
-				findings = append(findings, overbroadFinding(cm, key, arn, entry, group, crbName))
+				findings = append(findings, overbroadFinding(cm, key, arn, entry, group, match))
 				// Only emit one overbroad finding per (arn, entry); the
 				// first admin-bound group wins. Tags / Evidence still
 				// surface the specific binding.
@@ -149,14 +150,31 @@ func containsGroup(groups []string, target string) bool {
 	return false
 }
 
-// indexClusterRoleBindingsByGroup builds a map of Group name -> binding name
-// for every ClusterRoleBinding that grants the cluster-admin ClusterRole to
-// a Group subject. We deliberately key by the first matching binding only;
-// the evidence carries the binding name to identify the exact grant.
-func indexClusterRoleBindingsByGroup(crbs []rbacv1.ClusterRoleBinding) map[string]string {
-	index := make(map[string]string)
+// adminGroupBinding records the ClusterRoleBinding (and the ClusterRole it
+// points at) that gives a Group subject effective cluster-admin reach. The
+// role name is surfaced in evidence because, with custom wildcard ClusterRoles
+// in play, "via binding X" alone is ambiguous: an operator wants to know
+// whether the path is through the built-in `cluster-admin` or through a
+// homemade `*/*/*` role they may not have realized exists.
+type adminGroupBinding struct {
+	BindingName string
+	RoleName    string
+}
+
+// indexClusterRoleBindingsByGroup builds a map of Group name -> binding/role
+// info for every ClusterRoleBinding that grants effective cluster-admin reach
+// to a Group subject. A ClusterRole is "admin-equivalent" when it is either
+// the built-in `cluster-admin` or when it contains a `verbs:[*], resources:[*],
+// apiGroups:[*]` rule (see permissions.IsAdminEquivalentClusterRole). We
+// deliberately key by the first matching binding only; evidence carries the
+// binding and role names so the operator can audit the specific grant.
+func indexClusterRoleBindingsByGroup(crbs []rbacv1.ClusterRoleBinding, clusterRoles []rbacv1.ClusterRole) map[string]adminGroupBinding {
+	index := make(map[string]adminGroupBinding)
 	for _, crb := range crbs {
-		if crb.RoleRef.Kind != "ClusterRole" || crb.RoleRef.Name != clusterAdminRole {
+		if crb.RoleRef.Kind != "ClusterRole" {
+			continue
+		}
+		if !permissions.IsAdminEquivalentClusterRole(crb.RoleRef.Name, clusterRoles) {
 			continue
 		}
 		for _, sub := range crb.Subjects {
@@ -164,7 +182,7 @@ func indexClusterRoleBindingsByGroup(crbs []rbacv1.ClusterRoleBinding) map[strin
 				continue
 			}
 			if _, seen := index[sub.Name]; !seen {
-				index[sub.Name] = crb.Name
+				index[sub.Name] = adminGroupBinding{BindingName: crb.Name, RoleName: crb.RoleRef.Name}
 			}
 		}
 	}
@@ -223,10 +241,12 @@ func systemMastersFinding(cm models.ConfigMapSnapshot, key, arn string, entry aw
 }
 
 // overbroadFinding builds the KUBE-CLOUD-AWSAUTH-OVERBROAD-001 finding for an
-// aws-auth entry whose custom group (not system:masters) is bound to
-// cluster-admin via a ClusterRoleBinding. The viaBinding evidence field
-// names the specific binding so the operator can audit it directly.
-func overbroadFinding(cm models.ConfigMapSnapshot, key, arn string, entry awsAuthEntry, group, crbName string) models.Finding {
+// aws-auth entry whose custom group (not system:masters) is bound to a
+// cluster-admin-equivalent ClusterRole. The viaBinding evidence field names
+// the specific binding, and viaClusterRole names the ClusterRole behind it so
+// the operator can tell a built-in `cluster-admin` path from a custom
+// triple-wildcard role.
+func overbroadFinding(cm models.ConfigMapSnapshot, key, arn string, entry awsAuthEntry, group string, match adminGroupBinding) models.Finding {
 	content := contentAWSAuthOverbroad()
 	evidence := map[string]any{
 		"arn":             arn,
@@ -234,7 +254,8 @@ func overbroadFinding(cm models.ConfigMapSnapshot, key, arn string, entry awsAut
 		"mappedGroups":    []string{group},
 		"sourceConfigMap": fmt.Sprintf("%s/%s", cm.Namespace, cm.Name),
 		"entryType":       key,
-		"viaBinding":      crbName,
+		"viaBinding":      match.BindingName,
+		"viaClusterRole":  match.RoleName,
 	}
 	evidenceBytes, _ := json.Marshal(evidence)
 	return models.Finding{

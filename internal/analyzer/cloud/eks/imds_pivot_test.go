@@ -70,6 +70,27 @@ func TestAnalyzeIMDSPivot(t *testing.T) {
 			wantResource:   "Deployment",
 			wantResourceNS: "apps",
 		},
+		{
+			name:           "hostNetwork pod under deny-all egress fires with host-network reason",
+			snapshot:       snapEKSHostNetworkDaemonSetDenyAll(),
+			wantFires:      true,
+			wantReason:     "host-network",
+			wantResource:   "DaemonSet",
+			wantResourceNS: "monitoring",
+		},
+		{
+			name:      "pod scheduled to node with Fargate ProviderID stays silent even when label says ec2",
+			snapshot:  snapEKSPodFargateProviderIDOnly(),
+			wantFires: false,
+		},
+		{
+			name:           "pod scheduled to EC2 ProviderID with attacker-spoofed Fargate LABEL still fires",
+			snapshot:       snapEKSPodFargateLabelSpoofedEC2ProviderID(),
+			wantFires:      true,
+			wantReason:     "no-egress-policy",
+			wantResource:   "Pod",
+			wantResourceNS: "apps",
+		},
 	}
 
 	for _, tc := range cases {
@@ -260,6 +281,85 @@ func snapEKSDeploymentReachableNoIRSA() models.Snapshot {
 	}
 	snap.Resources.Nodes = []corev1.Node{
 		{ObjectMeta: metav1.ObjectMeta{Name: "ec2-node-1"}},
+	}
+	return snap
+}
+
+// snapEKSHostNetworkDaemonSetDenyAll proves the hostNetwork bypass: a DaemonSet
+// with hostNetwork: true sits in a namespace where a default-deny-egress
+// NetworkPolicy is in place. Pre-fix, the rule was silent because IMDSReachable
+// trusted the NetPol verdict. Post-fix, the rule fires with reason=host-network
+// because NetPol does not gate host-network pods.
+func snapEKSHostNetworkDaemonSetDenyAll() models.Snapshot {
+	snap := models.NewSnapshot()
+	snap.Metadata.CloudProvider = "eks"
+	snap.Resources.Namespaces = []corev1.Namespace{{ObjectMeta: metav1.ObjectMeta{Name: "monitoring"}}}
+	snap.Resources.ServiceAccounts = []corev1.ServiceAccount{
+		{ObjectMeta: metav1.ObjectMeta{Name: "node-exporter", Namespace: "monitoring"}},
+	}
+	snap.Resources.DaemonSets = []appsv1.DaemonSet{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-exporter", Namespace: "monitoring"},
+			Spec: appsv1.DaemonSetSpec{
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "node-exporter"}},
+					Spec: corev1.PodSpec{
+						ServiceAccountName: "node-exporter",
+						HostNetwork:        true,
+					},
+				},
+			},
+		},
+	}
+	snap.Resources.NetworkPolicies = []networkingv1.NetworkPolicy{
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-deny-egress", Namespace: "monitoring"},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{},
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			},
+		},
+	}
+	snap.Resources.Nodes = []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "ec2-node-1"}, Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-0abc"}},
+	}
+	return snap
+}
+
+// snapEKSPodFargateProviderIDOnly proves the trustworthy Fargate signal: a
+// pod scheduled to a node whose Spec.ProviderID starts with aws:///fargate/
+// must be carved out, even when the eks.amazonaws.com/compute-type label is
+// absent (or, here, set to "ec2"). The rule must NOT fire.
+func snapEKSPodFargateProviderIDOnly() models.Snapshot {
+	snap := snapEKSPodReachableNoIRSA("fargate-node-1", false)
+	snap.Resources.Nodes = []corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "fargate-node-1",
+				Labels: map[string]string{fargateComputeTypeLabel: "ec2"},
+			},
+			Spec: corev1.NodeSpec{ProviderID: "aws:///fargate/fa-0123456789abcdef0"},
+		},
+	}
+	return snap
+}
+
+// snapEKSPodFargateLabelSpoofedEC2ProviderID covers the attacker-evasion case:
+// an EC2 node has been mis-labeled with eks.amazonaws.com/compute-type=fargate
+// (which any nodes/patch holder can do), but its providerID still reveals
+// aws:///<az>/<instance-id>. The rule must fire because the providerID is the
+// trustworthy signal and the label is ignored in favor of it. This is the
+// blast-radius reduction the providerID change buys.
+func snapEKSPodFargateLabelSpoofedEC2ProviderID() models.Snapshot {
+	snap := snapEKSPodReachableNoIRSA("ec2-node-1", false)
+	snap.Resources.Nodes = []corev1.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "ec2-node-1",
+				Labels: map[string]string{fargateComputeTypeLabel: fargateComputeTypeValue},
+			},
+			Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-0123456789abcdef0"},
+		},
 	}
 	return snap
 }

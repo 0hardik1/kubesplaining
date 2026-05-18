@@ -163,6 +163,67 @@ func TestAddCloudEdgesAWSAuthCustomGroupBoundToClusterAdmin(t *testing.T) {
 	}
 }
 
+// TestAddCloudEdgesAWSAuthCustomWildcardClusterRole proves the privesc graph
+// also follows aws-auth groups bound to CUSTOM admin-equivalent ClusterRoles,
+// not just the literal "cluster-admin" name. Without this, an IAM principal
+// mapped through a custom super-admin role would silently miss the cluster_admin
+// sink in the BFS.
+func TestAddCloudEdgesAWSAuthCustomWildcardClusterRole(t *testing.T) {
+	t.Parallel()
+
+	const mapRoles = "" +
+		"- rolearn: arn:aws:iam::123456789012:role/PlatformAdmin\n" +
+		"  username: platform-admin\n" +
+		"  groups:\n" +
+		"    - platform-admins\n"
+	snapshot := models.Snapshot{
+		Metadata: models.SnapshotMetadata{CloudProvider: "eks"},
+		Resources: models.SnapshotResources{
+			ConfigMaps: []models.ConfigMapSnapshot{
+				{Name: "aws-auth", Namespace: "kube-system", Data: map[string]string{"mapRoles": mapRoles}},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: objectMeta("platform-admin-binding", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "platform-super-admin"},
+					Subjects:   []rbacv1.Subject{{Kind: "Group", Name: "platform-admins"}},
+				},
+			},
+			ClusterRoles: []rbacv1.ClusterRole{
+				{
+					ObjectMeta: objectMeta("platform-super-admin", ""),
+					Rules: []rbacv1.PolicyRule{
+						{Verbs: []string{"*"}, Resources: []string{"*"}, APIGroups: []string{"*"}},
+					},
+				},
+			},
+		},
+	}
+
+	graph := BuildGraph(snapshot)
+	externalID := externalAWSIAMNodeID("arn:aws:iam::123456789012:role/PlatformAdmin")
+	edge := findEdge(graph, externalID, sinkClusterAdmin, "aws_auth_admin")
+	if edge == nil {
+		t.Fatalf("expected aws_auth_admin edge to sinkClusterAdmin via custom wildcard ClusterRole; edges=%+v", graph.Edges)
+	}
+	// The edge's permission string should name the actual ClusterRole so the
+	// chain card can show "via custom platform-super-admin" instead of
+	// implying built-in cluster-admin.
+	if edge.Permission == "" || edge.Description == "" {
+		t.Fatalf("edge permission/description must be populated: %+v", edge)
+	}
+	// Sanity: a narrow ClusterRole MUST NOT trigger this edge. Re-run the
+	// same fixture with verbs:[*] on secrets only and confirm the edge stays
+	// absent (negative companion to the test above).
+	snapshot.Resources.ClusterRoles[0].Rules = []rbacv1.PolicyRule{
+		{Verbs: []string{"*"}, Resources: []string{"secrets"}, APIGroups: []string{""}},
+	}
+	graph2 := BuildGraph(snapshot)
+	if e := findEdge(graph2, externalID, sinkClusterAdmin, "aws_auth_admin"); e != nil {
+		t.Fatalf("expected no aws_auth_admin edge for narrow custom ClusterRole (verbs:[*] on secrets only); got %+v", e)
+	}
+}
+
 func TestAddCloudEdgesCombinedIRSAAndAWSAuth(t *testing.T) {
 	t.Parallel()
 
