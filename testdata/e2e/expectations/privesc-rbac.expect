@@ -1,0 +1,27 @@
+# Expected rule IDs from the privesc-technique fixture
+# (testdata/e2e/vulnerable/16-privesc-rbac.yaml). One grant per newly-wired
+# KUBE-PRIVESC primitive so each fires end to end against the standard preset.
+#
+# -004/-006/-013/-015 are single-permission switch cases; -007 (create+get
+# secrets) and -016 (delete pods + nodes/status) are per-subject correlation
+# passes. -002 (pod create + permissive PSA) is emitted in ADDITION to -001:
+# this shard's sa-pod-create-escape Role lands it via the namespaced branch, and
+# the cluster-scoped baseline pod-create grants (privileged-reader, sa-pod-create)
+# produce it too.
+#
+# Note on -006 vs -005: the get-only sa-secret-read produces -006 here, while
+# baseline.expect's KUBE-PRIVESC-005 keeps firing from privileged-reader's
+# `[get, list]` grant (the list/watch case wins first). sa-secret-mint holds
+# create+get, so it also produces -006 alongside -007.
+#
+# The graph edges these grants add (secret_mint_token -> token_mint,
+# node_drain_migrate / pod_create_privileged_escape -> node_escape,
+# ephemeral_container_inject -> pod SAs) only re-emit KUBE-PRIVESC-PATH-* IDs
+# already covered by baseline.expect, so no new PATH assertions are needed.
+KUBE-PRIVESC-002
+KUBE-PRIVESC-004
+KUBE-PRIVESC-006
+KUBE-PRIVESC-007
+KUBE-PRIVESC-013
+KUBE-PRIVESC-015
+KUBE-PRIVESC-016

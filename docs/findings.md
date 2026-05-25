@@ -2,7 +2,7 @@
 
 The complete catalog of rules Kubesplaining can emit. See [README](../README.md) for usage; this doc is the reference for *what* gets detected.
 
-The tool currently emits **63 distinct rule IDs across 10 modules**. Rule IDs are a public surface: they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
+The tool currently emits **70 distinct rule IDs across 10 modules**. Rule IDs are a public surface: they are stable across releases and referenced from `findings.json`, the SARIF output, and the e2e assertions in `scripts/kind-e2e.sh`.
 
 **Structured remediation hints.** Every rule below also ships with an optional `RemediationHint` (kubectl patch, Kyverno / Gatekeeper policy, or RBAC diff) when you pass `--remediation-patches` to `scan`, `scan-resource`, or `report`. The hint appears in JSON / SARIF and as a "Structured remediation" section in the HTML report. Off by default to keep the output minimal; see the per-rule "Remediation" column for the human-readable summary that always renders.
 
@@ -21,9 +21,16 @@ Each rule produces zero or more findings against a given snapshot.
 | KUBE-PRIVESC-011 | HIGH | CSR create + approve mints a `system:masters` cert | Cluster-scoped `create certificatesigningrequests` AND `update/patch certificatesigningrequests/approval` held by the same subject | Split the two halves across different subjects; reserve approval for the kube-controller-manager auto-approver or a strict admin allowlist |
 | KUBE-PRIVESC-012 | CRITICAL | Node proxy access | `get` on `nodes/proxy` (kubelet abuse) | Keep kubelet-facing permissions off application identities |
 | KUBE-PRIVESC-001 | HIGH | Pod creation access can be used for token theft | `create` on pods | Route deployments through controlled automation |
+| KUBE-PRIVESC-002 | HIGH | Pod creation can launch a privileged escape pod | `create` on pods AND the target namespace's Pod Security Admission does not block privileged pods (no `enforce` label, or `enforce=privileged`). Emitted in addition to -001: token theft and host escape are distinct impacts of the same grant | Enforce PSA `baseline`/`restricted` on the namespace; route pod creation through controlled automation |
+| KUBE-PRIVESC-004 | HIGH | Pod exec/attach enables token theft | `create`/`get` on `pods/exec` or `pods/attach` | Remove exec/attach from application identities; reserve for break-glass debugging |
+| KUBE-PRIVESC-013 | HIGH | Ephemeral container injection bypasses pod hardening | `update`/`patch` on `pods/ephemeralcontainers` | Remove the grant; an injected debug container ignores the target pod's `securityContext` |
+| KUBE-PRIVESC-015 | MEDIUM | Port-forward reaches internal-only services | `create` on `pods/portforward` (lateral movement, not a cluster sink) | Remove from application identities; port-forward tunnels past NetworkPolicy to internal databases / dashboards |
 | KUBE-PRIVESC-003 | HIGH | Workload controller modification can create privileged pods | create/update/patch on deployments/daemonsets/statefulsets/jobs/cronjobs | Separate deploy automation from runtime identities |
-| KUBE-PRIVESC-005 | HIGH | Secret read access | `get`/`list`/`watch` on secrets | Scope to namespaces/workloads that actually need it |
+| KUBE-PRIVESC-005 | HIGH | Secret listing (enumerate every Secret) | `list`/`watch` on secrets — one call returns every Secret's contents | Scope to namespaces/workloads that actually need it |
+| KUBE-PRIVESC-006 | HIGH | Secret read (named get) | `get` on secrets without `list`/`watch` (the narrower, named-read counterpart to -005) | Scope to the specific Secrets the workload needs |
+| KUBE-PRIVESC-007 | HIGH | Secret create + get mints a ServiceAccount token | `create` AND `get` on secrets held by the same subject in composing scopes — mint a legacy token Secret pointed at a privileged SA, then read the controller-populated token | Split the two halves across subjects; prefer the TokenRequest API over legacy token Secrets |
 | KUBE-PRIVESC-014 | HIGH | Service account token creation | `create` on `serviceaccounts/token` | Limit to trusted control-plane components |
+| KUBE-PRIVESC-016 | HIGH | Pod delete + node manipulation migrates pods to an attacker node | `delete` on pods AND cluster-scoped `update`/`patch` on `nodes/status` (cordon/taint) or `delete` on nodes — evict a sensitive pod and force it to reschedule onto a controlled node | Separate node-lifecycle automation from workload identities |
 | KUBE-RBAC-OVERBROAD-001 | CRITICAL | Non-system subject bound to cluster-admin | Direct binding of human/SA to the `cluster-admin` ClusterRole | Replace with a least-privilege custom role |
 | KUBE-RBAC-STALE-001 | MEDIUM | Binding references missing Role/ClusterRole | (Cluster)RoleBinding whose `roleRef` points at a Role/ClusterRole absent from the snapshot (built-in `cluster-admin`/`admin`/`edit`/`view` are allowlisted) | Delete the binding or restore the role from version control |
 | KUBE-RBAC-STALE-002 | LOW | Binding lists non-existent ServiceAccount subject | Binding subject is a ServiceAccount that does not exist in the cluster (User/Group subjects are not checked — Kubernetes has no User/Group inventory) | Delete the binding or restore the ServiceAccount |
@@ -140,7 +147,7 @@ These findings are emitted **per `(source subject, sink)` pair** found by BFS on
 | KUBE-PRIVESC-PATH-NAMESPACE-ADMIN | HIGH (7.6) | `<subject>` can reach namespace-admin in `<ns>` in N hop(s) | Namespace-scoped `create rolebindings` or `bind/escalate roles` (one sink per affected namespace) |
 | KUBE-PRIVESC-PATH-AWS-IAM-ROLE | HIGH (8.0) | `<subject>` can assume an external AWS IAM role in N hop(s) | Paths terminating at an external `aws-iam` node introduced by an IRSA binding. EKS-only. The external IAM node is treated as a terminal sink by the pathfinder, so every IRSA-annotated SA produces one finding per (SA, IAM role) pair. When aws-auth ALSO maps the same ARN onward (to `system:masters` or a cluster-admin-bound custom group), the pathfinder continues traversal through the external node so the longer `KUBE-PRIVESC-PATH-SYSTEM-MASTERS` / `KUBE-PRIVESC-PATH-CLUSTER-ADMIN` chain surfaces as a separate finding. |
 
-Edge techniques that can appear in a hop chain: `KUBE-PRIVESC-001` (pod create), `-005` (secrets read), `-008` (impersonate), `-009` (bind/escalate), `-010` (rolebinding modify), `-011` (CSR create + approve), `-012` (nodes/proxy), `-014` (serviceaccounts/token), `-017` (wildcard), plus `KUBE-ESCAPE-00{1,2,3,4,5,6,8}` / `KUBE-HOSTPATH-001` for the pod-escape terminal edge. `system:*` subjects are skipped as traversable intermediates so paths do not launder through the control plane.
+Edge techniques that can appear in a hop chain: `KUBE-PRIVESC-001` (pod create), `-002` (pod create into a privileged-allowing namespace → node escape), `-004` (pod exec/attach), `-005`/`-006` (secrets list/read), `-007` (secret create + get → token mint), `-008` (impersonate), `-009` (bind/escalate), `-010` (rolebinding modify), `-011` (CSR create + approve), `-012` (nodes/proxy), `-013` (ephemeral container injection), `-014` (serviceaccounts/token), `-016` (delete pods + node manipulation → node escape), `-017` (wildcard), plus `KUBE-ESCAPE-00{1,2,3,4,5,6,8}` / `KUBE-HOSTPATH-001` for the pod-escape terminal edge. `system:*` subjects are skipped as traversable intermediates so paths do not launder through the control plane.
 
 Each path finding ships with an `escalation_path` array: one `EscalationHop` per step, with `from_subject`, `to_subject`, `action`, `permission`, and a human-readable `gains` line.
 
@@ -163,8 +170,6 @@ These rules fire only when the snapshot's `metadata.cloudProvider` resolves to `
 ## Findings Library — Planned
 
 The following rules are on the roadmap but not yet implemented. See [PLAN.md](../PLAN.md) for status and priority.
-
-**RBAC** — KUBE-PRIVESC-002 (pod create + PSA bypass), -004 (pods/exec), -006 (secrets get), -007 (secret creation token theft), -013 (ephemeral containers), -015 (portforward), -016 (node drain); stale/dangling bindings.
 
 **Pod Security** — exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, …); legacy PSP permissiveness. (PersistentVolume hostPath bypass is now `KUBE-PV-HOSTPATH-001`; PSA namespace label assessment is now `KUBE-PSA-LABELS-001`.)
 

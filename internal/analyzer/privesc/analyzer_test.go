@@ -80,7 +80,12 @@ func TestAnalyzerFindsPodEscapeChain(t *testing.T) {
 	snapshot := models.Snapshot{
 		Resources: models.SnapshotResources{
 			Namespaces: []corev1.Namespace{
-				{ObjectMeta: objectMeta("default", "")},
+				// Enforce Restricted so the direct KUBE-PRIVESC-002
+				// (pod_create_privileged_escape) edge does not fire; this test
+				// exercises the multi-hop create-pod -> mount SA -> escape chain
+				// via the already-running privileged pod. The -002 1-hop edge has
+				// its own coverage in TestPrivilegedPodCreateEscapeEdge.
+				{ObjectMeta: metav1.ObjectMeta{Name: "default", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}}},
 			},
 			Pods: []corev1.Pod{
 				{
@@ -412,5 +417,123 @@ func TestAnalyzerSkipsSystemSubjects(t *testing.T) {
 		if f.Subject != nil && f.Subject.Name == "system:masters" {
 			t.Fatalf("did not expect finding for system:masters subject, got %+v", f)
 		}
+	}
+}
+
+// hasEdge reports whether the graph carries an edge with the given action from
+// `from` to `to`.
+func hasEdge(graph *models.EscalationGraph, from, action, to string) bool {
+	for _, e := range graph.Edges {
+		if e.From == from && e.Action == action && e.To == to {
+			return true
+		}
+	}
+	return false
+}
+
+// clusterRoleGraph builds a graph for a single ClusterRole (with rules) bound
+// cluster-wide to default/<saName>, plus the supplied namespaces.
+func clusterRoleGraph(saName string, namespaces []corev1.Namespace, rules ...rbacv1.PolicyRule) *models.EscalationGraph {
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Namespaces: namespaces,
+			ClusterRoles: []rbacv1.ClusterRole{
+				{ObjectMeta: objectMeta("role", ""), Rules: rules},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: objectMeta("role", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "role"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: "default"}},
+				},
+			},
+		},
+	}
+	return BuildGraph(snapshot)
+}
+
+// TestPrivilegedPodCreateEscapeEdge covers the KUBE-PRIVESC-002 graph edge: a
+// pod-create grant in a namespace that allows privileged pods yields a direct
+// edge to the node-escape sink; a Restricted-enforced namespace suppresses it.
+func TestPrivilegedPodCreateEscapeEdge(t *testing.T) {
+	t.Parallel()
+
+	permissive := []corev1.Namespace{{ObjectMeta: objectMeta("dev", "")}}
+	graph := clusterRoleGraph("deployer", permissive,
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}})
+	if !hasEdge(graph, "subject:ServiceAccount/default/deployer", "pod_create_privileged_escape", sinkNodeEscape) {
+		t.Fatalf("expected pod_create_privileged_escape edge to node-escape sink, edges=%v", graph.Edges)
+	}
+
+	restricted := []corev1.Namespace{
+		{ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}}},
+	}
+	graph = clusterRoleGraph("deployer", restricted,
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}})
+	if hasEdge(graph, "subject:ServiceAccount/default/deployer", "pod_create_privileged_escape", sinkNodeEscape) {
+		t.Fatalf("restricted namespace must suppress the pod_create_privileged_escape edge")
+	}
+}
+
+// TestSecretMintEdge covers the KUBE-PRIVESC-007 graph edge: cluster-scoped
+// create + get on secrets yields an edge to the token-mint sink.
+func TestSecretMintEdge(t *testing.T) {
+	t.Parallel()
+
+	graph := clusterRoleGraph("minter", nil,
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}})
+	if !hasEdge(graph, "subject:ServiceAccount/default/minter", "secret_mint_token", sinkTokenMint) {
+		t.Fatalf("expected secret_mint_token edge to token-mint sink, edges=%v", graph.Edges)
+	}
+
+	// create-only must not produce the edge.
+	graph = clusterRoleGraph("creator", nil,
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}})
+	if hasEdge(graph, "subject:ServiceAccount/default/creator", "secret_mint_token", sinkTokenMint) {
+		t.Fatalf("create-only secrets grant must not produce a secret_mint_token edge")
+	}
+}
+
+// TestNodeMigrateEdge covers the KUBE-PRIVESC-016 graph edge: delete pods plus
+// cluster-scoped node manipulation yields an edge to the node-escape sink.
+func TestNodeMigrateEdge(t *testing.T) {
+	t.Parallel()
+
+	graph := clusterRoleGraph("drainer", nil,
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"delete"}})
+	if !hasEdge(graph, "subject:ServiceAccount/default/drainer", "node_drain_migrate", sinkNodeEscape) {
+		t.Fatalf("expected node_drain_migrate edge to node-escape sink, edges=%v", graph.Edges)
+	}
+}
+
+// TestEphemeralContainerEdge covers the KUBE-PRIVESC-013 graph edge: an
+// ephemeral-container grant targets the ServiceAccounts that running pods mount.
+func TestEphemeralContainerEdge(t *testing.T) {
+	t.Parallel()
+
+	snapshot := models.Snapshot{
+		Resources: models.SnapshotResources{
+			Namespaces: []corev1.Namespace{{ObjectMeta: objectMeta("default", "")}},
+			Pods: []corev1.Pod{
+				{ObjectMeta: objectMeta("victim-pod", "default"), Spec: corev1.PodSpec{ServiceAccountName: "victim"}},
+			},
+			ClusterRoles: []rbacv1.ClusterRole{
+				{ObjectMeta: objectMeta("injector", ""), Rules: []rbacv1.PolicyRule{
+					{APIGroups: []string{""}, Resources: []string{"pods/ephemeralcontainers"}, Verbs: []string{"patch"}},
+				}},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: objectMeta("injector", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "injector"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "injector", Namespace: "default"}},
+				},
+			},
+		},
+	}
+	graph := BuildGraph(snapshot)
+	if !hasEdge(graph, "subject:ServiceAccount/default/injector", "ephemeral_container_inject", "subject:ServiceAccount/default/victim") {
+		t.Fatalf("expected ephemeral_container_inject edge to the victim pod's SA, edges=%v", graph.Edges)
 	}
 }

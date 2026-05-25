@@ -178,6 +178,11 @@ var (
 		Name: "Container and Resource Discovery",
 		URL:  "https://attack.mitre.org/techniques/T1613/",
 	}
+	mitreT1090 = models.MitreTechnique{
+		ID:   "T1090",
+		Name: "Proxy",
+		URL:  "https://attack.mitre.org/techniques/T1090/",
+	}
 )
 
 // contentPrivesc017 — Wildcard verbs/resources/apiGroups (KUBE-PRIVESC-017).
@@ -217,29 +222,31 @@ func contentPrivesc017(ruleNamespace string, subject models.SubjectRef, sourceBi
 	}
 }
 
-// contentPrivesc005 — Secret read access (KUBE-PRIVESC-005).
+// contentPrivesc005 — Secret listing (KUBE-PRIVESC-005). `list`/`watch` on
+// secrets enumerates AND reads every Secret in scope in one call; the narrower
+// `get`-only case is KUBE-PRIVESC-006.
 func contentPrivesc005(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
-		Title: fmt.Sprintf("%s read access to Secrets on `%s`", phrase, subjectKey(subject)),
+		Title: fmt.Sprintf("%s list/watch access to Secrets enumerates every Secret on `%s`", phrase, subjectKey(subject)),
 		Scope: scope,
-		Description: fmt.Sprintf("Subject %s can `get`, `list`, or `watch` core `secrets` via %s → %s. %s.\n\n"+
-			"The Kubernetes documentation is explicit that `list` and `watch` reveal Secret contents in the response body (they are not metadata-only verbs), so all three verbs leak the same data.\n\n"+
-			"Kubernetes Secrets typically hold ServiceAccount tokens, kubeconfigs, image-pull credentials, TLS private keys, database passwords, and integration secrets for cloud APIs. Once Secret contents are exposed, the holder can authenticate as the corresponding ServiceAccount/user, which usually amplifies the original blast radius far beyond 'read access'. Cluster-wide reads include `kube-system` ServiceAccount tokens, which are routinely cluster-admin-equivalent.",
+		Description: fmt.Sprintf("Subject %s can `list` or `watch` core `secrets` via %s → %s. %s.\n\n"+
+			"The Kubernetes documentation is explicit that `list` and `watch` return Secret contents in the response body (they are not metadata-only verbs). Unlike `get` (KUBE-PRIVESC-006), which requires knowing each Secret's name, a single `list` enumerates and dumps every Secret in scope at once: the holder does not need to know what exists first.\n\n"+
+			"Kubernetes Secrets typically hold ServiceAccount tokens, kubeconfigs, image-pull credentials, TLS private keys, database passwords, and integration secrets for cloud APIs. Once Secret contents are exposed, the holder can authenticate as the corresponding ServiceAccount/user, which usually amplifies the original blast radius far beyond 'read access'. Cluster-wide listing includes `kube-system` ServiceAccount tokens, which are routinely cluster-admin-equivalent.",
 			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
-		Impact: fmt.Sprintf("%s read of every Secret (ServiceAccount tokens, TLS keys, registry credentials, integration secrets), enabling identity replay and cross-namespace lateral movement.", phrase),
+		Impact: fmt.Sprintf("%s enumeration and read of every Secret (ServiceAccount tokens, TLS keys, registry credentials, integration secrets), enabling identity replay and cross-namespace lateral movement.", phrase),
 		AttackScenario: []string{
 			fmt.Sprintf("Attacker reaches %s (compromised pod, leaked kubeconfig, or stolen token).", subjectKey(subject)),
-			"They run `kubectl get secrets -o yaml` in scope and base64-decode every `data` field.",
+			"They run `kubectl get secrets -o yaml` in scope and base64-decode every `data` field, harvesting all Secrets in one request.",
 			"They identify Secrets of type `kubernetes.io/service-account-token` (legacy) or call the TokenRequest API with harvested credentials.",
 			"They replay the highest-privileged token against the API server (`kubectl --token=<jwt> get clusterrolebindings`).",
 			"They pivot to cloud APIs using extracted IRSA / Workload Identity / cloud-provider credentials, or persist by writing a backdoor into a privileged Deployment.",
 		},
-		Remediation: "Remove `get/list/watch` on `secrets` from this subject; if a specific Secret is genuinely needed, scope by `resourceNames` to that one name.",
+		Remediation: "Remove `list`/`watch` on `secrets` from this subject; if a specific Secret is genuinely needed, scope a `get` by `resourceNames` to that one name.",
 		RemediationSteps: []string{
 			"Confirm the workload genuinely needs API-time Secret access. Most apps consume Secrets via volume/env injection at pod start and don't need RBAC read.",
-			"If runtime access is required, scope the rule by `resourceNames` to the exact Secret(s) the workload reads. Never leave it as 'all secrets'. Drop `list` and `watch`; keep only `get`.",
+			"If runtime access is required, drop `list` and `watch` entirely and scope a `get` rule by `resourceNames` to the exact Secret(s) the workload reads. Never leave it as 'all secrets'.",
 			"Move the binding from cluster-wide to namespace-scoped (RoleBinding instead of ClusterRoleBinding) so the blast radius is bounded.",
 			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("list", "secrets", ruleNamespace, subject)),
 			"For sensitive Secrets (TLS keys, cloud credentials), consider an external secret store (Vault, AWS/GCP Secrets Manager via CSI driver) and enable encryption-at-rest with a KMS-backed `EncryptionConfiguration`.",
@@ -570,6 +577,280 @@ func contentPrivesc014(ruleNamespace string, subject models.SubjectRef, sourceBi
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1098_001, mitreT1528, mitreT1078_004},
 	}
+}
+
+// contentPrivesc004 — Pod exec / attach (KUBE-PRIVESC-004).
+func contentPrivesc004(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s `pods/exec` access enables token theft from running pods (`%s`)", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `create`/`get` the `pods/exec` (or `pods/attach`) subresource via %s → %s. %s.\n\n"+
+			"Exec opens an interactive process inside an already-running container. Unlike pod creation, the attacker does not choose the ServiceAccount: they inherit whatever identity the target pod already runs as. In a shared namespace that frequently includes a pod backed by a high-privilege ServiceAccount (a controller, an operator, a CI runner), so exec becomes a credential-theft primitive: read `/var/run/secrets/kubernetes.io/serviceaccount/token` from inside the container and replay it.\n\n"+
+			"If the target container is itself privileged, runs as root, or mounts the host, exec is also a direct node-escape path. The permission is doubly dangerous because it leaves a thin audit trail (the exec stream is a single API call) and is commonly granted by `edit`-style roles that operators assume are harmless.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("Run commands inside any running pod in %s, inheriting that pod's ServiceAccount token (and host access if the pod is privileged). A common path to a control-plane-adjacent SA token.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("create", "pods/exec", ruleNamespace, subject)),
+			"They enumerate running pods and their ServiceAccounts: `kubectl get pods -o custom-columns=NAME:.metadata.name,SA:.spec.serviceAccountName` and pick a pod with a privileged SA.",
+			"They exec in: `kubectl exec -it <pod> -- /bin/sh` (or open the raw `pods/exec` WebSocket directly).",
+			"They read the mounted token (`cat /var/run/secrets/kubernetes.io/serviceaccount/token`) and replay it against the API server as that ServiceAccount.",
+			"If the container is privileged or mounts the host, they instead break out to the node and harvest the kubelet credentials.",
+		},
+		Remediation: "Remove `create`/`get` on `pods/exec` and `pods/attach` from non-operator identities; gate any legitimate debug access behind a break-glass workflow.",
+		RemediationSteps: []string{
+			"Audit who holds exec rights: `kubectl get clusterroles,roles -A -o json | jq '.items[] | select(.rules[]?.resources[]? | test(\"pods/(exec|attach)\"))'`. Most application identities should have none.",
+			"Remove the verbs. For interactive debugging, prefer `kubectl debug` gated by a JIT/break-glass role granted only for the duration of an incident.",
+			"Pin sensitive workloads to dedicated, least-privilege ServiceAccounts so an exec into a co-tenant pod does not yield a powerful token.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "pods/exec", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — RBAC Good Practices: pods/exec", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/#pod-exec"},
+			{Title: "Kubernetes — Get a Shell to a Running Container", URL: "https://kubernetes.io/docs/tasks/debug/debug-application/get-shell-running-container/"},
+			refMSThreatMatrix,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1609, mitreT1552_007, mitreT1611, mitreT1078_004},
+	}
+}
+
+// contentPrivesc006 — Secret read via get (KUBE-PRIVESC-006). The broader
+// `list`/`watch` enumerate-everything case is KUBE-PRIVESC-005.
+func contentPrivesc006(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s `get` access to Secrets on `%s`", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `get` core `secrets` via %s → %s. %s.\n\n"+
+			"`get` returns the full Secret object, including the base64-encoded `data` payload, for any Secret whose name the caller knows. It is narrower than `list`/`watch` (KUBE-PRIVESC-005), which dump every Secret in scope without needing names, but in practice Secret names are highly guessable (`<app>-tls`, `<app>-db`, `default-token-*`, registry pull secrets) and are often discoverable from pod specs, so `get` alone routinely exposes ServiceAccount tokens, TLS keys, and database credentials.\n\n"+
+			"Cluster-wide `get` reaches `kube-system` ServiceAccount token Secrets, which are commonly cluster-admin-equivalent.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("%s read of any named Secret (ServiceAccount tokens, TLS keys, registry credentials), enabling identity replay once the attacker knows or guesses a Secret name.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker reaches %s and confirms the verb with `%s`.", subjectKey(subject), kubectlAuthCanI("get", "secrets", ruleNamespace, subject)),
+			"They recover Secret names from pod specs they can read, from naming conventions, or from default token patterns.",
+			"They `kubectl get secret <name> -o yaml` and base64-decode the `data` fields.",
+			"They replay the highest-privileged token (e.g. a kube-system controller SA) against the API server.",
+			"They pivot to cloud APIs using extracted IRSA / Workload Identity credentials, or persist via a backdoor binding.",
+		},
+		Remediation: "Scope `get` on `secrets` by `resourceNames` to the exact Secret(s) the workload needs, or remove it entirely if Secrets are consumed via volume/env injection.",
+		RemediationSteps: []string{
+			"Confirm the workload needs API-time Secret access. Most apps consume Secrets via volume/env injection at pod start and don't need RBAC read.",
+			"If runtime access is required, scope the rule by `resourceNames` to the exact Secret name(s). Never grant `get` on all secrets.",
+			"Move the binding from cluster-wide to namespace-scoped so the blast radius is bounded.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("get", "secrets", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — Good practices for Kubernetes Secrets", URL: "https://kubernetes.io/docs/concepts/security/secrets-good-practices/"},
+			{Title: "Kubernetes — RBAC Good Practices: Secrets read", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/#secrets"},
+			{Title: "Kubernetes — Encryption at Rest (KMS provider)", URL: "https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/"},
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1552_007, mitreT1528, mitreT1078_004},
+	}
+}
+
+// contentPrivesc013 — Ephemeral container injection (KUBE-PRIVESC-013).
+func contentPrivesc013(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s ephemeral-container injection enables takeover of running pods (`%s`)", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `update`/`patch` the `pods/ephemeralcontainers` subresource via %s → %s. %s.\n\n"+
+			"Ephemeral containers (the engine behind `kubectl debug`) are added to an already-running pod. The injected container joins the target pod's namespaces and, crucially, can mount the pod's ServiceAccount token and (with `shareProcessNamespace` or `targetContainerName`) inspect the other containers' processes and memory. It is functionally pod creation against an existing victim: the attacker chooses the image and command but inherits the victim pod's identity and host exposure.\n\n"+
+			"Because the parent pod is already scheduled and admitted, ephemeral-container injection can sidestep some admission paths that only fire on pod create, making it a quieter alternative to `pods/exec` for stealing a privileged pod's token.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("Inject an attacker-controlled container into any running pod in %s, inheriting that pod's ServiceAccount token, namespaces, and host mounts.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("patch", "pods/ephemeralcontainers", ruleNamespace, subject)),
+			"They pick a running pod backed by a privileged ServiceAccount (or one that mounts the host).",
+			"They inject a debug container: `kubectl debug -it <pod> --image=alpine --target=<container>`.",
+			"From the injected container they read the mounted SA token, or `nsenter` into the target container's namespaces.",
+			"They replay the stolen token, or escape to the node if the parent pod is privileged.",
+		},
+		Remediation: "Remove `update`/`patch` on `pods/ephemeralcontainers` from non-operator identities; gate debugging behind a break-glass role.",
+		RemediationSteps: []string{
+			"Audit who can inject ephemeral containers: `kubectl get clusterroles,roles -A -o json | jq '.items[] | select(.rules[]?.resources[]? | test(\"pods/ephemeralcontainers\"))'`.",
+			"Remove the verbs. Reserve ephemeral-container debugging for a JIT/break-glass role granted only during incidents.",
+			"Pin sensitive workloads to dedicated least-privilege ServiceAccounts so an injected container does not yield a powerful token.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("patch", "pods/ephemeralcontainers", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — Ephemeral Containers", URL: "https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/"},
+			{Title: "Kubernetes — Debug Running Pods", URL: "https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/"},
+			refMSThreatMatrix,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1609, mitreT1611, mitreT1552_007},
+	}
+}
+
+// contentPrivesc015 — Port-forward to internal services (KUBE-PRIVESC-015).
+func contentPrivesc015(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s `pods/portforward` access tunnels to internal services (`%s`)", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `create` the `pods/portforward` subresource via %s → %s. %s.\n\n"+
+			"Port-forward opens a tunnel from the attacker's machine, through the API server and kubelet, to an arbitrary TCP port on a target pod. It bypasses NetworkPolicy, Service-level access controls, and any ingress restriction, because the traffic rides the kubelet's streaming channel rather than the pod network. Anything the pod can reach on `localhost` (an admin port, an unauthenticated debug endpoint, a sidecar) becomes reachable by the holder.\n\n"+
+			"This is primarily a lateral-movement and data-access primitive rather than a direct RBAC escalation: it gives network reach to internal services (databases, message queues, metadata proxies, the API of another component) that were assumed to be cluster-internal.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("Reach any TCP port on any pod in %s from outside the cluster network, bypassing NetworkPolicy and Service controls (internal databases, admin consoles, sidecar APIs).", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("create", "pods/portforward", ruleNamespace, subject)),
+			"They identify a target pod exposing a sensitive port on localhost (a database, an unauthenticated admin endpoint, a metadata proxy).",
+			"They open a tunnel: `kubectl port-forward pod/<target> 5432:5432`.",
+			"They connect to `localhost:5432` and interact with the internal service directly, with no NetworkPolicy in the path.",
+			"They exfiltrate data or pivot deeper using credentials harvested from the exposed service.",
+		},
+		Remediation: "Remove `create` on `pods/portforward` from application identities; reserve it for a small operator group and enforce NetworkPolicy on sensitive workloads regardless.",
+		RemediationSteps: []string{
+			"Audit who holds port-forward rights: `kubectl get clusterroles,roles -A -o json | jq '.items[] | select(.rules[]?.resources[]? | test(\"pods/portforward\"))'`.",
+			"Remove the verb from application/CI identities. Port-forward is a human-debugging convenience, not a workload permission.",
+			"Add authentication to internal services (do not rely on network position) and enforce NetworkPolicy so a tunnel into one pod does not expose the whole namespace.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "pods/portforward", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — Use Port Forwarding to Access Applications in a Cluster", URL: "https://kubernetes.io/docs/tasks/access-application-cluster/port-forward-access-application-cluster/"},
+			{Title: "Kubernetes — RBAC Good Practices", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/"},
+			refMSThreatMatrix,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1090, mitreT1613, mitreT1078_004},
+	}
+}
+
+// contentPrivesc002 — Pod create + escape via permissive Pod Security Admission
+// (KUBE-PRIVESC-002). permissiveTarget describes where privileged pods are
+// admissible: a specific namespace, or "any namespace" for a cluster-scoped grant.
+func contentPrivesc002(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole, permissiveTarget string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s pod creation can launch a privileged pod and escape to the node (`%s`)", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `create` pods via %s → %s, and %s does not enforce a Pod Security Admission level that blocks privileged pods. %s.\n\n"+
+			"RBAC never inspects the contents of a pod, only the `create` verb. When the target namespace has no `pod-security.kubernetes.io/enforce` label (or it is set to `privileged`), nothing at admission stops the attacker from creating a pod with `privileged: true`, `hostPID: true`, `hostNetwork: true`, or a `hostPath` mount of `/`. From inside that pod, breaking out to the node is trivial (`nsenter` into PID 1, read `/etc/kubernetes/pki`, steal the kubelet client cert).\n\n"+
+			"This is the difference between KUBE-PRIVESC-001 (pod create → steal another SA's token) and this finding: here the missing Pod Security backstop turns pod-create into full node compromise. Baseline or Restricted enforcement would block the privileged pod and downgrade the risk to token theft alone.",
+			subjectKey(subject), sourceBinding, sourceRole, permissiveTarget, scope.Detail),
+		Impact: "Create a privileged / host-mounting pod and escape to the underlying node, then harvest every pod's token and the kubelet credentials on that node.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms pod-create with `%s` and notes the target namespace has no restrictive Pod Security `enforce` label.", kubectlAuthCanI("create", "pods", ruleNamespace, subject)),
+			"They craft a pod with `securityContext.privileged: true`, `hostPID: true`, and a `hostPath` volume mounting `/`.",
+			"They `kubectl apply` the pod; Pod Security Admission does not reject it because the namespace is unlabelled or set to `privileged`.",
+			"They exec in and `nsenter -t 1 -m -u -i -n -p -- /bin/sh` to land a root shell on the node.",
+			"They read `/var/lib/kubelet/pki/kubelet-client-current.pem` and `/etc/kubernetes/pki/*`, then pivot to the control plane.",
+		},
+		Remediation: "Enforce the Restricted (or at least Baseline) Pod Security Standard on the namespace, and remove direct pod-create from non-platform identities.",
+		RemediationSteps: []string{
+			"Label the namespace to enforce Pod Security: `kubectl label ns <ns> pod-security.kubernetes.io/enforce=restricted`. Baseline blocks privileged/hostPath/host namespaces; Restricted additionally requires non-root and seccomp.",
+			"Replace direct `create` on `pods` with `create/update` on workload controllers routed through CI/CD, so a controller (not the attacker) creates the pod.",
+			"Add a Kyverno/Gatekeeper/ValidatingAdmissionPolicy that rejects `privileged`, `hostPID`, `hostNetwork`, and sensitive `hostPath` mounts outside an explicit allowlist, as defence in depth behind PSA.",
+			fmt.Sprintf("Verify by attempting to create a privileged pod as the subject and confirming admission rejects it, and that `%s` returns `no` for application identities.", kubectlAuthCanI("create", "pods", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — Pod Security Standards", URL: "https://kubernetes.io/docs/concepts/security/pod-security-standards/"},
+			{Title: "Kubernetes — Pod Security Admission", URL: "https://kubernetes.io/docs/concepts/security/pod-security-admission/"},
+			{Title: "Bishop Fox — Bad Pods: Pod Privilege Escalation", URL: "https://bishopfox.com/blog/kubernetes-pod-privilege-escalation"},
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1611, mitreT1078_004},
+	}
+}
+
+// contentPrivesc007 — Secret-creation token theft (KUBE-PRIVESC-007). Detection
+// correlates `create` and `get` on secrets held by the same subject; the
+// builder takes both halves' binding/role refs for the prose.
+func contentPrivesc007(ruleNamespace string, subject models.SubjectRef, createBinding, createRole, getBinding, getRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s `create`+`get` on Secrets mints a ServiceAccount token (`%s`)", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can both `create` Secrets (via %s → %s) and `get` Secrets (via %s → %s). %s.\n\n"+
+			"Held together, these two verbs reconstruct the legacy ServiceAccount-token minting primitive. The attacker creates a Secret of type `kubernetes.io/service-account-token` annotated with `kubernetes.io/service-account.name: <target-sa>`. The token controller observes the new Secret and populates its `data.token` field with a valid, long-lived JWT for that ServiceAccount. The attacker then `get`s the Secret back and reads the minted token.\n\n"+
+			"This sidesteps the TokenRequest API gating (KUBE-PRIVESC-014): no `serviceaccounts/token` permission is required. By targeting a privileged SA (a kube-system controller, or any SA bound to a powerful ClusterRole), the attacker obtains that SA's identity. The token is a non-expiring secret-backed token, so it persists until the Secret is deleted.",
+			subjectKey(subject), createBinding, createRole, getBinding, getRole, scope.Detail),
+		Impact: fmt.Sprintf("Mint and read a long-lived token for any ServiceAccount in %s by creating a token-type Secret and reading the controller-populated value: a persistence-friendly alternative to the TokenRequest API.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms both verbs with `%s` and `%s`.", kubectlAuthCanI("create", "secrets", ruleNamespace, subject), kubectlAuthCanI("get", "secrets", ruleNamespace, subject)),
+			"They pick a privileged target ServiceAccount (e.g. one bound to a powerful ClusterRole).",
+			"They create a Secret of type `kubernetes.io/service-account-token` annotated with `kubernetes.io/service-account.name: <target-sa>`.",
+			"The token controller fills in `data.token`; the attacker `get`s the Secret and base64-decodes the JWT.",
+			"They replay the token as the target ServiceAccount. The token is secret-backed and does not expire, surviving RBAC remediation until the Secret is deleted.",
+		},
+		Remediation: "Do not grant `create` and `get` on `secrets` to the same subject; scope each by `resourceNames` and disable legacy token-Secret auto-population where possible.",
+		RemediationSteps: []string{
+			"Split the two verbs across different identities, or remove one. Application workloads rarely need to create Secrets at runtime.",
+			"If Secret creation is required, scope it by `resourceNames` and never pair it with broad `get` on secrets.",
+			"Prefer bound TokenRequest tokens over legacy token Secrets; on modern clusters, avoid manually creating `kubernetes.io/service-account-token` Secrets.",
+			"Audit existing token Secrets: `kubectl get secrets -A --field-selector type=kubernetes.io/service-account-token` and remove any that are not expected.",
+			fmt.Sprintf("Verify with `%s` returning `no` for at least one of the two verbs.", kubectlAuthCanI("create", "secrets", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — Manage Service Account Tokens (legacy token Secrets)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#manual-secret-management-for-serviceaccounts"},
+			{Title: "Kubernetes — RBAC Good Practices: Secrets", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/#secrets"},
+			{Title: "Datadog Security Labs — Persistence via the TokenRequest API", URL: "https://securitylabs.datadoghq.com/articles/kubernetes-tokenrequest-api/"},
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1098_001, mitreT1528, mitreT1552_007},
+	}
+}
+
+// contentPrivesc016 — Node-status / delete-pod migration (KUBE-PRIVESC-016).
+// Detection correlates `delete pods` with cluster-scoped node manipulation
+// (`update`/`patch nodes/status` or `delete nodes`); nodeAction names which
+// node primitive was found.
+func contentPrivesc016(subject models.SubjectRef, podsBinding, podsRole, nodeBinding, nodeRole, nodeAction string) ruleContent {
+	scope := models.Scope{
+		Level:  models.ScopeCluster,
+		Detail: "Cluster-wide: nodes and their scheduling are cluster-scoped resources",
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("Delete-pods + node manipulation can migrate workloads onto an attacker node (`%s`)", subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `delete` pods (via %s → %s) and also `%s` (via %s → %s). %s.\n\n"+
+			"Combined, these let an attacker steer where high-value pods run. By cordoning or tainting nodes (through `nodes/status` updates) or deleting nodes outright, then deleting the target pods, the attacker forces the scheduler to relocate those pods. If the attacker controls (or can compromise) the remaining schedulable node, a sensitive pod (a controller, a pod with a privileged ServiceAccount, a pod that mounts secrets) lands where they can exec into it, read its mounted token, or sniff its traffic.\n\n"+
+			"This is an indirect, scheduling-level escalation: neither verb reads a Secret or binds a role directly, but together they break the assumption that a workload stays on a trusted node. It is most dangerous in clusters with a mix of trusted and lower-trust nodes (spot/burst pools, tenant-dedicated nodes).",
+			subjectKey(subject), podsBinding, podsRole, nodeAction, nodeBinding, nodeRole, scope.Detail),
+		Impact: "Relocate sensitive pods onto a node the attacker controls by manipulating node scheduling and evicting pods, then steal those pods' tokens or traffic from the node.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms both halves with `%s` and `%s`.", kubectlAuthCanI("delete", "pods", "", subject), kubectlAuthCanI(strings.Fields(nodeAction)[0], lastField(nodeAction), "", subject)),
+			"They cordon or taint every node except one they control (`kubectl patch node <n> --subresource=status ...`), or delete the nodes outright.",
+			"They `kubectl delete pod <target>` for a sensitive pod, forcing the controller to reschedule it.",
+			"The scheduler places the replacement pod on the attacker-controlled node.",
+			"They exec into / inspect the relocated pod from the node, harvesting its ServiceAccount token and any mounted secrets.",
+		},
+		Remediation: "Split `delete pods` from node-scheduling verbs across identities; reserve `nodes/status` writes and `delete nodes` for the control plane and cluster-autoscaler.",
+		RemediationSteps: []string{
+			"Remove `update`/`patch` on `nodes/status` and `delete` on `nodes` from application/operator identities. These belong to the kube-controller-manager and the autoscaler.",
+			"Restrict `delete pods` to controllers and platform automation; application identities should manage workloads through their owning controller, not by deleting pods.",
+			"Pin sensitive workloads to trusted nodes with `nodeSelector`/`nodeAffinity` + taints, so eviction cannot relocate them onto untrusted nodes.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("delete", "nodes", "", subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — Safely Drain a Node", URL: "https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/"},
+			{Title: "Kubernetes — Taints and Tolerations", URL: "https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/"},
+			{Title: "Kubernetes — RBAC Good Practices", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/"},
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1611, mitreT1078_004},
+	}
+}
+
+// lastField returns the last whitespace-separated token of s (e.g. "delete
+// nodes" -> "nodes", "update nodes/status" -> "nodes/status"). Used to render
+// the verb/resource pair in the KUBE-PRIVESC-016 verification command.
+func lastField(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return s
+	}
+	return fields[len(fields)-1]
 }
 
 // contentRBACOverbroad001 — Non-system subject bound to cluster-admin (KUBE-RBAC-OVERBROAD-001).
