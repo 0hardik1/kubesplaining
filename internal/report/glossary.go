@@ -390,6 +390,51 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Pivot to other pods on the same node via the container runtime socket", Cmd: "crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps"},
 		},
 	},
+	"ephemeral_container_inject": {
+		Title: "Ephemeral container injection",
+		Plain: template.HTML(`<p><code>update</code>/<code>patch</code> on <code>pods/ephemeralcontainers</code> adds an attacker-chosen container to an already-running pod (the mechanism behind <code>kubectl debug</code>). The injected container joins the victim pod's namespaces and can mount its ServiceAccount token, so it is effectively pod creation against an existing victim: the attacker picks the image but inherits the pod's identity and host exposure.</p>`),
+		Mitre: "T1610 — Deploy Container",
+		AttackerSteps: []AttackerStep{
+			{Note: "Inject a debug container into a pod backed by a privileged ServiceAccount", Cmd: "kubectl debug -it <pod> --image=alpine --target=<container>"},
+			{Note: "Read the victim pod's mounted token from the injected container", Cmd: "cat /var/run/secrets/kubernetes.io/serviceaccount/token"},
+		},
+	},
+	"secret_mint_token": {
+		Title: "Mint a token via a legacy Secret",
+		Plain: template.HTML(`<p>Holding both <code>create</code> and <code>get</code> on <code>secrets</code> lets an attacker create a Secret of type <code>kubernetes.io/service-account-token</code> annotated for a target ServiceAccount. The token controller fills in a valid, non-expiring token, which the attacker reads back. This bypasses the <code>serviceaccounts/token</code> TokenRequest gate entirely and leaves a persistent, secret-backed credential.</p>`),
+		Mitre: "T1098.001 — Account Manipulation: Additional Cloud Credentials",
+		AttackerSteps: []AttackerStep{
+			{Note: "Create a token Secret bound to a privileged ServiceAccount", Cmd: "kubectl apply -f - <<EOF\napiVersion: v1\nkind: Secret\nmetadata:\n  name: mint\n  annotations: {kubernetes.io/service-account.name: <target-sa>}\ntype: kubernetes.io/service-account-token\nEOF"},
+			{Note: "Read the controller-populated token", Cmd: "kubectl get secret mint -o jsonpath='{.data.token}' | base64 -d"},
+		},
+	},
+	"node_drain_migrate": {
+		Title: "Migrate pods onto an attacker node",
+		Plain: template.HTML(`<p><code>delete pods</code> combined with cluster-scoped node control (<code>update</code>/<code>patch</code> on <code>nodes/status</code>, or <code>delete nodes</code>) lets an attacker cordon or remove every node except one they control, then evict a sensitive pod. The scheduler relocates the pod onto the attacker's node, where its ServiceAccount token and traffic are exposed.</p>`),
+		Mitre: "T1610 — Deploy Container",
+		AttackerSteps: []AttackerStep{
+			{Note: "Cordon every node except the attacker-controlled one", Cmd: "kubectl cordon <other-node>"},
+			{Note: "Evict the target pod so it reschedules onto the remaining node", Cmd: "kubectl delete pod <target> -n <ns>"},
+		},
+	},
+	"pod_create_privileged_escape": {
+		Title: "Create a privileged pod and escape to the node",
+		Plain: template.HTML(`<p>RBAC never inspects pod contents, only the <code>create</code> verb. When the target namespace has no restrictive Pod Security Admission <code>enforce</code> label, an attacker who can create pods sets <code>privileged: true</code>, <code>hostPID</code>, or a <code>hostPath</code> mount of <code>/</code> and breaks out to the node. Baseline or Restricted enforcement would block this and limit the risk to token theft alone.</p>`),
+		Mitre: "T1611 — Escape to Host",
+		AttackerSteps: []AttackerStep{
+			{Note: "Create a privileged pod that mounts the host and shares host PID", Cmd: "kubectl run pwn --image=alpine --privileged --overrides='{\"spec\":{\"hostPID\":true}}' --command -- sleep infinity"},
+			{Note: "Escape to the node from the privileged pod", Cmd: "kubectl exec -it pwn -- nsenter -t 1 -m -u -i -n -p -- /bin/sh"},
+		},
+	},
+	"port_forward": {
+		Title: "Port-forward to internal services",
+		Plain: template.HTML(`<p><code>create</code> on <code>pods/portforward</code> opens a tunnel from the attacker's machine, through the API server and kubelet, to any TCP port on a target pod. It bypasses NetworkPolicy and Service controls because the traffic rides the kubelet streaming channel, so internal-only services (databases, admin consoles, sidecar APIs) become directly reachable.</p>`),
+		Mitre: "T1090 — Proxy",
+		AttackerSteps: []AttackerStep{
+			{Note: "Tunnel to an internal database port on a target pod", Cmd: "kubectl port-forward pod/<target> 5432:5432"},
+			{Note: "Connect to the now-local service with no NetworkPolicy in the path", Cmd: "psql -h localhost -p 5432"},
+		},
+	},
 	// Cloud-provider (EKS) techniques. The keys mirror the Action strings on the
 	// privesc edges that Unit 4 wires into the graph, so a chain hop with
 	// Action="irsa_assume_role" looks its explainer up here directly.
@@ -495,10 +540,22 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return ""
 	case f.RuleID == "KUBE-PRIVESC-001":
 		return "pod_create_token_theft"
+	case f.RuleID == "KUBE-PRIVESC-002":
+		return "pod_create_privileged_escape"
 	case f.RuleID == "KUBE-PRIVESC-004":
 		return "pod_exec"
 	case f.RuleID == "KUBE-PRIVESC-005":
 		return "read_secrets"
+	case f.RuleID == "KUBE-PRIVESC-006":
+		return "read_secrets"
+	case f.RuleID == "KUBE-PRIVESC-007":
+		return "secret_mint_token"
+	case f.RuleID == "KUBE-PRIVESC-013":
+		return "ephemeral_container_inject"
+	case f.RuleID == "KUBE-PRIVESC-015":
+		return "port_forward"
+	case f.RuleID == "KUBE-PRIVESC-016":
+		return "node_drain_migrate"
 	case f.RuleID == "KUBE-PRIVESC-008":
 		return "impersonate"
 	case f.RuleID == "KUBE-PRIVESC-009":

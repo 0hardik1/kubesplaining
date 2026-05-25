@@ -78,25 +78,36 @@
     .tab[aria-selected="true"] .tab-count { background: rgba(106,183,255,0.18); color: var(--accent); }
     body[data-active-tab="overview"] main [data-tab="attack"],
     body[data-active-tab="overview"] main [data-tab="findings"],
+    body[data-active-tab="overview"] main [data-tab="privesc"],
     body[data-active-tab="overview"] main [data-tab="leastprivilege"],
     body[data-active-tab="overview"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="attack"] main [data-tab="overview"],
     body[data-active-tab="attack"] main [data-tab="findings"],
+    body[data-active-tab="attack"] main [data-tab="privesc"],
     body[data-active-tab="attack"] main [data-tab="leastprivilege"],
     body[data-active-tab="attack"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="findings"] main [data-tab="overview"],
     body[data-active-tab="findings"] main [data-tab="attack"],
+    body[data-active-tab="findings"] main [data-tab="privesc"],
     body[data-active-tab="findings"] main [data-tab="leastprivilege"],
     body[data-active-tab="findings"] main [data-tab="compliance"] { display: none; }
+    body[data-active-tab="privesc"] main [data-tab="overview"],
+    body[data-active-tab="privesc"] main [data-tab="attack"],
+    body[data-active-tab="privesc"] main [data-tab="findings"],
+    body[data-active-tab="privesc"] main [data-tab="leastprivilege"],
+    body[data-active-tab="privesc"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="leastprivilege"] main [data-tab="overview"],
     body[data-active-tab="leastprivilege"] main [data-tab="attack"],
     body[data-active-tab="leastprivilege"] main [data-tab="findings"],
+    body[data-active-tab="leastprivilege"] main [data-tab="privesc"],
     body[data-active-tab="leastprivilege"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="compliance"] main [data-tab="overview"],
     body[data-active-tab="compliance"] main [data-tab="attack"],
     body[data-active-tab="compliance"] main [data-tab="findings"],
+    body[data-active-tab="compliance"] main [data-tab="privesc"],
     body[data-active-tab="compliance"] main [data-tab="leastprivilege"] { display: none; }
     body[data-active-tab="leastprivilege"] details.recon-card,
+    body[data-active-tab="privesc"] details.recon-card,
     body[data-active-tab="compliance"] details.recon-card { display: none; }
     .tabs-empty { color: var(--text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
 
@@ -121,6 +132,84 @@
       --cf-sev-low: #6bd66b;
       --cf-sev-info: #8aa0bf;
     }
+
+    /* Privilege-Escalation Paths tab. The hop chain inside each card reuses the
+       shared `.finding .scenario ol.attack-chain` styling (each card carries the
+       .finding class), so this block only styles the hero, the per-sink group
+       headers, and the card chrome around the chain. */
+    .pp-hero {
+      padding: 28px 32px; border: 1px solid var(--border); border-radius: 18px;
+      background:
+        radial-gradient(circle at 100% 0%, rgba(255,85,104,0.07), transparent 50%),
+        radial-gradient(circle at 0% 100%, rgba(255,154,60,0.05), transparent 50%),
+        linear-gradient(180deg, rgba(34,24,30,1) 0%, rgba(20,18,26,1) 100%);
+      margin-bottom: 22px; position: relative; overflow: hidden;
+    }
+    .pp-hero h1 {
+      font-size: 26px; letter-spacing: -0.02em; margin: 0 0 10px;
+      background: linear-gradient(90deg, var(--text) 0%, var(--critical) 100%);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .pp-hero p.pp-sub { color: var(--text-mut); font-size: 13.5px; line-height: 1.6; max-width: 760px; margin: 0; }
+    .pp-hero p.pp-sub strong { color: var(--text); font-weight: 600; }
+    .pp-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 22px; }
+    .pp-kpi {
+      padding: 14px 16px; border-radius: 12px; background: rgba(255,255,255,0.025);
+      border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px;
+    }
+    .pp-kpi-value { font-size: 28px; font-weight: 700; color: var(--text); font-feature-settings: "tnum"; letter-spacing: -0.02em; line-height: 1; }
+    .pp-kpi-label { font-size: 10.5px; color: var(--text-mut); text-transform: uppercase; letter-spacing: 0.09em; font-weight: 600; }
+    .pp-kpi.crit .pp-kpi-value { color: var(--critical); }
+    .pp-kpi.crit { border-left: 3px solid var(--critical); }
+    .pp-kpi.high .pp-kpi-value { color: var(--high); }
+    .pp-kpi.high { border-left: 3px solid var(--high); }
+
+    .pp-group { margin-bottom: 24px; }
+    .pp-group-hd {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+      padding: 11px 16px; border: 1px solid var(--border); border-bottom: 0;
+      border-radius: 12px 12px 0 0; background: rgba(255,255,255,0.02);
+    }
+    .pp-group.pp-sev-crit .pp-group-hd { border-left: 4px solid var(--critical); }
+    .pp-group.pp-sev-high .pp-group-hd { border-left: 4px solid var(--high); }
+    .pp-group.pp-sev-med  .pp-group-hd { border-left: 4px solid var(--medium); }
+    .pp-group.pp-sev-low  .pp-group-hd { border-left: 4px solid var(--low); }
+    .pp-group-name { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .pp-group-badge {
+      font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; font-weight: 700;
+      padding: 3px 10px; border-radius: 7px; white-space: nowrap; background: rgba(255,255,255,0.05); color: var(--text);
+    }
+    .pp-group-badge.crit { background: var(--critical-soft); color: var(--critical); }
+    .pp-group-badge.high { background: var(--high-soft); color: var(--high); }
+    .pp-group-badge.med  { background: var(--medium-soft); color: var(--medium); }
+    .pp-group-badge.low  { background: var(--low-soft); color: var(--low); }
+    .pp-group-name h2 { font-size: 15px; margin: 0; color: var(--text); font-weight: 600; }
+    .pp-group-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .pp-group-meta .sev-pill { padding: 2px 9px; border-radius: 999px; font-weight: 700; font-size: 10.5px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; }
+    .pp-group-meta .sev-pill.crit { background: var(--critical-soft); color: var(--critical); border: 1px solid var(--critical-edge); }
+    .pp-group-meta .sev-pill.high { background: var(--high-soft); color: var(--high); border: 1px solid var(--high-edge); }
+    .pp-group-meta .sev-pill.med  { background: var(--medium-soft); color: var(--medium); border: 1px solid var(--medium-edge); }
+    .pp-group-meta .sev-pill.low  { background: var(--low-soft); color: var(--low); border: 1px solid var(--low-edge); }
+
+    .pp-cards { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 12px 12px; padding: 14px 16px; display: grid; gap: 14px; background: rgba(0,0,0,0.12); }
+    article.pp-card { margin: 0; }
+    article.pp-card.pp-sev-crit { border-left-color: var(--critical); }
+    article.pp-card.pp-sev-high { border-left-color: var(--high); }
+    article.pp-card.pp-sev-med  { border-left-color: var(--medium); }
+    article.pp-card.pp-sev-low  { border-left-color: var(--low); }
+    .pp-card-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-mut); }
+    .pp-card-sev { font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px; letter-spacing: 0.04em; }
+    .pp-card-sev.crit { background: var(--critical-soft); color: var(--critical); }
+    .pp-card-sev.high { background: var(--high-soft); color: var(--high); }
+    .pp-card-sev.med  { background: var(--medium-soft); color: var(--medium); }
+    .pp-card-sev.low  { background: var(--low-soft); color: var(--low); }
+    .pp-card-source { background: rgba(255,255,255,0.08); padding: 2px 7px; border-radius: 6px; font-family: "JetBrains Mono", "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--text); word-break: break-all; }
+    .pp-card-arrow { color: var(--text-dim); }
+    .pp-card-sink { color: var(--text); font-weight: 600; }
+    .pp-card-score, .pp-card-hops { font-size: 11px; color: var(--text-dim); }
+    .pp-card-jump { margin-left: auto; font-size: 12px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+    .pp-card-jump:hover { text-decoration: underline; }
+    .pp-card-summary { margin: 8px 0 4px; font-size: 13px; line-height: 1.55; color: var(--text); }
 
     .compliance-hero {
       padding: 28px 32px;
@@ -1485,6 +1574,9 @@
       <button type="button" class="tab" role="tab" id="tabbtn-overview" aria-controls="tab-overview" aria-selected="false" data-tab="overview">Risk overview</button>
       <button type="button" class="tab" role="tab" id="tabbtn-findings" aria-controls="tab-findings" aria-selected="false" data-tab="findings">Findings <span class="tab-count">{{ .Summary.Total }}</span></button>
       {{ end }}
+      {{ if and (not .LeastPrivilegeOnly) (gt (len .PrivescPaths.Groups) 0) }}
+      <button type="button" class="tab" role="tab" id="tabbtn-privesc" aria-controls="tab-privesc" aria-selected="false" data-tab="privesc">Escalation paths <span class="tab-count">{{ .PrivescPaths.Total }}</span></button>
+      {{ end }}
       <button type="button" class="tab" role="tab" id="tabbtn-leastprivilege" aria-controls="tab-leastprivilege" aria-selected="false" data-tab="leastprivilege">Least Privilege <span class="tab-count">{{ .LeastPrivilege.Total }}</span></button>
       {{ if and (not .LeastPrivilegeOnly) (gt (len .Compliance.Frameworks) 0) }}
       <button type="button" class="tab" role="tab" id="tabbtn-compliance" aria-controls="tab-compliance" aria-selected="false" data-tab="compliance">Compliance <span class="tab-count">{{ .Compliance.Total }}</span></button>
@@ -2543,6 +2635,79 @@
               <strong>{{ .Summary.Total }}</strong> {{ if eq .Summary.Total 1 }}finding{{ else }}findings{{ end }}
             </span>
           </div>
+          {{ end }}
+        </div>
+      </section>
+      {{ end }}
+    </section>
+    {{ end }}
+
+    {{ if gt (len .PrivescPaths.Groups) 0 }}
+    <section data-tab="privesc" id="tab-privesc" aria-labelledby="tabbtn-privesc">
+      <div class="pp-hero">
+        <h1>Privilege-Escalation Paths</h1>
+        <p class="pp-sub">
+          Every RBAC privilege-escalation path the analyzer computed, grouped by the sink it
+          reaches. Each path starts at a subject an attacker might compromise and walks hop by hop
+          to a high-value target: full <strong>cluster-admin</strong>, the
+          <strong>system:masters</strong> group, <strong>kube-system secrets</strong>, minted
+          <strong>service-account tokens</strong>, or <strong>node root</strong> via container
+          escape. This is the exhaustive list. The Attack Paths tab draws the same chains as an
+          interactive graph but caps how many it renders, and the hero panel up top highlights only
+          the worst few. Each card links to its full finding (with remediation) in the Findings tab.
+        </p>
+        <div class="pp-kpis">
+          <div class="pp-kpi">
+            <span class="pp-kpi-value">{{ .PrivescPaths.Total }}</span>
+            <span class="pp-kpi-label">Escalation paths</span>
+          </div>
+          <div class="pp-kpi">
+            <span class="pp-kpi-value">{{ len .PrivescPaths.Groups }}</span>
+            <span class="pp-kpi-label">Distinct sinks</span>
+          </div>
+          {{ if gt .PrivescPaths.Summary.Critical 0 }}
+          <div class="pp-kpi crit">
+            <span class="pp-kpi-value">{{ .PrivescPaths.Summary.Critical }}</span>
+            <span class="pp-kpi-label">Critical paths</span>
+          </div>
+          {{ else if gt .PrivescPaths.Summary.High 0 }}
+          <div class="pp-kpi high">
+            <span class="pp-kpi-value">{{ .PrivescPaths.Summary.High }}</span>
+            <span class="pp-kpi-label">High paths</span>
+          </div>
+          {{ end }}
+        </div>
+      </div>
+
+      {{ range .PrivescPaths.Groups }}
+      <section class="pp-group pp-sev-{{ .SevClass }}">
+        <div class="pp-group-hd">
+          <div class="pp-group-name">
+            <span class="pp-group-badge {{ .SevClass }}">&rarr; {{ .SinkLabel }}</span>
+            <h2>{{ .Count }} path{{ if ne .Count 1 }}s{{ end }} to {{ .SinkLabel }}</h2>
+          </div>
+          <div class="pp-group-meta">
+            {{ if gt .Summary.Critical 0 }}<span class="sev-pill crit">{{ .Summary.Critical }} crit</span>{{ end }}
+            {{ if gt .Summary.High 0 }}<span class="sev-pill high">{{ .Summary.High }} high</span>{{ end }}
+            {{ if gt .Summary.Medium 0 }}<span class="sev-pill med">{{ .Summary.Medium }} med</span>{{ end }}
+            {{ if gt .Summary.Low 0 }}<span class="sev-pill low">{{ .Summary.Low }} low</span>{{ end }}
+          </div>
+        </div>
+        <div class="pp-cards">
+          {{ range .Cards }}
+          <article class="finding pp-card pp-sev-{{ .SevClass }}">
+            <div class="pp-card-hd">
+              <span class="pp-card-sev {{ .SevClass }}">{{ sevShort .Severity }}</span>
+              <code class="pp-card-source">{{ .Source }}</code>
+              <span class="pp-card-arrow">&rarr;</span>
+              <span class="pp-card-sink">{{ .SinkLabel }}</span>
+              <span class="pp-card-score">score {{ printf "%.1f" .Score }}</span>
+              <span class="pp-card-hops">{{ .HopCount }} hop{{ if ne .HopCount 1 }}s{{ end }}</span>
+              <a class="pp-card-jump" href="#{{ .Anchor }}">View finding &rarr;</a>
+            </div>
+            <p class="pp-card-summary">{{ .Summary }}</p>
+            {{ if .Hops }}<div class="scenario">{{ escalationPathHTML .Hops }}</div>{{ end }}
+          </article>
           {{ end }}
         </div>
       </section>

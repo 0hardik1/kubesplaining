@@ -444,6 +444,50 @@ type SubjectCapabilityCard struct {
 	HighestSeverity models.Severity
 }
 
+// PrivescPathsSection feeds the "Privilege-Escalation Paths" HTML tab — the
+// exhaustive complement to the above-the-fold hero chains (buildHeroChains caps
+// at 3) and the interactive Attack Graph (whose capability slate is capped to
+// fit the SVG). Every KUBE-PRIVESC-PATH-* finding the engine emits is listed
+// here, grouped by the sink it reaches so an operator can read each chain end to
+// end. Populated by buildPrivescPaths in privesc_paths_section.go; the template
+// gates the whole tab on len(Groups) > 0.
+type PrivescPathsSection struct {
+	Total   int
+	Summary Summary
+	Groups  []PrivescSinkGroup
+}
+
+// PrivescSinkGroup buckets every path that terminates at one escalation sink
+// (cluster_admin, kube_system_secrets, node_escape, ...). SinkLabel is the
+// human-readable phrase shared with the hero panel; SevClass tints the group
+// header to the worst severity in the bucket. Cards are pre-sorted worst-first.
+type PrivescSinkGroup struct {
+	SinkSlug  string
+	SinkLabel string
+	SevClass  string // crit | high | med | low | info
+	Count     int
+	Summary   Summary
+	Cards     []PrivescPathCard
+}
+
+// PrivescPathCard is one KUBE-PRIVESC-PATH-* chain. Source is the originating
+// subject ("ServiceAccount/ns/name"); Hops is the full ordered walkthrough,
+// rendered by the escalationPathHTML template func — the same renderer the
+// static Findings tab uses, so the per-hop chain cards look identical. Anchor
+// deep-links into the Findings tab's rule card for the full remediation.
+type PrivescPathCard struct {
+	Source    string
+	SinkLabel string
+	Severity  models.Severity
+	SevClass  string // crit | high | med | low | info
+	Score     float64
+	HopCount  int
+	Summary   string
+	Hops      []models.EscalationHop
+	RuleID    string
+	Anchor    string
+}
+
 // htmlReportData is the template input for the HTML dashboard; assembled by BuildHTMLData.
 type htmlReportData struct {
 	Snapshot       models.Snapshot
@@ -501,4 +545,10 @@ type htmlReportData struct {
 	HeroChains      []HeroChainCard         // "Critical attack chains" hero panel (W1 #4)
 	TopFixes        []TopFix                // "Top 5 fixes" panel (W1 #5)
 	SubjectCapCards []SubjectCapabilityCard // per-Subject capability cards (W1 #7)
+
+	// PrivescPaths feeds the "Privilege-Escalation Paths" tab — every
+	// KUBE-PRIVESC-PATH-* chain grouped by sink. Zero-value (empty Groups) when
+	// the snapshot has no privesc paths; both the tab button and the section
+	// gate on len(.PrivescPaths.Groups) > 0.
+	PrivescPaths PrivescPathsSection
 }

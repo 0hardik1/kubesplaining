@@ -130,6 +130,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	}
 
 	usedServiceAccounts := usedServiceAccounts(snapshot)
+	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
 	seen := map[string]struct{}{}
 	findings := make([]models.Finding, 0)
 
@@ -174,16 +175,38 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					"KUBE-PRIVESC-017", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.8),
 					contentPrivesc017(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get", "list", "watch"):
+			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "list", "watch"):
+				// list/watch return every Secret's contents in one call (the
+				// enumerate-everything case). get-only is the narrower -006 below.
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-005", models.SeverityHigh, models.CategoryDataExfiltration,
 					scaledScore(8.2),
 					contentPrivesc005(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get"):
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-006", models.SeverityHigh, models.CategoryDataExfiltration,
+					scaledScore(7.6),
+					contentPrivesc006(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-001", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.4),
 					contentPrivesc001(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			case hasAnyResource(rule.Resources, []string{"pods/exec", "pods/attach"}) && hasAnyVerb(rule.Verbs, "create", "get"):
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-004", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scaledScore(8.0),
+					contentPrivesc004(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			case hasResource(rule.Resources, "pods/ephemeralcontainers") && hasAnyVerb(rule.Verbs, "update", "patch"):
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-013", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scaledScore(8.0),
+					contentPrivesc013(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			case hasResource(rule.Resources, "pods/portforward") && hasAnyVerb(rule.Verbs, "create"):
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-015", models.SeverityMedium, models.CategoryLateralMovement,
+					scaledScore(6.0),
+					contentPrivesc015(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case hasAnyResource(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) &&
 				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
@@ -216,6 +239,22 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					"KUBE-PRIVESC-014", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.0),
 					contentPrivesc014(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			}
+
+			// KUBE-PRIVESC-002 — pod create + permissive Pod Security Admission.
+			// Emitted IN ADDITION to the switch's -001 (token theft): when the
+			// target namespace does not enforce a PSA level that blocks privileged
+			// pods, the same pod-create grant also yields a host escape. Full
+			// wildcards are already -017, so skip them here to avoid noise.
+			isPodCreate := hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create")
+			isFullWildcard := hasWildcard(rule.Verbs) && hasWildcard(rule.Resources) && hasWildcard(rule.APIGroups)
+			if isPodCreate && !isFullWildcard {
+				if target, ok := podCreatePrivilegedTarget(rule.Namespace, privilegedNamespaces); ok {
+					findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+						"KUBE-PRIVESC-002", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+						scaledScore(8.6),
+						contentPrivesc002(rule.Namespace, perms.Subject, bindingRef, roleRef, target)), snapshot))
+				}
 			}
 		}
 
@@ -257,6 +296,66 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				"KUBE-PRIVESC-011", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 				scaledScore(7.0), // base 7.0 × 1.2 blast = 8.4 (clamped if SA is mounted)
 				contentPrivesc011(perms.Subject, createRule.formattedBinding(), createRule.formattedRole(), approveRule.formattedBinding(), approveRule.formattedRole())))
+		}
+
+		// KUBE-PRIVESC-007 — secret-creation token theft. `create` + `get` on
+		// secrets in composing scopes lets the subject mint a legacy
+		// ServiceAccount-token Secret and read the controller-populated token,
+		// bypassing the serviceaccounts/token gate. Correlated per subject.
+		var secretCreateRule, secretGetRule *effectiveRule
+		for i := range perms.Rules {
+			r := &perms.Rules[i]
+			if matchesSecretCreate(*r) && secretCreateRule == nil {
+				secretCreateRule = r
+			}
+			if matchesSecretGet(*r) && secretGetRule == nil {
+				secretGetRule = r
+			}
+		}
+		if secretCreateRule != nil && secretGetRule != nil && scopesCompose(secretCreateRule.Namespace, secretGetRule.Namespace) {
+			blastRadius := 1.0
+			if secretCreateRule.Namespace == "" || secretGetRule.Namespace == "" {
+				blastRadius = 1.2
+			}
+			exploitability := 1.0
+			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+				exploitability = 1.2
+			}
+			findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *secretCreateRule,
+				"KUBE-PRIVESC-007", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+				scoring.Clamp(8.0*exploitability*blastRadius),
+				contentPrivesc007(secretCreateRule.Namespace, perms.Subject, secretCreateRule.formattedBinding(), secretCreateRule.formattedRole(), secretGetRule.formattedBinding(), secretGetRule.formattedRole())), snapshot))
+		}
+
+		// KUBE-PRIVESC-016 — node-status / delete-pod migration. `delete pods`
+		// plus cluster-scoped node manipulation (cordon via nodes/status, or
+		// delete nodes) can relocate sensitive pods onto an attacker node.
+		var deletePodsRule, nodeManipRule *effectiveRule
+		nodeAction := ""
+		for i := range perms.Rules {
+			r := &perms.Rules[i]
+			if matchesPodDelete(*r) && deletePodsRule == nil {
+				deletePodsRule = r
+			}
+			if nodeManipRule == nil && r.Namespace == "" {
+				if matchesNodeStatusWrite(*r) {
+					nodeManipRule = r
+					nodeAction = "update nodes/status"
+				} else if matchesNodeDelete(*r) {
+					nodeManipRule = r
+					nodeAction = "delete nodes"
+				}
+			}
+		}
+		if deletePodsRule != nil && nodeManipRule != nil {
+			exploitability := 1.0
+			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+				exploitability = 1.2
+			}
+			findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *nodeManipRule,
+				"KUBE-PRIVESC-016", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+				scoring.Clamp(7.5*exploitability*1.2), // node manipulation is cluster-scoped
+				contentPrivesc016(perms.Subject, deletePodsRule.formattedBinding(), deletePodsRule.formattedRole(), nodeManipRule.formattedBinding(), nodeManipRule.formattedRole(), nodeAction)), snapshot))
 		}
 	}
 
@@ -667,6 +766,82 @@ func matchesCSRCreate(rule effectiveRule) bool {
 // the two verbs `kubectl certificate approve` could use.
 func matchesCSRApprove(rule effectiveRule) bool {
 	return hasResource(rule.Resources, "certificatesigningrequests/approval") && hasAnyVerb(rule.Verbs, "update", "patch")
+}
+
+// matchesSecretCreate / matchesSecretGet are the two halves of the
+// KUBE-PRIVESC-007 secret-creation token-theft primitive.
+func matchesSecretCreate(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "create")
+}
+
+func matchesSecretGet(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get")
+}
+
+// matchesPodDelete, matchesNodeStatusWrite, and matchesNodeDelete are the
+// halves of the KUBE-PRIVESC-016 node-migration primitive. The node halves are
+// cluster-scoped resources, so the caller also requires rule.Namespace == "".
+func matchesPodDelete(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "delete")
+}
+
+func matchesNodeStatusWrite(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "nodes/status") && hasAnyVerb(rule.Verbs, "update", "patch")
+}
+
+func matchesNodeDelete(rule effectiveRule) bool {
+	return hasResource(rule.Resources, "nodes") && hasAnyVerb(rule.Verbs, "delete")
+}
+
+// scopesCompose reports whether a create-secrets grant in createNs and a
+// get-secrets grant in getNs overlap so the KUBE-PRIVESC-007 primitive is
+// realisable: either grant being cluster-scoped ("") covers all namespaces, and
+// two namespaced grants compose only when they name the same namespace.
+func scopesCompose(createNs, getNs string) bool {
+	return createNs == "" || getNs == "" || createNs == getNs
+}
+
+// psaEnforceLabel is the namespace label Pod Security Admission reads to choose
+// the standard it enforces. Absent, or "privileged", means privileged pods are
+// admissible.
+const psaEnforceLabel = "pod-security.kubernetes.io/enforce"
+
+// namespacesAllowingPrivileged returns the set of non-system namespaces whose
+// Pod Security Admission posture does NOT block privileged pods (no enforce
+// label, or enforce=privileged). baseline/restricted block privileged and are
+// excluded. The three built-in system namespaces are excluded because they
+// legitimately run privileged control-plane pods, which would make the
+// cluster-scoped KUBE-PRIVESC-002 signal fire unconditionally.
+func namespacesAllowingPrivileged(snapshot models.Snapshot) map[string]bool {
+	out := map[string]bool{}
+	for _, ns := range snapshot.Resources.Namespaces {
+		switch ns.Name {
+		case "kube-system", "kube-public", "kube-node-lease":
+			continue
+		}
+		switch ns.Labels[psaEnforceLabel] {
+		case "", "privileged":
+			out[ns.Name] = true
+		}
+	}
+	return out
+}
+
+// podCreatePrivilegedTarget reports whether a pod-create grant in ruleNamespace
+// can land a privileged pod, and a human description of where. A cluster-scoped
+// grant ("") can target any privileged-allowing namespace; a namespaced grant
+// only its own.
+func podCreatePrivilegedTarget(ruleNamespace string, privilegedNamespaces map[string]bool) (string, bool) {
+	if ruleNamespace == "" {
+		if len(privilegedNamespaces) > 0 {
+			return "any namespace without a restrictive Pod Security Admission `enforce` label", true
+		}
+		return "", false
+	}
+	if privilegedNamespaces[ruleNamespace] {
+		return fmt.Sprintf("namespace `%s`", ruleNamespace), true
+	}
+	return "", false
 }
 
 // usedServiceAccounts returns the set of ServiceAccounts actually mounted by pods, used to bump exploitability scoring.

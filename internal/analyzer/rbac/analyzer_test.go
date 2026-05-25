@@ -144,8 +144,10 @@ func TestDescriptionsQualifyBindingAndRoleByKind(t *testing.T) {
 		t.Fatalf("Analyze() error = %v", err)
 	}
 
-	requireDescriptionContains(t, findings, "KUBE-PRIVESC-005", "ClusterRoleBinding `crb-secrets`")
-	requireDescriptionContains(t, findings, "KUBE-PRIVESC-005", "ClusterRole `cr-secrets`")
+	// cr-secrets grants `get` only, so the finding is KUBE-PRIVESC-006 (Secret
+	// Read); list/watch would be -005 (Secret Listing).
+	requireDescriptionContains(t, findings, "KUBE-PRIVESC-006", "ClusterRoleBinding `crb-secrets`")
+	requireDescriptionContains(t, findings, "KUBE-PRIVESC-006", "ClusterRole `cr-secrets`")
 	requireDescriptionContains(t, findings, "KUBE-PRIVESC-001", "RoleBinding `team-a/rb-pods`")
 	requireDescriptionContains(t, findings, "KUBE-PRIVESC-001", "Role `team-a/r-pods`")
 }
@@ -498,4 +500,139 @@ func TestCSRMintPrimitiveNamespaceScopeIgnored(t *testing.T) {
 			t.Fatalf("namespace-scoped CSR grants must not produce KUBE-PRIVESC-011; got %+v", f)
 		}
 	}
+}
+
+// clusterRoleSnapshot builds a snapshot with one ClusterRole (carrying rules)
+// bound cluster-wide to default/<saName>. Helper for the single-permission
+// technique tests below.
+func clusterRoleSnapshot(roleName, saName string, rules ...rbacv1.PolicyRule) models.Snapshot {
+	return models.Snapshot{
+		Resources: models.SnapshotResources{
+			ClusterRoles: []rbacv1.ClusterRole{
+				{ObjectMeta: metav1ObjectMeta(roleName, ""), Rules: rules},
+			},
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+				{
+					ObjectMeta: metav1ObjectMeta(roleName+"-binding", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: roleName},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: saName, Namespace: "default"}},
+				},
+			},
+		},
+	}
+}
+
+// TestSinglePermissionPrivescTechniques covers the switch-case techniques added
+// for the remaining KUBE-PRIVESC IDs: -004 (exec/attach), -005 vs -006 (secret
+// list vs get), -013 (ephemeral containers), -015 (port-forward).
+func TestSinglePermissionPrivescTechniques(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		rule     rbacv1.PolicyRule
+		wantRule string
+		absent   string // optional rule that must NOT fire
+	}{
+		{"pods/exec create -> 004", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}}, "KUBE-PRIVESC-004", ""},
+		{"pods/attach get -> 004", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/attach"}, Verbs: []string{"get"}}, "KUBE-PRIVESC-004", ""},
+		{"secrets list -> 005", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"list"}}, "KUBE-PRIVESC-005", "KUBE-PRIVESC-006"},
+		{"secrets get -> 006", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}}, "KUBE-PRIVESC-006", "KUBE-PRIVESC-005"},
+		{"ephemeralcontainers patch -> 013", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/ephemeralcontainers"}, Verbs: []string{"patch"}}, "KUBE-PRIVESC-013", ""},
+		{"portforward create -> 015", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/portforward"}, Verbs: []string{"create"}}, "KUBE-PRIVESC-015", ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder", tc.rule))
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			assertRulePresent(t, findings, tc.wantRule)
+			if tc.absent != "" {
+				assertRuleAbsent(t, findings, tc.absent)
+			}
+		})
+	}
+}
+
+// TestSecretCreationTokenTheft covers KUBE-PRIVESC-007: create + get on secrets
+// held by the same subject (in composing scopes). Either half alone is
+// insufficient.
+func TestSecretCreationTokenTheft(t *testing.T) {
+	t.Parallel()
+
+	both := clusterRoleSnapshot("minter", "minter-sa",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}})
+	findings, err := New().Analyze(context.Background(), both)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-007")
+
+	createOnly := clusterRoleSnapshot("creator", "creator-sa",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create"}})
+	findings, err = New().Analyze(context.Background(), createOnly)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-007")
+}
+
+// TestNodeMigration covers KUBE-PRIVESC-016: delete pods + cluster-scoped node
+// manipulation (nodes/status write or delete nodes). Delete-pods alone must not
+// fire.
+func TestNodeMigration(t *testing.T) {
+	t.Parallel()
+
+	both := clusterRoleSnapshot("drainer", "drainer-sa",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}},
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"nodes/status"}, Verbs: []string{"update"}})
+	findings, err := New().Analyze(context.Background(), both)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-016")
+
+	podsOnly := clusterRoleSnapshot("deleter", "deleter-sa",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"delete"}})
+	findings, err = New().Analyze(context.Background(), podsOnly)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-016")
+}
+
+// TestPodCreatePrivilegedEscape covers KUBE-PRIVESC-002: create pods in a
+// namespace whose Pod Security Admission posture does not block privileged pods.
+// A Restricted-enforced namespace must suppress it.
+func TestPodCreatePrivilegedEscape(t *testing.T) {
+	t.Parallel()
+
+	withNamespace := func(enforce string) models.Snapshot {
+		snap := clusterRoleSnapshot("pod-creator", "creator-sa",
+			rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}})
+		labels := map[string]string{}
+		if enforce != "" {
+			labels["pod-security.kubernetes.io/enforce"] = enforce
+		}
+		snap.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: labels}},
+		}
+		return snap
+	}
+
+	findings, err := New().Analyze(context.Background(), withNamespace(""))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-002")
+	assertRulePresent(t, findings, "KUBE-PRIVESC-001") // -002 is additive, -001 still fires
+
+	findings, err = New().Analyze(context.Background(), withNamespace("restricted"))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-002")
 }

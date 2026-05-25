@@ -1,0 +1,240 @@
+# === MODULE: rbac (privilege-escalation technique coverage) ===
+# One single-rule grant per newly-wired KUBE-PRIVESC technique so the e2e proves
+# each fires end to end. Mirrors the rbac-fixtures convention in 00-baseline.yaml:
+# one ServiceAccount + one (Cluster)Role + one binding per primitive. The SAs are
+# intentionally unmounted (no workloads), exactly like sa-bind-escalate et al.,
+# because the catalog findings fire on the effective grant regardless of whether
+# any pod mounts the SA. Keeping pods out of this shard also means no rollout
+# waits and no Pod Security Admission surprises at apply time.
+#
+# The privesc-fixtures namespace carries no pod-security.kubernetes.io/enforce
+# label, so it counts as "privileged allowed" for KUBE-PRIVESC-002.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: privesc-fixtures
+---
+# KUBE-PRIVESC-004 — Pod Exec Token Theft. `create`/`get` on pods/exec lets the
+# subject open a shell inside any running pod and steal its mounted SA token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-pod-exec
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-pod-exec
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-pod-exec
+subjects:
+  - kind: ServiceAccount
+    name: sa-pod-exec
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-pod-exec
+---
+# KUBE-PRIVESC-006 — Secret Read (get-only). Distinct from -005 (list/watch):
+# get retrieves named Secrets the subject already knows about. get-only must NOT
+# trip the more severe -005 listing case.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-secret-read
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-secret-read
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-secret-read
+subjects:
+  - kind: ServiceAccount
+    name: sa-secret-read
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-secret-read
+---
+# KUBE-PRIVESC-007 — Secret Creation Token Theft. create + get on secrets lets
+# the subject mint a legacy ServiceAccount-token Secret pointed at a privileged
+# SA, then read the controller-populated token. This subject also produces -006
+# (it holds get); the two are distinct techniques and intentionally co-occur.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-secret-mint
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-secret-mint
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-secret-mint
+subjects:
+  - kind: ServiceAccount
+    name: sa-secret-mint
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-secret-mint
+---
+# KUBE-PRIVESC-013 — Ephemeral Container Injection. update/patch on
+# pods/ephemeralcontainers injects a debug container (custom image, shared
+# namespaces) into a running pod, bypassing the pod's own securityContext.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-ephemeral
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-ephemeral
+rules:
+  - apiGroups: [""]
+    resources: ["pods/ephemeralcontainers"]
+    verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-ephemeral
+subjects:
+  - kind: ServiceAccount
+    name: sa-ephemeral
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-ephemeral
+---
+# KUBE-PRIVESC-015 — Port Forward to Internal Services (lateral movement, not a
+# cluster-sink escalation). create on pods/portforward tunnels to any pod the
+# subject can reach, including internal-only databases and admin dashboards.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-portforward
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-portforward
+rules:
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-portforward
+subjects:
+  - kind: ServiceAccount
+    name: sa-portforward
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-portforward
+---
+# KUBE-PRIVESC-016 — Node Status / Delete-Pod Migration. delete pods plus
+# cluster-scoped nodes/status writes (cordon/taint) can evict a sensitive pod
+# and force the scheduler to relocate it onto an attacker-controlled node.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-node-migrate
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-node-migrate
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-node-migrate
+subjects:
+  - kind: ServiceAccount
+    name: sa-node-migrate
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-node-migrate
+---
+# KUBE-PRIVESC-002 — Pod Create & Escape (privileged). A namespaced `create pods`
+# Role in a namespace with no restrictive PSA enforce label lets the subject
+# schedule a privileged / hostPath pod and break out to the node. Uses a Role
+# (not ClusterRole) on purpose: it exercises the namespaced branch of
+# podCreatePrivilegedTarget that the cluster-scoped baseline grants do not. This
+# subject also produces -001 (token theft), the distinct impact of the same grant.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-pod-create-escape
+  namespace: privesc-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: r-pod-create-escape
+  namespace: privesc-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rb-pod-create-escape
+  namespace: privesc-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: sa-pod-create-escape
+    namespace: privesc-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: r-pod-create-escape

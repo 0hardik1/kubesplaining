@@ -58,12 +58,19 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	// emits the edge once both halves are present.
 	csrCapabilities := map[string]csrAnnotation{}
 
+	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
+
 	effective := permissions.Aggregate(snapshot)
 	for _, perms := range effective {
 		ensureSubjectNode(graph, perms.Subject)
 		for _, rule := range perms.Rules {
 			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, csrCapabilities)
 		}
+		// Correlation edges that need the subject's full rule set at once
+		// (two RBAC verbs held together), rather than one rule at a time.
+		addSecretMintEdge(graph, perms.Subject, perms.Rules)
+		addNodeMigrateEdge(graph, perms.Subject, perms.Rules)
+		addPrivilegedPodCreateEdges(graph, perms.Subject, perms.Rules, privilegedNamespaces)
 	}
 
 	finalizeCSRApprovals(graph, csrCapabilities)
@@ -303,6 +310,22 @@ func addEdgesForRule(
 		}
 	}
 
+	if matchesResourceVerb(rule, []string{"pods/ephemeralcontainers"}, []string{"update", "patch"}) {
+		targets := podCreateTargets(clusterScope, rule.Namespace, podSAsByNs)
+		for _, target := range targets {
+			if target.Key() == subject.Key() {
+				continue
+			}
+			ensureSubjectNode(graph, target)
+			addEdge(graph, from, nodeID(target), &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-013",
+				Action:      "ephemeral_container_inject",
+				Permission:  verbResource(rule, "pods/ephemeralcontainers"),
+				Description: fmt.Sprintf("can inject an ephemeral container into pods running as ServiceAccount %s/%s", target.Namespace, target.Name),
+			})
+		}
+	}
+
 	if matchesResourceVerb(rule, []string{"serviceaccounts/token"}, []string{"create"}) {
 		targets := podCreateTargets(clusterScope, rule.Namespace, subjectsByNs)
 		for _, target := range targets {
@@ -345,6 +368,122 @@ func addEdgesForRule(
 	if clusterScope && matchesResourceVerb(rule, []string{"certificatesigningrequests/approval"}, []string{"update", "patch"}) {
 		annotateSubjectCSR(csrCapabilities, subject, csrAnnotationApprove)
 	}
+}
+
+// addSecretMintEdge emits the KUBE-PRIVESC-007 edge: a subject that holds BOTH
+// cluster-scoped `create secrets` and `get secrets` can create a legacy
+// ServiceAccount-token Secret and read the controller-populated token, minting
+// a token for any ServiceAccount. We model only the cluster-scoped (mint-any)
+// case in the graph (-> sinkTokenMint); narrower namespaced create+get still
+// surfaces as the standalone KUBE-PRIVESC-007 rbac finding.
+func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
+	hasCreate, hasGet := false, false
+	for _, r := range rules {
+		if r.Namespace != "" {
+			continue
+		}
+		if matchesResourceVerb(r, []string{"secrets"}, []string{"create"}) {
+			hasCreate = true
+		}
+		if matchesResourceVerb(r, []string{"secrets"}, []string{"get"}) {
+			hasGet = true
+		}
+	}
+	if !hasCreate || !hasGet {
+		return
+	}
+	ensureSubjectNode(graph, subject)
+	addEdge(graph, nodeID(subject), sinkTokenMint, &models.EscalationEdge{
+		Technique:   "KUBE-PRIVESC-007",
+		Action:      "secret_mint_token",
+		Permission:  "create + get secrets (cluster-wide)",
+		Description: "can create a legacy ServiceAccount-token Secret and read the minted token for any ServiceAccount",
+	})
+}
+
+// addNodeMigrateEdge emits the KUBE-PRIVESC-016 edge: a subject that can
+// `delete pods` AND manipulate node scheduling cluster-wide (`update`/`patch`
+// on nodes/status, or `delete nodes`) can evict sensitive pods and steer their
+// reschedule onto an attacker-controlled node, then steal their tokens.
+func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
+	hasDeletePods, hasNodeManip := false, false
+	for _, r := range rules {
+		if matchesResourceVerb(r, []string{"pods"}, []string{"delete"}) {
+			hasDeletePods = true
+		}
+		if r.Namespace != "" {
+			continue
+		}
+		if matchesResourceVerb(r, []string{"nodes/status"}, []string{"update", "patch"}) ||
+			matchesResourceVerb(r, []string{"nodes"}, []string{"delete"}) {
+			hasNodeManip = true
+		}
+	}
+	if !hasDeletePods || !hasNodeManip {
+		return
+	}
+	ensureSubjectNode(graph, subject)
+	addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
+		Technique:   "KUBE-PRIVESC-016",
+		Action:      "node_drain_migrate",
+		Permission:  "delete pods + node scheduling control",
+		Description: "can migrate sensitive pods onto an attacker-controlled node via eviction + node manipulation",
+	})
+}
+
+// addPrivilegedPodCreateEdges emits the KUBE-PRIVESC-002 edge: a subject that
+// can `create pods` in a namespace whose Pod Security Admission posture does
+// not block privileged pods can launch a privileged pod and escape to the node.
+// Full wildcards are already cluster-admin (-017), so they are skipped.
+func addPrivilegedPodCreateEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule, privilegedNamespaces map[string]bool) {
+	for _, r := range rules {
+		if !matchesResourceVerb(r, []string{"pods"}, []string{"create"}) {
+			continue
+		}
+		if hasAll(r.Verbs, "*") && hasAll(r.Resources, "*") && hasAll(r.APIGroups, "*") {
+			continue
+		}
+		if !podCreateAllowsPrivileged(r.Namespace == "", r.Namespace, privilegedNamespaces) {
+			continue
+		}
+		ensureSubjectNode(graph, subject)
+		addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
+			Technique:   "KUBE-PRIVESC-002",
+			Action:      "pod_create_privileged_escape",
+			Permission:  "create pods (Pod Security Admission does not block privileged)",
+			Description: "can create a privileged pod that escapes to the node",
+		})
+		return // one node-escape edge per subject is sufficient
+	}
+}
+
+// podCreateAllowsPrivileged reports whether a pod-create grant can land a
+// privileged pod: a cluster-scoped grant succeeds if any namespace allows
+// privileged; a namespaced grant only if its own namespace does.
+func podCreateAllowsPrivileged(clusterScope bool, namespace string, privilegedNamespaces map[string]bool) bool {
+	if clusterScope {
+		return len(privilegedNamespaces) > 0
+	}
+	return privilegedNamespaces[namespace]
+}
+
+// namespacesAllowingPrivileged mirrors the rbac analyzer helper of the same
+// name: non-system namespaces whose Pod Security Admission `enforce` label is
+// absent or "privileged" (baseline/restricted block privileged). Duplicated
+// here rather than shared because privesc and rbac do not import each other.
+func namespacesAllowingPrivileged(snapshot models.Snapshot) map[string]bool {
+	out := map[string]bool{}
+	for _, ns := range snapshot.Resources.Namespaces {
+		switch ns.Name {
+		case "kube-system", "kube-public", "kube-node-lease":
+			continue
+		}
+		switch ns.Labels["pod-security.kubernetes.io/enforce"] {
+		case "", "privileged":
+			out[ns.Name] = true
+		}
+	}
+	return out
 }
 
 // addPodEscapeEdges links a pod's ServiceAccount to the node-escape sink when the pod has host-escape-enabling settings.
