@@ -267,6 +267,25 @@ The collector never reads raw Secret values (only metadata) and blanks every Con
 
 Treat snapshot files (and any HTML/JSON/CSV/SARIF reports generated from them) as sensitive when sharing across teams or storing in CI artifact buckets, especially on EKS clusters where the aws-auth carve-out exposes account IDs, IAM role inventory, and SSO group naming conventions. Every other ConfigMap value (including ones not on this allow-list) is blanked.
 
+## Live EKS demo
+
+Provisions a real EKS cluster in your own AWS account that exhibits a cross-namespace + AWS-pivot privilege escalation chain kubesplaining detects, then walks through actually exploiting it (privileged-pod node escape → harvest a co-resident IRSA token → assume the AWS role via STS → loop back as `system:masters` via aws-auth). Useful as a self-service teaching environment.
+
+```bash
+make eks-demo-up      # ~12 min: cluster + IAM + S3 + K8s manifests + aws-auth mapping
+make eks-demo-scan    # ~30 sec: produces .tmp/eks-demo-report/report.html
+make eks-demo-poc     # default dry-run; --execute to step through the attack interactively
+make eks-demo-down    # ~10 min: tears down everything (cluster, IAM role, S3 bucket)
+```
+
+The cluster is named `holy-splain`. All AWS resources carry generic, account-agnostic names so the same scripts reproduce identically across operators. Cost: approximately $5/day while running.
+
+Three docs go with the demo:
+
+- [`docs/eks-demo.md`](docs/eks-demo.md): operator reference (prereqs, commands, troubleshooting).
+- [`docs/eks-demo-walkthrough.md`](docs/eks-demo-walkthrough.md): chapter-style learning narrative. Walks through the attack chain step by step, explains every K8s and AWS internal involved (IRSA, projected SA tokens, Pod Security Admission, aws-auth, STS assume-role-with-web-identity), and ends with a defense recap of where each link in the chain could be broken.
+- [`docs/eks-demo-iam.md`](docs/eks-demo-iam.md): operator IAM permissions required to run the setup.
+
 ## Least-Privilege analyzer (audit-log driven)
 
 The `leastprivilege` module compares the RBAC permissions a ServiceAccount **has** (from the snapshot) against the ones it has **actually exercised** (from a kube-apiserver audit log) and flags the delta. It's the analog of AWS IAM Access Advisor for Kubernetes RBAC.
