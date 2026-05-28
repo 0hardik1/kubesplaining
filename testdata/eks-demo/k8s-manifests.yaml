@@ -1,0 +1,129 @@
+# Kubesplaining EKS live-demo manifests
+#
+# Substitution: setup.sh runs `sed -e 's|__ACCOUNT_ID__|<id>|g'` over this file
+# before piping to `kubectl apply -f -`. The only placeholder is __ACCOUNT_ID__
+# in the IRSA role-arn annotation. Region is baked into the role ARN by AWS
+# (IAM is global, ARNs do not carry the region segment).
+#
+# Two namespaces split the demo:
+#   - dev-team: the compromised "developer" identity. No PSA labels: privileged
+#     pods are allowed (the operational anti-pattern kubesplaining flags).
+#   - prod-data: the high-value workload with an IRSA-bound ServiceAccount.
+#
+# The DaemonSet in prod-data guarantees a prod-data-pipeline-sa token mount on
+# every node so the attacker's privileged pod (placed by the default scheduler)
+# always finds a co-resident IRSA token to harvest.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev-team
+  labels:
+    kubesplaining.demo: holy-splain
+    # Deliberately no pod-security.kubernetes.io/enforce label. This permits
+    # the privileged escape pod the attacker creates during the PoC.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod-data
+  labels:
+    kubesplaining.demo: holy-splain
+    # No PSA label here either. Real-world parity: the demo does not assume the
+    # cluster operator has set up Pod Security Admission across the board.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dev-deployer-sa
+  namespace: dev-team
+  labels:
+    kubesplaining.demo: holy-splain
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dev-deployer
+  namespace: dev-team
+  labels:
+    kubesplaining.demo: holy-splain
+rules:
+  # Scoped to dev-team only. No cluster-scoped verbs, no cross-namespace access.
+  # This is what makes the privesc chain "indirect": the attacker has to escape
+  # below the namespace layer to reach prod-data.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dev-deployer-binding
+  namespace: dev-team
+  labels:
+    kubesplaining.demo: holy-splain
+subjects:
+  - kind: ServiceAccount
+    name: dev-deployer-sa
+    namespace: dev-team
+roleRef:
+  kind: Role
+  name: dev-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prod-data-pipeline-sa
+  namespace: prod-data
+  labels:
+    kubesplaining.demo: holy-splain
+  annotations:
+    # IRSA binding. Kubesplaining's KUBE-CLOUD-IRSA-ADMIN-ROLE-001 fires here
+    # because the role name contains the substring "Admin", surfacing the
+    # operational anti-pattern of giving production data pipelines admin-named
+    # roles. The role's ARN is also added to aws-auth -> system:masters by
+    # setup.sh, closing the K8s -> AWS -> K8s loop.
+    eks.amazonaws.com/role-arn: arn:aws:iam::__ACCOUNT_ID__:role/HolySplainProdDataPipelineAdministrator
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: prod-data-processor
+  namespace: prod-data
+  labels:
+    kubesplaining.demo: holy-splain
+    app: prod-data-processor
+spec:
+  selector:
+    matchLabels:
+      app: prod-data-processor
+  template:
+    metadata:
+      labels:
+        app: prod-data-processor
+    spec:
+      serviceAccountName: prod-data-pipeline-sa
+      # DaemonSet so wherever the attacker pod lands, a prod-data-pipeline-sa
+      # projected token is on the same node's kubelet directory and can be
+      # harvested via /var/lib/kubelet/pods/<uid>/volumes/.../token.
+      containers:
+        - name: processor
+          image: public.ecr.aws/aws-cli/aws-cli:latest
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

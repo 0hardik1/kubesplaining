@@ -22,7 +22,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: setup build test lint e2e scan scan-lp delete clean install-hooks uninstall-hooks
+.PHONY: setup build test lint e2e scan scan-lp delete clean install-hooks uninstall-hooks eks-demo-up eks-demo-scan eks-demo-poc eks-demo-down
 
 setup:
 	$(GOENV) go mod download
@@ -82,6 +82,36 @@ delete:
 	@if [ -f "$(HOME)/.kube/config" ]; then \
 		KUBECONFIG="$(HOME)/.kube/config" kind delete cluster --name $(KIND_CLUSTER_NAME) >/dev/null 2>&1 || true; \
 	fi
+
+# Real-EKS live demo: provisions an EKS cluster (holy-splain) plus the IAM and
+# K8s resources that produce the cross-namespace + AWS-pivot privesc chain.
+# See docs/eks-demo.md for the walkthrough and the four-step usage:
+#   make eks-demo-up && make eks-demo-scan && make eks-demo-poc && make eks-demo-down
+EKS_DEMO_CLUSTER ?= holy-splain
+EKS_DEMO_REPORT_DIR ?= $(CURDIR)/.tmp/eks-demo-report
+EKS_DEMO_SNAPSHOT ?= $(CURDIR)/.tmp/eks-demo-snapshot.json
+
+eks-demo-up: build
+	./scripts/eks-demo/setup.sh
+
+# Uses client-go's default kubeconfig discovery: $KUBECONFIG env or ~/.kube/config.
+# setup.sh leaves the current-context on the demo cluster, so no extra flag is needed.
+# --exclusions-preset=minimal is required so the aws-auth ConfigMap finding
+# (anchored in kube-system) is not muted by the default 'standard' preset.
+eks-demo-scan: build
+	$(BINARY) download --output-file $(EKS_DEMO_SNAPSHOT)
+	$(BINARY) scan \
+		--input-file $(EKS_DEMO_SNAPSHOT) \
+		--output-dir $(EKS_DEMO_REPORT_DIR) \
+		--exclusions-preset minimal \
+		--all-findings \
+		--cloud-provider eks
+
+eks-demo-poc:
+	./scripts/eks-demo/poc.sh $(ARGS)
+
+eks-demo-down:
+	./scripts/eks-demo/teardown.sh $(ARGS)
 
 clean:
 	rm -rf ./bin ./kubesplaining-report ./.tmp
