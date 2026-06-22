@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # Build the container image locally from the in-tree Dockerfile and tag
       # it as the `:main` reference the action expects. Lets the smoke test
