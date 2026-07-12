@@ -171,6 +171,8 @@ These rules fire only when the snapshot's `metadata.cloudProvider` resolves to `
 
 The following rules are on the roadmap but not yet implemented. See [PLAN.md](../PLAN.md) for status and priority.
 
+For a deep gap analysis of privilege-escalation methodologies kubesplaining does **not** yet model — new RBAC/API primitives, confused-deputy paths through privileged controllers, admission-layer abuse, MITM sinks, node/PKI escapes, multi-cloud identity, and long multi-hop chains the current BFS cannot surface, each mapped to a proposed sink / graph edge / rule ID — see [`privesc-research.md`](privesc-research.md).
+
 **Pod Security** — exhaustive dangerous-capability list (SYS_PTRACE, DAC_OVERRIDE, SYS_MODULE, SYS_RAWIO, MKNOD, AUDIT_WRITE, …); legacy PSP permissiveness. (PersistentVolume hostPath bypass is now `KUBE-PV-HOSTPATH-001`; PSA namespace label assessment is now `KUBE-PSA-LABELS-001`.)
 
 **Network** — cross-namespace communication map; egress to cloud metadata endpoint `169.254.169.254`.
