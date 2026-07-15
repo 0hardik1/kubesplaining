@@ -12,10 +12,16 @@ import (
 
 // EffectiveRule is one PolicyRule copy tagged with where it came from (namespace, originating Role/ClusterRole, binding).
 type EffectiveRule struct {
-	Namespace     string // binding namespace, or empty for cluster-scoped rules
-	APIGroups     []string
-	Resources     []string
-	Verbs         []string
+	Namespace string // binding namespace, or empty for cluster-scoped rules
+	APIGroups []string
+	Resources []string
+	Verbs     []string
+	// ResourceNames is the PolicyRule's optional whitelist of object names the rule
+	// applies to. Empty means the rule reaches every object of its resource type; a
+	// non-empty list scopes the grant to those named objects, which the shared
+	// matcher (matcher.go) honors so name-scoped grants stop firing the broad
+	// "read/enumerate/create the whole resource type" checks.
+	ResourceNames []string
 	SourceRole    string
 	SourceBinding string
 }
@@ -52,6 +58,7 @@ func Aggregate(snapshot models.Snapshot) map[string]*EffectivePermissions {
 					APIGroups:     append([]string(nil), rule.APIGroups...),
 					Resources:     append([]string(nil), rule.Resources...),
 					Verbs:         append([]string(nil), rule.Verbs...),
+					ResourceNames: append([]string(nil), rule.ResourceNames...),
 					SourceRole:    binding.RoleRef.Name,
 					SourceBinding: binding.Name,
 				})
@@ -70,6 +77,7 @@ func Aggregate(snapshot models.Snapshot) map[string]*EffectivePermissions {
 					APIGroups:     append([]string(nil), rule.APIGroups...),
 					Resources:     append([]string(nil), rule.Resources...),
 					Verbs:         append([]string(nil), rule.Verbs...),
+					ResourceNames: append([]string(nil), rule.ResourceNames...),
 					SourceRole:    binding.RoleRef.Name,
 					SourceBinding: binding.Name,
 				})

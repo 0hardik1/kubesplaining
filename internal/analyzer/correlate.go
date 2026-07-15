@@ -35,21 +35,40 @@ func isLeastPrivilegeAdvisory(ruleID string) bool {
 	return false
 }
 
-// correlate applies chain-modifier bumps to non-privesc findings whose Subject appears as a source in a privilege-escalation path.
-// It picks the highest-severity sink reachable from the subject and adds scoring.ChainModifier(sinkSev) to the finding's Score,
-// clamped to [0, 10]. A "chain:amplified" tag is added so report consumers can explain the bump.
+// pathEdge is one escalation-graph edge a subject actively drives: the technique
+// that enabled a hop, plus the severity of the sink the whole chain reaches.
+type pathEdge struct {
+	technique string
+	sink      models.Severity
+}
+
+// correlate applies chain-modifier bumps, but only to the findings that are the
+// actual edges of an escalation chain - not to every finding that happens to share
+// a subject with one. For each hop of every privesc path finding it records
+// (hop.FromSubject → technique → chain sink severity); a non-privesc finding is then
+// amplified only when its own (Subject, RuleID) matches one of those edges. The bump
+// is scoring.ChainModifier of the highest sink severity among the matching edges,
+// clamped to [0, 10], and a "chain:amplified" tag is added so report consumers can
+// explain it. This keeps a chain's weight on the specific weakness it exploits (the
+// impersonate grant, the privileged pod) instead of inflating an unrelated
+// misconfiguration on the same ServiceAccount.
 func correlate(findings []models.Finding) []models.Finding {
-	best := map[string]models.Severity{} // subject key → highest-severity sink reachable
+	pathEdges := map[string][]pathEdge{} // subject key → edges that subject drives
 	for _, finding := range findings {
-		if len(finding.EscalationPath) == 0 || finding.Subject == nil {
+		if len(finding.EscalationPath) == 0 {
 			continue
 		}
-		key := finding.Subject.Key()
-		if finding.Severity.Rank() > best[key].Rank() {
-			best[key] = finding.Severity
+		for _, hop := range finding.EscalationPath {
+			if hop.FromSubject.Name == "" || hop.Technique == "" {
+				// A hop with no source subject or no technique carries no causal
+				// signal we can attribute a specific finding to.
+				continue
+			}
+			from := hop.FromSubject.Key()
+			pathEdges[from] = append(pathEdges[from], pathEdge{technique: hop.Technique, sink: finding.Severity})
 		}
 	}
-	if len(best) == 0 {
+	if len(pathEdges) == 0 {
 		return findings
 	}
 
@@ -58,12 +77,19 @@ func correlate(findings []models.Finding) []models.Finding {
 			continue // privesc findings already reflect chain length in their own scoring
 		}
 		if findings[i].Subject == nil {
+			// Resource-anchored findings (e.g. the podsec pod-escape rules, which set
+			// Resource but no Subject) have no subject key to match against a path
+			// edge, so they are never amplified. This matches the pre-causal behavior.
 			continue
 		}
 		if isLeastPrivilegeAdvisory(findings[i].RuleID) {
 			continue // advisory recommendations skip the amplification bump
 		}
-		bump := scoring.ChainModifier(best[findings[i].Subject.Key()])
+		sink, ok := bestSinkForEdge(pathEdges[findings[i].Subject.Key()], findings[i].RuleID)
+		if !ok {
+			continue // this finding is not an edge of any chain from its subject
+		}
+		bump := scoring.ChainModifier(sink)
 		if bump == 0 {
 			continue
 		}
@@ -71,6 +97,37 @@ func correlate(findings []models.Finding) []models.Finding {
 		findings[i].Tags = append(findings[i].Tags, "chain:amplified")
 	}
 	return findings
+}
+
+// bestSinkForEdge returns the highest sink severity among the subject's escalation
+// edges whose technique matches ruleID, and whether any matched.
+func bestSinkForEdge(edges []pathEdge, ruleID string) (models.Severity, bool) {
+	var best models.Severity
+	found := false
+	for _, e := range edges {
+		if !techniqueMatchesRule(e.technique, ruleID) {
+			continue
+		}
+		if !found || e.sink.Rank() > best.Rank() {
+			best, found = e.sink, true
+		}
+	}
+	return best, found
+}
+
+// techniqueMatchesRule reports whether an edge technique identifies the same rule as
+// ruleID: an exact match, or a family prefix. The family-prefix form is what lets the
+// cloud edge technique "KUBE-CLOUD-IRSA" amplify the concrete, Subject-bearing eks
+// findings "KUBE-CLOUD-IRSA-ADMIN-ROLE-001" / "-MISSING-001" (and "KUBE-CLOUD-AWSAUTH"
+// its -SYSTEM-MASTERS-001 / -OVERBROAD-001 findings).
+//
+// The pod-escape edge is also tagged with a family prefix ("KUBE-ESCAPE") for hop
+// display, but that one never reaches this matcher: the KUBE-ESCAPE-* findings podsec
+// emits are resource-anchored (Subject == nil), so correlate skips them before the
+// technique match runs. See TestCorrelateSkipsResourceAnchoredFindings - amplifying
+// those would require podsec to carry a Subject, which is out of scope here.
+func techniqueMatchesRule(technique, ruleID string) bool {
+	return technique == ruleID || strings.HasPrefix(ruleID, technique+"-")
 }
 
 // dedupe collapses findings that describe the same (RuleID, Subject, Resource) combination across modules,

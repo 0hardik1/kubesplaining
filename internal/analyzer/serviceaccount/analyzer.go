@@ -19,6 +19,18 @@ import (
 // Analyzer produces service-account-focused findings from a snapshot.
 type Analyzer struct{}
 
+// Target sets for the dangerous-capability checks, each pinned to its API group so a
+// custom resource that reuses a core name does not trip a core-resource check.
+var (
+	targetSecrets     = []permissions.ResourceTarget{permissions.Core("secrets")}
+	targetPods        = []permissions.ResourceTarget{permissions.Core("pods")}
+	targetNodesProxy  = []permissions.ResourceTarget{permissions.Core("nodes/proxy")}
+	targetImpersonate = []permissions.ResourceTarget{permissions.Core("users"), permissions.Core("groups"), permissions.Core("serviceaccounts")}
+	targetWorkloads   = []permissions.ResourceTarget{permissions.InGroup("apps", "deployments"), permissions.InGroup("apps", "daemonsets"), permissions.InGroup("apps", "statefulsets"), permissions.InGroup("batch", "jobs"), permissions.InGroup("batch", "cronjobs")}
+	targetRoles       = []permissions.ResourceTarget{permissions.InGroup("rbac.authorization.k8s.io", "roles"), permissions.InGroup("rbac.authorization.k8s.io", "clusterroles")}
+	targetBindings    = []permissions.ResourceTarget{permissions.InGroup("rbac.authorization.k8s.io", "rolebindings"), permissions.InGroup("rbac.authorization.k8s.io", "clusterrolebindings")}
+)
+
 // workloadRef captures a pod-bearing workload that mounts a given ServiceAccount.
 type workloadRef struct {
 	Kind      string `json:"kind"`
@@ -181,7 +193,9 @@ func summarizeRules(rules []permissions.EffectiveRule) []map[string]any {
 	for _, rule := range rules {
 		summary = append(summary, map[string]any{
 			"namespace":      rule.Namespace,
+			"api_groups":     rule.APIGroups,
 			"resources":      rule.Resources,
+			"resource_names": rule.ResourceNames,
 			"verbs":          rule.Verbs,
 			"source_role":    rule.SourceRole,
 			"source_binding": rule.SourceBinding,
@@ -212,25 +226,25 @@ func hasClusterAdminStyleRule(rules []permissions.EffectiveRule) bool {
 func dangerousCapabilities(rules []permissions.EffectiveRule) []string {
 	found := make([]string, 0)
 	for _, rule := range rules {
-		if hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get", "list", "watch") {
+		if rule.Grants(targetSecrets, "get", "list", "watch") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "secrets"))
 		}
-		if hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create") {
+		if rule.Grants(targetPods, "create") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "create pods"))
 		}
-		if hasAnyResource(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) && hasAnyVerb(rule.Verbs, "create", "update", "patch") {
+		if rule.Grants(targetWorkloads, "create", "update", "patch") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "mutate workloads"))
 		}
-		if hasAnyResource(rule.Resources, []string{"rolebindings", "clusterrolebindings"}) && hasAnyVerb(rule.Verbs, "create", "update", "patch") {
+		if rule.Grants(targetBindings, "create", "update", "patch") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "bind roles"))
 		}
-		if hasAnyResource(rule.Resources, []string{"roles", "clusterroles"}) && hasAnyVerb(rule.Verbs, "bind", "escalate") {
+		if rule.Grants(targetRoles, "bind", "escalate") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "bind/escalate"))
 		}
-		if hasAnyResource(rule.Resources, []string{"users", "groups", "serviceaccounts"}) && hasAnyVerb(rule.Verbs, "impersonate") {
+		if rule.Grants(targetImpersonate, "impersonate") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "impersonate"))
 		}
-		if hasResource(rule.Resources, "nodes/proxy") && hasAnyVerb(rule.Verbs, "get") {
+		if rule.Grants(targetNodesProxy, "get") {
 			found = appendIfMissing(found, scopedCapability(rule.Namespace, "nodes/proxy"))
 		}
 	}
@@ -394,37 +408,8 @@ func hasDangerousCapability(values []string, fragments ...string) bool {
 	return false
 }
 
+// contains reports membership; retained for the wildcard cluster-admin-style check.
+// The resource/verb capability matching now goes through permissions.Grants.
 func contains(values []string, wanted string) bool {
 	return slices.Contains(values, wanted)
-}
-
-func hasAnyVerb(values []string, wanted ...string) bool {
-	if contains(values, "*") {
-		return true
-	}
-	for _, item := range wanted {
-		if contains(values, item) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasResource(values []string, wanted string) bool {
-	if contains(values, "*") {
-		return true
-	}
-	return contains(values, wanted)
-}
-
-func hasAnyResource(values []string, wanted []string) bool {
-	if contains(values, "*") {
-		return true
-	}
-	for _, item := range wanted {
-		if contains(values, item) {
-			return true
-		}
-	}
-	return false
 }

@@ -217,10 +217,12 @@ func TestEngineCorrelatesPrivescChainsIntoOtherFindings(t *testing.T) {
 	privesc := &stubModule{name: "privesc", findings: []models.Finding{
 		{
 			ID: "p", RuleID: "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
-			Severity:       models.SeverityCritical,
-			Score:          9.5,
-			Subject:        subject,
-			EscalationPath: []models.EscalationHop{{Step: 1, Action: "wildcard"}},
+			Severity: models.SeverityCritical,
+			Score:    9.5,
+			Subject:  subject,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "bound_to_cluster_admin", Technique: "KUBE-RBAC-OVERBROAD-001", FromSubject: *subject},
+			},
 		},
 	}}
 	rbac := &stubModule{name: "rbac", findings: []models.Finding{

@@ -76,8 +76,8 @@ func TestAddCloudEdgesIRSAOnly(t *testing.T) {
 	if edge == nil {
 		t.Fatalf("expected irsa_assume_role edge from %s to %s; edges=%+v", saNodeID, externalID, graph.Edges)
 	}
-	if edge.Technique != "KUBE-CLOUD-IRSA-001" {
-		t.Errorf("IRSA edge Technique = %q, want %q", edge.Technique, "KUBE-CLOUD-IRSA-001")
+	if edge.Technique != "KUBE-CLOUD-IRSA" {
+		t.Errorf("IRSA edge Technique = %q, want %q", edge.Technique, "KUBE-CLOUD-IRSA")
 	}
 }
 
@@ -114,8 +114,8 @@ func TestAddCloudEdgesAWSAuthSystemMasters(t *testing.T) {
 	if edge == nil {
 		t.Fatalf("expected aws_auth_admin edge from %s to %s; edges=%+v", externalID, sinkSystemMasters, graph.Edges)
 	}
-	if edge.Technique != "KUBE-CLOUD-AWSAUTH-001" {
-		t.Errorf("aws-auth edge Technique = %q, want %q", edge.Technique, "KUBE-CLOUD-AWSAUTH-001")
+	if edge.Technique != "KUBE-CLOUD-AWSAUTH" {
+		t.Errorf("aws-auth edge Technique = %q, want %q", edge.Technique, "KUBE-CLOUD-AWSAUTH")
 	}
 }
 
@@ -158,8 +158,8 @@ func TestAddCloudEdgesAWSAuthCustomGroupBoundToClusterAdmin(t *testing.T) {
 	if edge == nil {
 		t.Fatalf("expected aws_auth_admin edge from %s to %s; edges=%+v", externalID, sinkClusterAdmin, graph.Edges)
 	}
-	if edge.Technique != "KUBE-CLOUD-AWSAUTH-001" {
-		t.Errorf("aws-auth edge Technique = %q, want %q", edge.Technique, "KUBE-CLOUD-AWSAUTH-001")
+	if edge.Technique != "KUBE-CLOUD-AWSAUTH" {
+		t.Errorf("aws-auth edge Technique = %q, want %q", edge.Technique, "KUBE-CLOUD-AWSAUTH")
 	}
 }
 
