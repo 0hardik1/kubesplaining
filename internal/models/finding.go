@@ -295,8 +295,13 @@ func (r ResourceRef) Key() string {
 
 // EscalationHop is one step in a privilege-escalation chain: who moved to whom, which permission enabled it, and why.
 type EscalationHop struct {
-	Step        int        `json:"step"`   // 1-indexed position in the chain
-	Action      string     `json:"action"` // technique identifier, e.g. "pod_exec", "impersonate"
+	Step   int    `json:"step"`   // 1-indexed position in the chain
+	Action string `json:"action"` // short action label, e.g. "pod_exec", "impersonate"
+	// Technique is the stable rule identifier of the edge that enabled this hop
+	// (e.g. "KUBE-PRIVESC-008", or the "KUBE-ESCAPE" family for pod host escapes).
+	// It lets the correlation pass amplify only the findings that are the actual
+	// edges of a chain, rather than every finding that merely shares the subject.
+	Technique   string     `json:"technique,omitempty"`
 	FromSubject SubjectRef `json:"from_subject"`
 	ToSubject   SubjectRef `json:"to_subject"`
 	Permission  string     `json:"permission"` // RBAC permission or condition that enables the hop

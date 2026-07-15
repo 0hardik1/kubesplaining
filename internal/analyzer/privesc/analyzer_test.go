@@ -15,6 +15,51 @@ func objectMeta(name, namespace string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{Name: name, Namespace: namespace}
 }
 
+// TestNameScopedSecretGetNoKubeSystemPath verifies that a cluster-wide `get secrets`
+// grant restricted to a specific resourceNames does NOT produce a
+// kube-system-secrets escalation path: the sink means "compromise the kube-system
+// secret store", which a get on one named secret cannot achieve. An unrestricted
+// grant of the same verb still does.
+func TestNameScopedSecretGetNoKubeSystemPath(t *testing.T) {
+	t.Parallel()
+
+	build := func(rule rbacv1.PolicyRule) models.Snapshot {
+		return models.Snapshot{
+			Resources: models.SnapshotResources{
+				Namespaces:   []corev1.Namespace{{ObjectMeta: objectMeta("default", "")}, {ObjectMeta: objectMeta("kube-system", "")}},
+				ClusterRoles: []rbacv1.ClusterRole{{ObjectMeta: objectMeta("reader-role", ""), Rules: []rbacv1.PolicyRule{rule}}},
+				ClusterRoleBindings: []rbacv1.ClusterRoleBinding{{
+					ObjectMeta: objectMeta("reader-role", ""),
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "reader-role"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "reader", Namespace: "default"}},
+				}},
+			},
+		}
+	}
+	hasSecretsPath := func(t *testing.T, snap models.Snapshot) bool {
+		t.Helper()
+		findings, err := New().Analyze(context.Background(), snap)
+		if err != nil {
+			t.Fatalf("Analyze() error = %v", err)
+		}
+		for _, f := range findings {
+			if f.RuleID == "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS" {
+				return true
+			}
+		}
+		return false
+	}
+
+	scoped := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}, ResourceNames: []string{"tls-cert"}}
+	if hasSecretsPath(t, build(scoped)) {
+		t.Error("name-scoped get secrets must not produce a kube-system-secrets path")
+	}
+	unrestricted := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}}
+	if !hasSecretsPath(t, build(unrestricted)) {
+		t.Error("unrestricted get secrets should still produce a kube-system-secrets path")
+	}
+}
+
 func TestAnalyzerFindsClusterAdminAndSecretsPaths(t *testing.T) {
 	t.Parallel()
 

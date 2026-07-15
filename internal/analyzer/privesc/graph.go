@@ -258,10 +258,26 @@ func addEdgesForRule(
 		}
 	}
 
-	if matchesResourceVerb(rule, []string{"secrets"}, []string{"get", "list", "watch"}) {
+	// read_secrets reaches the kube_system_secrets sink only from an unrestricted
+	// grant: the sink means "compromise the kube-system secret store", which a
+	// resourceNames-scoped grant (a get on a fixed set of named secrets) cannot
+	// achieve. list/watch are already dropped for a name-scoped rule by the matcher;
+	// this guard additionally suppresses the surviving name-scoped `get` so a
+	// least-privilege "get one specific secret" grant no longer produces a spurious
+	// kube-system-secrets escalation path. (Inspecting whether a named secret is
+	// itself sensitive is the resourceName-aware enhancement tracked in the research
+	// doc; until then we prefer no false positive here.)
+	if !rule.NameScoped() && matchesResourceVerb(rule, []string{"secrets"}, []string{"get", "list", "watch"}) {
 		if clusterScope || rule.Namespace == "kube-system" {
+			// Label the edge with the technique of the strongest verb held so the
+			// correlation pass amplifies the matching rbac finding: list/watch
+			// (enumerate everything) is KUBE-PRIVESC-005, a get-only grant is -006.
+			technique := "KUBE-PRIVESC-006"
+			if matchesResourceVerb(rule, []string{"secrets"}, []string{"list", "watch"}) {
+				technique = "KUBE-PRIVESC-005"
+			}
 			addEdge(graph, from, sinkKubeSystemSecrets, &models.EscalationEdge{
-				Technique:   "KUBE-PRIVESC-005",
+				Technique:   technique,
 				Action:      "read_secrets",
 				Permission:  verbResource(rule, "secrets"),
 				Description: "can read secrets in kube-system or cluster-wide",
@@ -668,22 +684,45 @@ func containsSubject(refs []models.SubjectRef, name string) bool {
 	return false
 }
 
-// matchesResourceVerb reports whether a rule covers any of the given resources and any of the given verbs (wildcards match all).
-func matchesResourceVerb(rule permissions.EffectiveRule, resources, verbs []string) bool {
-	return hasAnyValue(rule.Resources, resources) && hasAnyValue(rule.Verbs, verbs)
+// resourceAPIGroup maps a bare resource (or subresource) name to the API group it
+// belongs to, so the graph's edge matchers can enforce the correct (apiGroup,
+// resource) pair without every call site spelling the group out. Every resource the
+// edge builders test is listed here; an unlisted resource defaults to the core group.
+var resourceAPIGroup = map[string]string{
+	// core group ("")
+	"pods":                     "",
+	"pods/exec":                "",
+	"pods/attach":              "",
+	"pods/ephemeralcontainers": "",
+	"pods/portforward":         "",
+	"secrets":                  "",
+	"serviceaccounts":          "",
+	"serviceaccounts/token":    "",
+	"nodes":                    "",
+	"nodes/proxy":              "",
+	"nodes/status":             "",
+	"users":                    "",
+	"groups":                   "",
+	// rbac.authorization.k8s.io
+	"roles":               "rbac.authorization.k8s.io",
+	"clusterroles":        "rbac.authorization.k8s.io",
+	"rolebindings":        "rbac.authorization.k8s.io",
+	"clusterrolebindings": "rbac.authorization.k8s.io",
+	// certificates.k8s.io
+	"certificatesigningrequests":          "certificates.k8s.io",
+	"certificatesigningrequests/approval": "certificates.k8s.io",
 }
 
-// hasAnyValue reports whether values contains any of the wanted tokens, treating "*" in values as a match-all wildcard.
-func hasAnyValue(values []string, wanted []string) bool {
-	if slices.Contains(values, "*") {
-		return true
+// matchesResourceVerb reports whether a rule authorizes any of the given verbs on
+// any of the given resources, honoring the resource's API group and the rule's
+// resourceNames (see permissions.Grants). Call sites keep passing bare resource
+// names; the group is resolved from resourceAPIGroup.
+func matchesResourceVerb(rule permissions.EffectiveRule, resources, verbs []string) bool {
+	targets := make([]permissions.ResourceTarget, 0, len(resources))
+	for _, r := range resources {
+		targets = append(targets, permissions.ResourceTarget{Group: resourceAPIGroup[r], Resource: r})
 	}
-	for _, w := range wanted {
-		if slices.Contains(values, w) {
-			return true
-		}
-	}
-	return false
+	return rule.Grants(targets, verbs...)
 }
 
 // hasAll reports whether every expected value is present in values (or values contains a wildcard).

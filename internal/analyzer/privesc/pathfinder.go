@@ -151,6 +151,7 @@ func buildPath(graph *models.EscalationGraph, source models.SubjectRef, target m
 		hops = append(hops, models.EscalationHop{
 			Step:        i + 1,
 			Action:      step.edge.Action,
+			Technique:   step.edge.Technique,
 			FromSubject: current,
 			ToSubject:   next,
 			Permission:  step.edge.Permission,

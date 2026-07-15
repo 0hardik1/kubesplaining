@@ -10,10 +10,49 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 	"github.com/0hardik1/kubesplaining/internal/remediation"
 	"github.com/0hardik1/kubesplaining/internal/scoring"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
+
+// API groups for the resources the privilege-escalation checks inspect. Matching on
+// the group (not the bare resource name) is what keeps a custom resource that reuses
+// a core name - e.g. a CRD `secrets.example.com` - from tripping the core-`secrets`
+// checks.
+const (
+	groupRBAC  = "rbac.authorization.k8s.io"
+	groupCerts = "certificates.k8s.io"
+	groupApps  = "apps"
+	groupBatch = "batch"
+)
+
+// Target sets for the dangerous-permission checks below, each pinned to its API
+// group. Shared by the per-rule switch and the multi-rule correlations (CSR mint,
+// secret-token mint, node migration).
+var (
+	targetSecrets     = []permissions.ResourceTarget{permissions.Core("secrets")}
+	targetPods        = []permissions.ResourceTarget{permissions.Core("pods")}
+	targetPodExec     = []permissions.ResourceTarget{permissions.Core("pods/exec"), permissions.Core("pods/attach")}
+	targetEphemeral   = []permissions.ResourceTarget{permissions.Core("pods/ephemeralcontainers")}
+	targetPortForward = []permissions.ResourceTarget{permissions.Core("pods/portforward")}
+	targetSAToken     = []permissions.ResourceTarget{permissions.Core("serviceaccounts/token")}
+	targetNodesProxy  = []permissions.ResourceTarget{permissions.Core("nodes/proxy")}
+	targetNodesStatus = []permissions.ResourceTarget{permissions.Core("nodes/status")}
+	targetNodes       = []permissions.ResourceTarget{permissions.Core("nodes")}
+	targetImpersonate = []permissions.ResourceTarget{permissions.Core("users"), permissions.Core("groups"), permissions.Core("serviceaccounts")}
+	targetWorkloads   = []permissions.ResourceTarget{permissions.InGroup(groupApps, "deployments"), permissions.InGroup(groupApps, "daemonsets"), permissions.InGroup(groupApps, "statefulsets"), permissions.InGroup(groupBatch, "jobs"), permissions.InGroup(groupBatch, "cronjobs")}
+	targetRoles       = []permissions.ResourceTarget{permissions.InGroup(groupRBAC, "roles"), permissions.InGroup(groupRBAC, "clusterroles")}
+	targetBindings    = []permissions.ResourceTarget{permissions.InGroup(groupRBAC, "rolebindings"), permissions.InGroup(groupRBAC, "clusterrolebindings")}
+	targetCSR         = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests")}
+	targetCSRApproval = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/approval")}
+)
+
+// grants reports whether this rule authorizes any of verbs on any of targets,
+// honoring the target API group and this rule's resourceNames (see permissions.Grants).
+func (r effectiveRule) grants(targets []permissions.ResourceTarget, verbs ...string) bool {
+	return permissions.Grants(r.APIGroups, r.Resources, r.Verbs, r.ResourceNames, targets, verbs)
+}
 
 // Analyzer produces RBAC-focused findings from a snapshot.
 type Analyzer struct{}
@@ -30,6 +69,7 @@ type effectiveRule struct {
 	APIGroups              []string
 	Resources              []string
 	Verbs                  []string
+	ResourceNames          []string
 	SourceRole             string
 	SourceRoleKind         string
 	SourceRoleNamespace    string
@@ -98,6 +138,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					APIGroups:              append([]string(nil), rule.APIGroups...),
 					Resources:              append([]string(nil), rule.Resources...),
 					Verbs:                  append([]string(nil), rule.Verbs...),
+					ResourceNames:          append([]string(nil), rule.ResourceNames...),
 					SourceRole:             binding.RoleRef.Name,
 					SourceRoleKind:         binding.RoleRef.Kind,
 					SourceRoleNamespace:    roleNamespace,
@@ -120,6 +161,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					APIGroups:         append([]string(nil), rule.APIGroups...),
 					Resources:         append([]string(nil), rule.Resources...),
 					Verbs:             append([]string(nil), rule.Verbs...),
+					ResourceNames:     append([]string(nil), rule.ResourceNames...),
 					SourceRole:        binding.RoleRef.Name,
 					SourceRoleKind:    binding.RoleRef.Kind,
 					SourceBinding:     binding.Name,
@@ -150,6 +192,14 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
 				exploitability = 1.2
 			}
+			// A resourceNames-scoped grant reaches only a fixed set of named objects -
+			// a much smaller blast radius than the whole resource type - so attenuate
+			// it. The grant is still real (the checks below only match name-scopable
+			// verbs on a name-scoped rule), just narrower, so it ranks below an
+			// unrestricted grant of the same permission instead of disappearing.
+			if len(rule.ResourceNames) > 0 {
+				blastRadius *= 0.6
+			}
 			// scaledScore captures the per-rule multipliers above so each case below
 			// only has to declare its base score - the formula is named once instead of
 			// duplicated nine times.
@@ -175,66 +225,66 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					"KUBE-PRIVESC-017", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.8),
 					contentPrivesc017(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "list", "watch"):
+			case rule.grants(targetSecrets, "list", "watch"):
 				// list/watch return every Secret's contents in one call (the
 				// enumerate-everything case). get-only is the narrower -006 below.
+				// A resourceNames-scoped rule never reaches this case: list/watch
+				// cannot enumerate a name-restricted collection.
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-005", models.SeverityHigh, models.CategoryDataExfiltration,
 					scaledScore(8.2),
 					contentPrivesc005(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get"):
+			case rule.grants(targetSecrets, "get"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-006", models.SeverityHigh, models.CategoryDataExfiltration,
 					scaledScore(7.6),
 					contentPrivesc006(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create"):
+			case rule.grants(targetPods, "create"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-001", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.4),
 					contentPrivesc001(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasAnyResource(rule.Resources, []string{"pods/exec", "pods/attach"}) && hasAnyVerb(rule.Verbs, "create", "get"):
+			case rule.grants(targetPodExec, "create", "get"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-004", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.0),
 					contentPrivesc004(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "pods/ephemeralcontainers") && hasAnyVerb(rule.Verbs, "update", "patch"):
+			case rule.grants(targetEphemeral, "update", "patch"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-013", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.0),
 					contentPrivesc013(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "pods/portforward") && hasAnyVerb(rule.Verbs, "create"):
+			case rule.grants(targetPortForward, "create"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-015", models.SeverityMedium, models.CategoryLateralMovement,
 					scaledScore(6.0),
 					contentPrivesc015(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasAnyResource(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) &&
-				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
+			case rule.grants(targetWorkloads, "create", "update", "patch"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-003", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.1),
 					contentPrivesc003(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasAnyResource(rule.Resources, []string{"users", "groups", "serviceaccounts"}) && hasAnyVerb(rule.Verbs, "impersonate"):
+			case rule.grants(targetImpersonate, "impersonate"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-008", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.4),
 					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasAnyResource(rule.Resources, []string{"roles", "clusterroles"}) && hasAnyVerb(rule.Verbs, "bind", "escalate"):
+			case rule.grants(targetRoles, "bind", "escalate"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-009", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.2),
 					contentPrivesc009(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasAnyResource(rule.Resources, []string{"rolebindings", "clusterrolebindings"}) &&
-				hasAnyVerb(rule.Verbs, "create", "update", "patch"):
+			case rule.grants(targetBindings, "create", "update", "patch"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-010", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.0),
 					contentPrivesc010(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "nodes/proxy") && hasAnyVerb(rule.Verbs, "get"):
+			case rule.grants(targetNodesProxy, "get"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-012", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.3),
 					contentPrivesc012(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
-			case hasResource(rule.Resources, "serviceaccounts/token") && hasAnyVerb(rule.Verbs, "create"):
+			case rule.grants(targetSAToken, "create"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-014", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.0),
@@ -246,7 +296,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			// target namespace does not enforce a PSA level that blocks privileged
 			// pods, the same pod-create grant also yields a host escape. Full
 			// wildcards are already -017, so skip them here to avoid noise.
-			isPodCreate := hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "create")
+			isPodCreate := rule.grants(targetPods, "create")
 			isFullWildcard := hasWildcard(rule.Verbs) && hasWildcard(rule.Resources) && hasWildcard(rule.APIGroups)
 			if isPodCreate && !isFullWildcard {
 				if target, ok := podCreatePrivilegedTarget(rule.Namespace, privilegedNamespaces); ok {
@@ -639,10 +689,18 @@ func findingFromContent(subject models.SubjectRef, rule effectiveRule, ruleID st
 		"source_binding_kind": rule.SourceBindingKind,
 		"api_groups":          rule.APIGroups,
 		"resources":           rule.Resources,
+		"resource_names":      rule.ResourceNames,
 		"verbs":               rule.Verbs,
 		"namespace":           rule.Namespace,
 		"scope":               string(content.Scope.Level),
 	})
+
+	tags := []string{"module:rbac"}
+	if len(rule.ResourceNames) > 0 {
+		// Surface that this grant reaches only specific named objects, so report
+		// consumers can see the scope that attenuated the score.
+		tags = append(tags, "scope:resource-names")
+	}
 
 	resource := &models.ResourceRef{
 		Kind:      "RBACRule",
@@ -676,7 +734,7 @@ func findingFromContent(subject models.SubjectRef, rule effectiveRule, ruleID st
 		References:       references,
 		LearnMore:        content.LearnMore,
 		MitreTechniques:  content.MitreTechniques,
-		Tags:             []string{"module:rbac"},
+		Tags:             tags,
 	}
 }
 
@@ -717,46 +775,18 @@ func subjectRef(subject rbacv1.Subject, fallbackNamespace string) models.Subject
 	return ref
 }
 
+// hasWildcard reports whether values contains the "*" match-all token. Retained for
+// the triple-wildcard cluster-admin check (KUBE-PRIVESC-017); the resource/verb
+// primitive matching now goes through effectiveRule.grants / permissions.Grants.
 func hasWildcard(values []string) bool {
 	return slices.Contains(values, "*")
-}
-
-func hasAnyVerb(values []string, wanted ...string) bool {
-	if hasWildcard(values) {
-		return true
-	}
-	for _, value := range wanted {
-		if slices.Contains(values, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasResource(values []string, wanted string) bool {
-	if hasWildcard(values) {
-		return true
-	}
-	return slices.Contains(values, wanted)
-}
-
-func hasAnyResource(values []string, wanted []string) bool {
-	if hasWildcard(values) {
-		return true
-	}
-	for _, value := range wanted {
-		if slices.Contains(values, value) {
-			return true
-		}
-	}
-	return false
 }
 
 // matchesCSRCreate reports whether rule grants `create` on the cluster-scoped
 // `certificatesigningrequests` resource. Cluster scope is the caller's
 // responsibility (rule.Namespace == "").
 func matchesCSRCreate(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "certificatesigningrequests") && hasAnyVerb(rule.Verbs, "create")
+	return rule.grants(targetCSR, "create")
 }
 
 // matchesCSRApprove reports whether rule grants `update` or `patch` on the
@@ -765,32 +795,32 @@ func matchesCSRCreate(rule effectiveRule) bool {
 // does not allow approval — so this check is narrow on resource and broad on
 // the two verbs `kubectl certificate approve` could use.
 func matchesCSRApprove(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "certificatesigningrequests/approval") && hasAnyVerb(rule.Verbs, "update", "patch")
+	return rule.grants(targetCSRApproval, "update", "patch")
 }
 
 // matchesSecretCreate / matchesSecretGet are the two halves of the
 // KUBE-PRIVESC-007 secret-creation token-theft primitive.
 func matchesSecretCreate(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "create")
+	return rule.grants(targetSecrets, "create")
 }
 
 func matchesSecretGet(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "secrets") && hasAnyVerb(rule.Verbs, "get")
+	return rule.grants(targetSecrets, "get")
 }
 
 // matchesPodDelete, matchesNodeStatusWrite, and matchesNodeDelete are the
 // halves of the KUBE-PRIVESC-016 node-migration primitive. The node halves are
 // cluster-scoped resources, so the caller also requires rule.Namespace == "".
 func matchesPodDelete(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "pods") && hasAnyVerb(rule.Verbs, "delete")
+	return rule.grants(targetPods, "delete")
 }
 
 func matchesNodeStatusWrite(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "nodes/status") && hasAnyVerb(rule.Verbs, "update", "patch")
+	return rule.grants(targetNodesStatus, "update", "patch")
 }
 
 func matchesNodeDelete(rule effectiveRule) bool {
-	return hasResource(rule.Resources, "nodes") && hasAnyVerb(rule.Verbs, "delete")
+	return rule.grants(targetNodes, "delete")
 }
 
 // scopesCompose reports whether a create-secrets grant in createNs and a

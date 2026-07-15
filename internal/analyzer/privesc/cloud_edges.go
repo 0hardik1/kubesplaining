@@ -142,7 +142,10 @@ func addIRSAEdge(graph *models.EscalationGraph, identity models.CloudIdentity) {
 	ensureSubjectNode(graph, saRef)
 	externalID := ensureExternalAWSIAMNode(graph, identity.ARN, true)
 	addEdge(graph, nodeID(saRef), externalID, &models.EscalationEdge{
-		Technique:   "KUBE-CLOUD-IRSA-001",
+		// Family prefix (not a full rule ID) so the correlation pass amplifies the
+		// concrete IRSA findings the eks analyzer emits (KUBE-CLOUD-IRSA-ADMIN-ROLE-001,
+		// KUBE-CLOUD-IRSA-MISSING-001) via techniqueMatchesRule's prefix rule.
+		Technique:   "KUBE-CLOUD-IRSA",
 		Action:      "irsa_assume_role",
 		Permission:  identity.ARN,
 		Description: "ServiceAccount can assume " + identity.ARN + " via IRSA",
@@ -165,7 +168,7 @@ func addAWSAuthEdges(graph *models.EscalationGraph, snapshot models.Snapshot, id
 		}
 		if group == "system:masters" {
 			addEdge(graph, externalID, sinkSystemMasters, &models.EscalationEdge{
-				Technique:   "KUBE-CLOUD-AWSAUTH-001",
+				Technique:   "KUBE-CLOUD-AWSAUTH",
 				Action:      "aws_auth_admin",
 				Permission:  "system:masters via aws-auth",
 				Description: "external IAM principal " + identity.ARN + " is mapped to system:masters via aws-auth",
@@ -177,7 +180,7 @@ func addAWSAuthEdges(graph *models.EscalationGraph, snapshot models.Snapshot, id
 			continue
 		}
 		addEdge(graph, externalID, sinkClusterAdmin, &models.EscalationEdge{
-			Technique:   "KUBE-CLOUD-AWSAUTH-001",
+			Technique:   "KUBE-CLOUD-AWSAUTH",
 			Action:      "aws_auth_admin",
 			Permission:  fmt.Sprintf("mapped to group %s bound to ClusterRole %s", group, roleName),
 			Description: fmt.Sprintf("external IAM principal %s is mapped to group %s, which is bound to ClusterRole %s (admin-equivalent) via a ClusterRoleBinding", identity.ARN, group, roleName),

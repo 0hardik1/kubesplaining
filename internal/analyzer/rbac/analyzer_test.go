@@ -502,6 +502,75 @@ func TestCSRMintPrimitiveNamespaceScopeIgnored(t *testing.T) {
 	}
 }
 
+// TestResourceNamesAndAPIGroupPrecision covers the precision fixes: matching on
+// (apiGroup, resource, verb) rather than the bare resource name, and honoring a
+// rule's resourceNames so a name-scoped grant stops firing the "read/create the
+// whole resource type" primitives.
+func TestResourceNamesAndAPIGroupPrecision(t *testing.T) {
+	t.Parallel()
+
+	find := func(findings []models.Finding, ruleID string) *models.Finding {
+		for i := range findings {
+			if findings[i].RuleID == ruleID {
+				return &findings[i]
+			}
+		}
+		return nil
+	}
+	analyze := func(t *testing.T, rule rbacv1.PolicyRule) []models.Finding {
+		t.Helper()
+		findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "sa", rule))
+		if err != nil {
+			t.Fatalf("Analyze() error = %v", err)
+		}
+		return findings
+	}
+
+	t.Run("custom-group secrets does not match core secrets", func(t *testing.T) {
+		t.Parallel()
+		findings := analyze(t, rbacv1.PolicyRule{APIGroups: []string{"example.com"}, Resources: []string{"secrets"}, Verbs: []string{"get", "list"}})
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-005")
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-006")
+	})
+
+	t.Run("name-scoped list secrets cannot enumerate", func(t *testing.T) {
+		t.Parallel()
+		findings := analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"list", "watch"}, ResourceNames: []string{"tls-cert"}})
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-005")
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-006")
+	})
+
+	t.Run("name-scoped create pods is voided", func(t *testing.T) {
+		t.Parallel()
+		findings := analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}, ResourceNames: []string{"only-this-pod"}})
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-001")
+	})
+
+	t.Run("name-scoped get secrets fires scoped and attenuated", func(t *testing.T) {
+		t.Parallel()
+		scoped := find(analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}, ResourceNames: []string{"tls-cert"}}), "KUBE-PRIVESC-006")
+		if scoped == nil {
+			t.Fatal("name-scoped get secrets should still surface KUBE-PRIVESC-006 (a real, scoped read)")
+		}
+		if !strings.Contains(strings.Join(scoped.Tags, ","), "scope:resource-names") {
+			t.Errorf("expected scope:resource-names tag, got %v", scoped.Tags)
+		}
+		unrestricted := find(analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}}), "KUBE-PRIVESC-006")
+		if unrestricted == nil {
+			t.Fatal("unrestricted get secrets should surface KUBE-PRIVESC-006")
+		}
+		if !(scoped.Score < unrestricted.Score) {
+			t.Errorf("name-scoped grant should score below unrestricted: scoped=%v unrestricted=%v", scoped.Score, unrestricted.Score)
+		}
+	})
+
+	t.Run("name-scoped impersonate still fires (named target still dangerous)", func(t *testing.T) {
+		t.Parallel()
+		findings := analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"groups"}, Verbs: []string{"impersonate"}, ResourceNames: []string{"system:masters"}})
+		assertRulePresent(t, findings, "KUBE-PRIVESC-008")
+	})
+}
+
 // clusterRoleSnapshot builds a snapshot with one ClusterRole (carrying rules)
 // bound cluster-wide to default/<saName>. Helper for the single-permission
 // technique tests below.

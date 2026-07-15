@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/permissions"
 )
 
 // ForServiceAccount returns the structured remediation for a ServiceAccount-
@@ -59,10 +60,14 @@ func ForServiceAccount(ruleID string, finding models.Finding, _ models.Snapshot)
 
 // saEvidenceRule mirrors the inner shape of evidence.rules[] emitted by the SA
 // analyzer's summarizeRules helper. JSON tags match analyzer.go's evidence
-// builder exactly so the unmarshal is direct.
+// builder exactly so the unmarshal is direct. APIGroups and ResourceNames are
+// required for isDangerousSARule to stay in lockstep with the analyzer's
+// apiGroup- and resourceNames-aware matching.
 type saEvidenceRule struct {
 	Namespace     string   `json:"namespace"`
+	APIGroups     []string `json:"api_groups"`
 	Resources     []string `json:"resources"`
+	ResourceNames []string `json:"resource_names"`
 	Verbs         []string `json:"verbs"`
 	SourceRole    string   `json:"source_role"`
 	SourceBinding string   `json:"source_binding"`
@@ -129,64 +134,31 @@ func pickDangerousRule(rules []saEvidenceRule) (saEvidenceRule, bool) {
 	return saEvidenceRule{}, false
 }
 
-// isDangerousSARule mirrors the patterns in the SA analyzer's
-// dangerousCapabilities helper so the remediation diff highlights the same
-// rule the analyzer flagged. Returns true on the first match: the rule is
-// "dangerous" if it grants any of the high-risk verb/resource pairs the
-// analyzer cares about.
+// saDangerousTargets are the (apiGroup, resource) + verb checks the SA analyzer's
+// dangerousCapabilities helper flags. Kept here as a table so isDangerousSARule
+// runs through the exact same permissions.Grants matcher the analyzer uses -
+// apiGroup-aware and resourceNames-aware - instead of a diverging bare-name copy.
+var saDangerousTargets = []struct {
+	targets []permissions.ResourceTarget
+	verbs   []string
+}{
+	{[]permissions.ResourceTarget{permissions.Core("secrets")}, []string{"get", "list", "watch"}},
+	{[]permissions.ResourceTarget{permissions.Core("pods")}, []string{"create"}},
+	{[]permissions.ResourceTarget{permissions.InGroup("apps", "deployments"), permissions.InGroup("apps", "daemonsets"), permissions.InGroup("apps", "statefulsets"), permissions.InGroup("batch", "jobs"), permissions.InGroup("batch", "cronjobs")}, []string{"create", "update", "patch"}},
+	{[]permissions.ResourceTarget{permissions.InGroup("rbac.authorization.k8s.io", "rolebindings"), permissions.InGroup("rbac.authorization.k8s.io", "clusterrolebindings")}, []string{"create", "update", "patch"}},
+	{[]permissions.ResourceTarget{permissions.InGroup("rbac.authorization.k8s.io", "roles"), permissions.InGroup("rbac.authorization.k8s.io", "clusterroles")}, []string{"bind", "escalate"}},
+	{[]permissions.ResourceTarget{permissions.Core("users"), permissions.Core("groups"), permissions.Core("serviceaccounts")}, []string{"impersonate"}},
+	{[]permissions.ResourceTarget{permissions.Core("nodes/proxy")}, []string{"get"}},
+}
+
+// isDangerousSARule reports whether an evidence rule grants one of the high-risk
+// capabilities the SA analyzer's dangerousCapabilities helper flags, using the
+// same permissions.Grants matcher (apiGroup- and resourceNames-aware) so the
+// remediation diff highlights exactly the rule the analyzer counted - never a
+// name-scoped or wrong-apiGroup rule the analyzer discounted.
 func isDangerousSARule(rule saEvidenceRule) bool {
-	if hasAny(rule.Resources, "secrets") && hasAny(rule.Verbs, "get", "list", "watch") {
-		return true
-	}
-	if hasAny(rule.Resources, "pods") && hasAny(rule.Verbs, "create") {
-		return true
-	}
-	if hasAnySlice(rule.Resources, []string{"deployments", "daemonsets", "statefulsets", "jobs", "cronjobs"}) &&
-		hasAny(rule.Verbs, "create", "update", "patch") {
-		return true
-	}
-	if hasAnySlice(rule.Resources, []string{"rolebindings", "clusterrolebindings"}) &&
-		hasAny(rule.Verbs, "create", "update", "patch") {
-		return true
-	}
-	if hasAnySlice(rule.Resources, []string{"roles", "clusterroles"}) &&
-		hasAny(rule.Verbs, "bind", "escalate") {
-		return true
-	}
-	if hasAnySlice(rule.Resources, []string{"users", "groups", "serviceaccounts"}) &&
-		hasAny(rule.Verbs, "impersonate") {
-		return true
-	}
-	if hasAny(rule.Resources, "nodes/proxy") && hasAny(rule.Verbs, "get") {
-		return true
-	}
-	return false
-}
-
-// hasAny reports whether values contains either "*" (RBAC wildcard) or any of
-// the explicitly listed needles. Mirrors the analyzer's hasResource / hasAnyVerb
-// helpers so the remediation logic stays in sync.
-func hasAny(values []string, needles ...string) bool {
-	if saContainsString(values, "*") {
-		return true
-	}
-	for _, needle := range needles {
-		if saContainsString(values, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasAnySlice is hasAny but for the case where the needles list is itself a
-// slice variable (avoids the awkward `hasAny(v, slice...)` spread in callers
-// that already have a built slice).
-func hasAnySlice(values []string, needles []string) bool {
-	if saContainsString(values, "*") {
-		return true
-	}
-	for _, needle := range needles {
-		if saContainsString(values, needle) {
+	for _, check := range saDangerousTargets {
+		if permissions.Grants(rule.APIGroups, rule.Resources, rule.Verbs, rule.ResourceNames, check.targets, check.verbs) {
 			return true
 		}
 	}
@@ -242,10 +214,7 @@ func serviceAccountRoleEditHint(rule saEvidenceRule) *models.RemediationHint {
 		// operator still sees the kubectl edit recipe.
 		return commandOnlyHint(target, buildKubectlEditCommand(target))
 	}
-	// SA evidence does not currently carry the rule's apiGroups, so the diff
-	// renders with `apiGroups: []`. That is honest about what we know rather
-	// than guessing at "" (the core group) and steering the operator wrong.
-	diff := removeRuleDiff(kind, name, namespace, nil, rule.Resources, rule.Verbs)
+	diff := removeRuleDiff(kind, name, namespace, rule.APIGroups, rule.Resources, rule.Verbs)
 	cmd := buildKubectlEditCommand(target)
 	return &models.RemediationHint{
 		Patch: &models.KubectlPatch{

@@ -11,11 +11,13 @@ func TestCorrelateBumpsSubjectOnCriticalPath(t *testing.T) {
 	subject := models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "bad-sa"}
 	findings := []models.Finding{
 		{
-			RuleID:         "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
-			Severity:       models.SeverityCritical,
-			Score:          9.8,
-			Subject:        &subject,
-			EscalationPath: []models.EscalationHop{{Step: 1, Action: "wildcard"}},
+			RuleID:   "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+			Severity: models.SeverityCritical,
+			Score:    9.8,
+			Subject:  &subject,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "pod_create_token_theft", Technique: "KUBE-PRIVESC-001", FromSubject: subject},
+			},
 		},
 		{
 			RuleID:   "KUBE-PRIVESC-001",
@@ -32,6 +34,95 @@ func TestCorrelateBumpsSubjectOnCriticalPath(t *testing.T) {
 	}
 	if !slices.Contains(got[1].Tags, "chain:amplified") {
 		t.Errorf("chain:amplified tag missing: %v", got[1].Tags)
+	}
+}
+
+// TestCorrelateOnlyBumpsEdgeFindings is the core of the causal-correlation fix: two
+// findings share the path-source subject, but only the one whose rule is an actual
+// edge of the chain (the pod-create grant) is amplified; the unrelated root-container
+// weakness on the same ServiceAccount is left alone.
+func TestCorrelateOnlyBumpsEdgeFindings(t *testing.T) {
+	subject := models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "bad-sa"}
+	findings := []models.Finding{
+		{
+			RuleID:   "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+			Severity: models.SeverityCritical,
+			Score:    9.8,
+			Subject:  &subject,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "impersonate", Technique: "KUBE-PRIVESC-008", FromSubject: subject},
+			},
+		},
+		{
+			RuleID: "KUBE-PRIVESC-008", Severity: models.SeverityCritical, Score: 7.0, Subject: &subject,
+		},
+		{
+			RuleID: "KUBE-PODSEC-ROOT-001", Severity: models.SeverityMedium, Score: 5.0, Subject: &subject,
+		},
+	}
+
+	got := correlate(findings)
+
+	if got[1].Score != 9.0 || !slices.Contains(got[1].Tags, "chain:amplified") {
+		t.Errorf("edge finding KUBE-PRIVESC-008 should be amplified 7.0 → 9.0, got %v tags=%v", got[1].Score, got[1].Tags)
+	}
+	if got[2].Score != 5.0 || slices.Contains(got[2].Tags, "chain:amplified") {
+		t.Errorf("bystander finding KUBE-PODSEC-ROOT-001 must not be amplified: got %v tags=%v", got[2].Score, got[2].Tags)
+	}
+}
+
+// TestCorrelateMatchesTechniqueFamily confirms a family-prefix edge technique
+// amplifies the concrete finding whose rule ID it prefixes. Uses the cloud IRSA
+// case (edge technique "KUBE-CLOUD-IRSA" → finding "KUBE-CLOUD-IRSA-ADMIN-ROLE-001"),
+// a real shape: the eks IRSA finding carries the SA as its Subject.
+func TestCorrelateMatchesTechniqueFamily(t *testing.T) {
+	subject := models.SubjectRef{Kind: "ServiceAccount", Namespace: "prod", Name: "pipeline"}
+	findings := []models.Finding{
+		{
+			RuleID:   "KUBE-PRIVESC-PATH-AWS-IAM-ROLE",
+			Severity: models.SeverityHigh,
+			Score:    8.0,
+			Subject:  &subject,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "irsa_assume_role", Technique: "KUBE-CLOUD-IRSA", FromSubject: subject},
+			},
+		},
+		{RuleID: "KUBE-CLOUD-IRSA-ADMIN-ROLE-001", Severity: models.SeverityHigh, Score: 7.0, Subject: &subject},
+	}
+
+	got := correlate(findings)
+
+	if !slices.Contains(got[1].Tags, "chain:amplified") {
+		t.Errorf("KUBE-CLOUD-IRSA-ADMIN-ROLE-001 should match the KUBE-CLOUD-IRSA edge family: got tags=%v", got[1].Tags)
+	}
+}
+
+// TestCorrelateSkipsResourceAnchoredFindings documents that a finding anchored to a
+// Resource rather than a Subject (Subject == nil) is never amplified, even when its
+// rule ID prefix-matches an escalation edge. Pod-escape findings (KUBE-ESCAPE-*,
+// KUBE-PODSEC-*) are resource-anchored today, so the "KUBE-ESCAPE" edge family does
+// not amplify them. This has always been the case (correlate has always skipped
+// Subject == nil); the test guards against a silent change in that contract.
+func TestCorrelateSkipsResourceAnchoredFindings(t *testing.T) {
+	sa := models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "escaper"}
+	findings := []models.Finding{
+		{
+			RuleID:   "KUBE-PRIVESC-PATH-NODE-ESCAPE",
+			Severity: models.SeverityCritical,
+			Score:    9.4,
+			Subject:  &sa,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Action: "pod_host_escape", Technique: "KUBE-ESCAPE", FromSubject: sa},
+			},
+		},
+		// Resource-anchored escape finding: no Subject, like real podsec findings.
+		{RuleID: "KUBE-ESCAPE-001", Severity: models.SeverityHigh, Score: 7.0, Resource: &models.ResourceRef{Kind: "Pod", Name: "p", Namespace: "app"}},
+	}
+
+	got := correlate(findings)
+
+	if slices.Contains(got[1].Tags, "chain:amplified") {
+		t.Errorf("resource-anchored finding (Subject == nil) must not be amplified: got tags=%v", got[1].Tags)
 	}
 }
 
@@ -79,16 +170,21 @@ func TestCorrelateUsesHighestSinkSeverity(t *testing.T) {
 	subject := models.SubjectRef{Kind: "ServiceAccount", Namespace: "app", Name: "leaker"}
 	findings := []models.Finding{
 		{
-			RuleID:         "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS",
-			Severity:       models.SeverityHigh,
-			Subject:        &subject,
-			EscalationPath: []models.EscalationHop{{Step: 1}},
+			RuleID:   "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS",
+			Severity: models.SeverityHigh,
+			Subject:  &subject,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Technique: "KUBE-PRIVESC-005", FromSubject: subject},
+			},
 		},
 		{
-			RuleID:         "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
-			Severity:       models.SeverityCritical,
-			Subject:        &subject,
-			EscalationPath: []models.EscalationHop{{Step: 1}, {Step: 2}},
+			RuleID:   "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+			Severity: models.SeverityCritical,
+			Subject:  &subject,
+			EscalationPath: []models.EscalationHop{
+				{Step: 1, Technique: "KUBE-PRIVESC-005", FromSubject: subject},
+				{Step: 2},
+			},
 		},
 		{
 			RuleID:   "KUBE-PRIVESC-005",

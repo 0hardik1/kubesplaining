@@ -45,6 +45,7 @@ func TestForServiceAccountPrivileged001(t *testing.T) {
 		"rules": []map[string]any{
 			{
 				"namespace":      "",
+				"api_groups":     []string{"*"},
 				"resources":      []string{"*"},
 				"verbs":          []string{"*"},
 				"source_role":    "cluster-admin",
@@ -93,6 +94,7 @@ func TestForServiceAccountPrivileged002(t *testing.T) {
 		"rules": []map[string]any{
 			{
 				"namespace":      "app",
+				"api_groups":     []string{""},
 				"resources":      []string{"secrets"},
 				"verbs":          []string{"get", "list"},
 				"source_role":    "app-reader",
@@ -138,6 +140,7 @@ func TestForServiceAccountDefault002(t *testing.T) {
 		"rules": []map[string]any{
 			{
 				"namespace":      "",
+				"api_groups":     []string{""},
 				"resources":      []string{"pods"},
 				"verbs":          []string{"create"},
 				"source_role":    "pod-creator",

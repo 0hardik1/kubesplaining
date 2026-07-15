@@ -35,11 +35,11 @@ make eks-demo-down    # ~10 min: removes cluster, IAM role, S3 bucket, kubeconfi
  ── Chain B (KUBE-PRIVESC-PATH-AWS-IAM-ROLE + SYSTEM-MASTERS) ─────────
    ServiceAccount  prod-data/prod-data-pipeline-sa
       │  KUBE-CLOUD-IRSA-ADMIN-ROLE-001 fires (name contains "Admin")
-      │  KUBE-CLOUD-IRSA-001 (irsa_assume_role)
+      │  KUBE-CLOUD-IRSA (irsa_assume_role)
       ▼
    external:aws-iam:HolySplainProdDataPipelineAdministrator
       │  KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001 fires on aws-auth ConfigMap
-      │  KUBE-CLOUD-AWSAUTH-001 (aws_auth_admin)
+      │  KUBE-CLOUD-AWSAUTH (aws_auth_admin)
       ▼
    sink:system_masters
 ```
