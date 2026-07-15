@@ -6,15 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-15
+
+This release takes kubesplaining's privilege-escalation graph across the cloud boundary and sharpens the RBAC matching engine. The headline additions are a first-class EKS cloud-provider module (IRSA admin-role detection, aws-auth IAM-to-RBAC mapping, and IMDS pivot edges) so an escalation chain can now cross from a Kubernetes ServiceAccount into an AWS IAM role; completion of the 17-entry `KUBE-PRIVESC` technique taxonomy with a dedicated Escalation Paths report tab; structured remediation hints across all eight analyzer modules; and `(apiGroup, resource, verb)`-aware RBAC matching that honors `resourceNames` to cut false positives across the rbac, secrets, serviceaccount, and privesc modules.
+
 ### Added
+
+- **EKS cloud-provider module (`internal/analyzer/cloud`, `cloud/eks`).** The first cloud-aware analyzer. It reads EKS-specific state and extends the privesc graph past the cluster edge:
+  - **IRSA (IAM Roles for Service Accounts).** `KUBE-CLOUD-IRSA-ADMIN-ROLE-001` flags a ServiceAccount annotated to assume an admin-equivalent IAM role; `KUBE-CLOUD-IRSA-MISSING-001` flags an IRSA annotation pointing at a role that cannot be resolved. A `ServiceAccount → IAM role` graph edge (`irsa_assume_role`) feeds the BFS so the assume-role step surfaces as a `KUBE-PRIVESC-PATH-AWS-IAM-ROLE` chain.
+  - **aws-auth ConfigMap mapping.** The `kube-system/aws-auth` IAM-to-RBAC map is parsed to name the offending principals: `KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001` (an IAM principal mapped straight to `system:masters`), `KUBE-CLOUD-AWSAUTH-OVERBROAD-001` (mapped to a group bound to an admin-equivalent ClusterRole), and `KUBE-CLOUD-AWSAUTH-PARSE-ERROR-001` (malformed map). `external IAM principal → system:masters / cluster-admin` edges wire these into the graph.
+  - **IMDS pivot.** `KUBE-CLOUD-IMDS-PIVOT-001` detects a pod that can reach the node instance-metadata endpoint (`169.254.169.254`) to steal the node IAM role. `KUBE-CLOUD-PROVIDER-UNKNOWN-001` records when the provider could not be identified.
+  - External IAM nodes are modeled as terminal sinks with controlled traversal, so a chain can enter AWS without laundering back through the control plane.
+
+- **Completed `KUBE-PRIVESC` technique taxonomy (7 new IDs) + Escalation Paths report tab.** Adds `KUBE-PRIVESC-002` (create pods into a namespace whose Pod Security Admission does not block privileged pods), `-004` (create/get on `pods/exec` or `pods/attach`), `-006` (get-only on secrets, split out of `-005` which is now list/watch), `-007` (create + get on secrets: mint a legacy token Secret pointed at a privileged SA, then read the token), `-013` (update/patch on `pods/ephemeralcontainers`), `-015` (create on `pods/portforward`), and `-016` (delete pods + node status write / delete: evict and reschedule onto an attacker node). New graph edges (`-002`, `-007`, `-013`, `-016`) feed the BFS so these surface as `KUBE-PRIVESC-PATH-*` chains. The HTML report gains a CSS-tab-gated **Escalation paths** tab listing every `KUBE-PRIVESC-PATH-*` chain, grouped by sink and sorted by danger.
 
 - **Structured remediation hints across every analyzer.** All eight modules (podsec, rbac, privesc, network, admission, secrets+configmap, serviceaccount, containersec) now attach a `RemediationHint` to each finding with one or more of: a `kubectl patch` payload (strategic-merge / merge / JSON), a Kyverno `ClusterPolicy`, a Gatekeeper `ConstraintTemplate` + `Constraint`, or a unified RBAC diff. JSON/SARIF expose the whole struct; HTML renders a per-finding "Structured remediation" section with collapsible `<details>` blocks per surface.
 
 - **`--remediation-patches` opt-in flag.** Added to `scan`, `scan-resource`, and `report`. Off by default. Pass the flag to populate the hint on each emitted finding; the same flag controls render-time inclusion in `report` so a JSON saved with hints renders cleanly with or without them.
 
+- **Live EKS demo walkthrough.** [`docs/eks-demo.md`](docs/eks-demo.md) walks a cross-namespace privesc chain that pivots into AWS via IRSA, end to end, against a real EKS cluster.
+
 ### Changed
 
+- **RBAC matching is now `(apiGroup, resource, verb)`-aware and honors `resourceNames`.** A new shared matcher (`internal/permissions/matcher.go`) requires the API group, resource, and verb to all line up (wildcards on each axis), so a custom resource that reuses a core name (e.g. `secrets.example.com`) no longer trips the core-`secrets` checks. `resourceNames` is now modeled on the effective rule: a name-scoped grant cannot authorize collection verbs (list / watch / deletecollection, create on a top-level resource), so it no longer fires the broad "read / enumerate / create the whole resource type" checks. Name-scoped RBAC findings gain a `scope:resource-names` tag and attenuated blast radius, ranking below unrestricted grants of the same permission instead of vanishing. The rbac, serviceaccount, and privesc analyzers (and the SA remediation matcher) all route through this one matcher.
+
+- **Chain amplification (`correlate`) is now causal.** Each `EscalationHop` carries the technique of the edge that enabled it, and the correlation pass amplifies a finding only when its own `(subject, rule)` is an actual edge of an escalation chain, rather than bumping every finding that merely shares a subject with a privesc path.
+
 - **BREAKING (in 0.x): RemediationHint emission is now opt-in.** Earlier builds attached hints unconditionally for the podsec, rbac, and privesc modules. They are now gated behind `--remediation-patches` for consistency with the five new module wirings. To restore prior behavior pass `--remediation-patches` on `scan` / `scan-resource` / `report`.
+
+### Fixed
+
+- External IAM nodes are terminal sinks with proper traversal, so cloud identities cannot be used as intermediate hops to launder a path.
+- `hostNetwork` IMDS reachability, custom wildcard-ClusterRole detection, and Fargate `ProviderID` parsing corrected in the cloud module.
+- Per-subject capability cards in the Least Privilege tab restyled for consistent sizing.
+
+### Documentation
+
+- EKS demo (`docs/eks-demo.md`), cloud findings catalog entries in [`docs/findings.md`](docs/findings.md), and a privilege-escalation methodology-gap research note.
+
+### Dependencies
+
+- `github.com/google/cel-go` 0.28.1 → 0.29.2, the `k8s.io` library group, `golang.org/x/text`, and several CI action bumps (checkout, cache, codeql-action, upload-artifact).
 
 ## [1.1.0] - 2026-05-16
 
@@ -132,6 +164,7 @@ The differentiator is **graph-based privilege-escalation path detection**: BFS f
 - Forbidden/Unauthorized list errors are downgraded to `CollectionWarnings` rather than aborting — locked-down clusters still produce a useful partial-snapshot report.
 - Vulnerability disclosure: GitHub Private Vulnerability Reporting only. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/0hardik1/kubesplaining/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.1.0
 [1.0.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.0.0
