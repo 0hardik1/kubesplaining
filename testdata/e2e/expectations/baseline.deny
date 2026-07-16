@@ -1,0 +1,28 @@
+# Negative guards for the baseline fixture (testdata/e2e/vulnerable/00-baseline.yaml),
+# checked against the standard-preset full scan (.tmp/e2e-report-full/findings.json).
+#
+# Each line is a finding-ID prefix that must be ABSENT. A line matches a finding
+# when the finding's id equals the line or starts with "<line>:". So a bare rule
+# ID bans every instance of that rule, while a rule:subject prefix bans one
+# specific instance. Lines starting with '#' and blank lines are skipped.
+#
+# This is the instance-level counterpart to the *.ruleset golden: the golden
+# pins the rule-ID SET, but a rule can fire legitimately for one subject and be a
+# false positive for another, which only a per-instance guard can catch.
+
+# Issue #48: a namespace-scoped RoleBinding granting `create rolebindings` must
+# NOT be modeled as a path to cluster-admin. It legitimately yields a
+# NAMESPACE-ADMIN path (asserted positively in kind-e2e.sh), just not
+# CLUSTER-ADMIN.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/rbac-ns-fixtures/sa-ns-rolebinding-mutate
+
+# The psa-suppressed namespace carries pod-security.kubernetes.io/enforce=restricted
+# (set during the e2e after rollout), so the policy-engine posture finding must
+# self-suppress: KUBE-ADMISSION-NO-POLICY-ENGINE-001 fires only when NO admission
+# control is present anywhere.
+KUBE-ADMISSION-NO-POLICY-ENGINE-001
+
+# Default --admission-mode=suppress must drop the privileged-pod finding for the
+# psa-suppressed namespace, because its enforce=restricted label would block the
+# spec at admission time.
+KUBE-ESCAPE-001:Deployment:psa-suppressed:psa-priv-app

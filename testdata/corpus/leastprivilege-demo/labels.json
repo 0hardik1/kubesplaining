@@ -1,0 +1,48 @@
+{
+  "name": "leastprivilege-demo",
+  "description": "Mixed cluster with genuinely least-privilege workloads alongside over-permissioned ones. The deny list is the calibration signal: the read-only loadtester, view-only old-ci-bot, cleanup-cron, and configmap-only etl-runner SAs must never be flagged as privilege-escalation, node-escape, or overbroad. Expected covers the SAs that legitimately do escalate (admin-sa bound to cluster-admin; prometheus and deployer with cluster-wide pod/node create).",
+  "snapshot": "testdata/snapshots/leastprivilege-demo.json",
+  "options": {
+    "max_privesc_depth": 5,
+    "admission_mode": "suppress"
+  },
+  "expected": [
+    "KUBE-ADMISSION-NO-POLICY-ENGINE-001",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:analytics",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:billing",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:dashboard",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:legacy",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:monitoring",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:prod-apps",
+    "KUBE-NETPOL-IMDS-001:Pod:analytics:etl-pipeline-abc",
+    "KUBE-NETPOL-IMDS-001:Pod:dashboard:dashboard-7c8d",
+    "KUBE-NETPOL-IMDS-001:Pod:legacy:loadtester-runner",
+    "KUBE-NETPOL-IMDS-001:Pod:monitoring:prometheus-0",
+    "KUBE-NETPOL-IMDS-001:Pod:prod-apps:deployer-7b9f",
+    "KUBE-PRIVESC-001:ServiceAccount/monitoring/prometheus::pods,services,endpoints,nodes",
+    "KUBE-PRIVESC-001:ServiceAccount/prod-apps/deployer:prod-apps:pods",
+    "KUBE-PRIVESC-002:ServiceAccount/monitoring/prometheus::pods,services,endpoints,nodes",
+    "KUBE-PRIVESC-002:ServiceAccount/prod-apps/deployer:prod-apps:pods",
+    "KUBE-PRIVESC-003:ServiceAccount/prod-apps/deployer:prod-apps:deployments",
+    "KUBE-PRIVESC-016:ServiceAccount/monitoring/prometheus::pods,services,endpoints,nodes",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/dashboard/admin-sa:cluster_admin_equivalent",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/monitoring/prometheus:cluster_admin_equivalent",
+    "KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/monitoring/prometheus:node_escape",
+    "KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/prod-apps/deployer:node_escape",
+    "KUBE-RBAC-OVERBROAD-001:ServiceAccount/dashboard/admin-sa::",
+    "KUBE-RBAC-STALE-001:ServiceAccount/billing/cleanup-cron:RoleBinding/billing/cleanup-cron",
+    "KUBE-RBAC-STALE-002:ServiceAccount/billing/old-ci-bot:RoleBinding/billing/old-ci-bot",
+    "KUBE-SA-PRIVILEGED-002:ServiceAccount/monitoring/prometheus",
+    "KUBE-SA-PRIVILEGED-002:ServiceAccount/prod-apps/deployer"
+  ],
+  "deny": [
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/legacy/loadtester",
+    "KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/legacy/loadtester",
+    "KUBE-RBAC-OVERBROAD-001:ServiceAccount/legacy/loadtester",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/billing/old-ci-bot",
+    "KUBE-RBAC-OVERBROAD-001:ServiceAccount/billing/old-ci-bot",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/billing/cleanup-cron",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/analytics/etl-runner",
+    "KUBE-RBAC-OVERBROAD-001:ServiceAccount/analytics/etl-runner"
+  ]
+}
