@@ -42,7 +42,7 @@ GOCACHE=$(pwd)/.tmp/go-build-cache GOMODCACHE=$(pwd)/.tmp/go-mod-cache \
   go test ./internal/analyzer/privesc -run TestFindPaths -v
 ```
 
-`make e2e` requires a reachable Docker daemon (see `scripts/kind-e2e.sh`); `kind`, `kubectl`, and `rg` come from Hermit once the environment is activated. The script greps `findings.json` for specific rule IDs — when you add or rename a rule that the e2e fixture should produce, update the `rg -q "KUBE-..."` assertions and/or `testdata/e2e/vulnerable.yaml` together.
+`make e2e` requires a reachable Docker daemon (see `scripts/kind-e2e.sh`); `kind`, `kubectl`, and `rg` come from Hermit once the environment is activated. The script asserts findings three ways, all under `testdata/e2e/expectations/`: (1) `*.expect` recall lists (each shard's owned rule IDs must fire); (2) `*.ruleset` **set-equality goldens** (`full-scan.ruleset` / `minimal-scan.ruleset` pin the exact rule-ID set each scan produces, so a new rule appearing (candidate false positive) or an expected one vanishing both fail); (3) `*.deny` instance-level negative guards (finding-ID prefixes that must be absent). When you add or rename a rule the fixture produces, update the `*.expect` list **and regenerate the golden** (`LC_ALL=C jq -r '.[].rule_id' .tmp/e2e-report-full/findings.json | LC_ALL=C sort -u > testdata/e2e/expectations/full-scan.ruleset`, and the same for `-minimal`), alongside the `testdata/e2e/vulnerable/` shard. The deterministic, Docker-free precision/recall counterpart is `make corpus` (see `internal/corpus/` + `testdata/corpus/`).
 
 `gofmt -l` is the lint gate; the Makefile lists Go files via `rg --files -g '*.go'` (Hermit-managed).
 

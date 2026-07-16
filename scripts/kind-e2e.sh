@@ -274,33 +274,82 @@ if (( ${#missing[@]} > 0 )); then
 fi
 ok "all $(( ${#STD_RULES[@]} + ${#CLOUD_RULES[@]} )) expected rule IDs present"
 
-# Regression guard for issue #48: a namespace-scoped RoleBinding granting
-# `create rolebindings` MUST NOT produce a cluster-admin path finding. The
-# finding ID concatenates ruleID + subject Key + target, so a single grep
-# pinpoints the exact false positive without needing jq.
-NS_SUBJECT_KEY="ServiceAccount/rbac-ns-fixtures/sa-ns-rolebinding-mutate"
-NS_FP_ID_PREFIX="KUBE-PRIVESC-PATH-CLUSTER-ADMIN:${NS_SUBJECT_KEY}:"
-if rg -q "\"id\":\s*\"${NS_FP_ID_PREFIX}" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
-  echo "regression: namespace-scoped RoleBinding produced KUBE-PRIVESC-PATH-CLUSTER-ADMIN (issue #48)" >&2
+step "Verifying rule-ID set equality (false-positive gate)"
+# The expected-rule check above proves recall (each shard's rules fired). This
+# proves the inverse: that NOTHING ELSE fired. The committed *.ruleset goldens
+# list the exact rule-ID set each scan produces, so a rule appearing that is not
+# in the golden (a candidate false positive) or an expected one vanishing (a
+# recall regression) both fail here. The two scans differ on purpose: the full
+# scan runs the standard preset + audit log (adds the least-privilege
+# KUBE-RBAC-UNUSED-* rules); the minimal scan runs the minimal preset without
+# audit data (surfaces the kube-system-anchored cloud/secrets rules the standard
+# preset mutes). Regenerate after an intended change with:
+#   LC_ALL=C jq -r '.[].rule_id' .tmp/e2e-report-full/findings.json    | LC_ALL=C sort -u > testdata/e2e/expectations/full-scan.ruleset
+#   LC_ALL=C jq -r '.[].rule_id' .tmp/e2e-report-minimal/findings.json | LC_ALL=C sort -u > testdata/e2e/expectations/minimal-scan.ruleset
+assert_ruleset() {
+  # assert_ruleset <label> <findings.json> <golden.ruleset>. Compares the sorted
+  # unique rule-ID set of the scan against the committed golden, failing on any
+  # rule added (candidate false positive) or removed (recall regression). Both
+  # sides are re-sorted under LC_ALL=C so comm sees a stable collation order
+  # regardless of the runner's locale.
+  local label="$1" findings="$2" golden="$3"
+  local actual="${ROOT_DIR}/.tmp/${label}-scan.ruleset.actual"
+  local golden_sorted="${ROOT_DIR}/.tmp/${label}-scan.ruleset.golden"
+  LC_ALL=C jq -r '.[].rule_id' "${findings}" | LC_ALL=C sort -u > "${actual}"
+  LC_ALL=C sort -u "${golden}" > "${golden_sorted}"
+  local added removed
+  added="$(comm -13 "${golden_sorted}" "${actual}")"
+  removed="$(comm -23 "${golden_sorted}" "${actual}")"
+  if [[ -n "${added}" || -n "${removed}" ]]; then
+    echo "rule-ID set mismatch for ${label} scan (vs $(basename "${golden}")):" >&2
+    [[ -n "${added}" ]]   && printf '  + %s  (unexpected — candidate false positive)\n' ${added} >&2
+    [[ -n "${removed}" ]] && printf '  - %s  (missing — recall regression)\n' ${removed} >&2
+    echo "  If intentional, regenerate the golden (see comment above)." >&2
+    exit 1
+  fi
+  ok "${label} rule-ID set matches golden ($(wc -l < "${golden}" | tr -d ' ') rules)"
+}
+assert_ruleset "full"    "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"    "${ROOT_DIR}/testdata/e2e/expectations/full-scan.ruleset"
+assert_ruleset "minimal" "${ROOT_DIR}/.tmp/e2e-report-minimal/findings.json" "${ROOT_DIR}/testdata/e2e/expectations/minimal-scan.ruleset"
+
+step "Verifying deny guards (findings that must be absent)"
+# Each *.deny file under testdata/e2e/expectations/ lists finding-ID prefixes
+# (one per line; '#' comments and blanks skipped) that must NOT appear in the
+# standard-preset full scan. A line matches a finding when its id equals the line
+# or begins with "<line>:", so a bare rule ID bans every instance and a
+# rule:subject prefix bans one. This is the instance-level negative guard the
+# rule-ID golden cannot express: a rule can fire legitimately for one subject
+# while being a false positive for another.
+DENY_RULES=()
+shopt -s nullglob
+for f in "${ROOT_DIR}/testdata/e2e/expectations/"*.deny; do
+  collect_rules "${f}" DENY_RULES
+done
+shopt -u nullglob
+deny_violations=()
+for deny in "${DENY_RULES[@]}"; do
+  while IFS= read -r hit; do
+    [[ -z "${hit}" ]] && continue
+    deny_violations+=("${hit}  (deny: ${deny})")
+  done < <(jq -r --arg d "${deny}" '.[] | select(.id == $d or (.id | startswith($d + ":"))) | .id' "${ROOT_DIR}/.tmp/e2e-report-full/findings.json")
+done
+if (( ${#deny_violations[@]} > 0 )); then
+  echo "deny-guard violations in standard-preset findings.json:" >&2
+  printf '  - %s\n' "${deny_violations[@]}" >&2
   exit 1
 fi
-ok "no cluster-admin false positive for namespace-scoped RoleBinding"
+ok "no deny-guard violations (${#DENY_RULES[@]} guards checked)"
 
-# Phase 2 posture finding: KUBE-ADMISSION-NO-POLICY-ENGINE-001 must NOT fire in
-# this fixture because the psa-suppressed namespace carries
-# pod-security.kubernetes.io/enforce=restricted (set above), and PSAState.HasEnforce()
-# returns true for any baseline-or-stricter level. Asserting the absence is more
-# valuable than asserting presence: it locks in that the posture finding correctly
-# suppresses itself when *any* admission control is in place.
-if rg -q "\"rule_id\":\s*\"KUBE-ADMISSION-NO-POLICY-ENGINE-001\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
-  echo "regression: KUBE-ADMISSION-NO-POLICY-ENGINE-001 fired despite psa-suppressed namespace having enforce=restricted" >&2
-  exit 1
-fi
-ok "no policy-engine posture finding (correctly suppressed by psa-suppressed enforce label)"
+# NOTE: the issue-#48 cluster-admin false-positive guard and the
+# KUBE-ADMISSION-NO-POLICY-ENGINE-001 absence guard now live in
+# testdata/e2e/expectations/baseline.deny and are enforced by the deny-guard
+# step above. The positive counterpart (the namespace-admin path this same
+# fixture MUST produce) stays here.
 
-# The same fixture must instead produce KUBE-PRIVESC-PATH-NAMESPACE-ADMIN, naming
+# The rbac-ns-fixtures RoleBinding must produce KUBE-PRIVESC-PATH-NAMESPACE-ADMIN, naming
 # the namespace it can take over. The finding ID encodes the target namespace as
 # the last segment after a fourth `:`.
+NS_SUBJECT_KEY="ServiceAccount/rbac-ns-fixtures/sa-ns-rolebinding-mutate"
 NS_OK_ID="KUBE-PRIVESC-PATH-NAMESPACE-ADMIN:${NS_SUBJECT_KEY}:namespace_admin:rbac-ns-fixtures"
 if ! rg -q "\"id\":\s*\"${NS_OK_ID}\"" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
   echo "missing: namespace-scoped RoleBinding did not produce expected KUBE-PRIVESC-PATH-NAMESPACE-ADMIN finding for ${NS_SUBJECT_KEY} → rbac-ns-fixtures" >&2
@@ -308,14 +357,11 @@ if ! rg -q "\"id\":\s*\"${NS_OK_ID}\"" "${ROOT_DIR}/.tmp/e2e-report-full/finding
 fi
 ok "namespace-admin path emitted for namespace-scoped RoleBinding"
 
-# Default --admission-mode=suppress must drop the privileged-pod finding for the
-# psa-suppressed namespace because its enforce=restricted label would block the spec.
+# The default-suppress drop of KUBE-ESCAPE-001 for the psa-suppressed namespace
+# is now enforced by testdata/e2e/expectations/baseline.deny (deny-guard step
+# above). PSA_FINDING_ID is still needed by the attenuate-mode assertion below,
+# which checks the inverse (the finding reappears, tagged) under a different scan.
 PSA_FINDING_ID="KUBE-ESCAPE-001:Deployment:psa-suppressed:psa-priv-app"
-if rg -q "\"id\":\s*\"${PSA_FINDING_ID}" "${ROOT_DIR}/.tmp/e2e-report-full/findings.json"; then
-  echo "regression: --admission-mode=suppress did not drop ${PSA_FINDING_ID}" >&2
-  exit 1
-fi
-ok "default suppress mode dropped privileged finding in psa-suppressed namespace"
 
 # admission-summary.json must record the suppression count and the per-namespace breakdown.
 if ! rg -q "\"suppressed\":\s*[1-9]" "${ROOT_DIR}/.tmp/e2e-report-full/admission-summary.json"; then
