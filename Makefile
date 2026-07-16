@@ -22,7 +22,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-.PHONY: setup build test lint e2e scan scan-lp delete clean install-hooks uninstall-hooks eks-demo-up eks-demo-scan eks-demo-poc eks-demo-down
+.PHONY: setup build test corpus lint e2e scan scan-lp delete clean install-hooks uninstall-hooks eks-demo-up eks-demo-scan eks-demo-poc eks-demo-down
 
 setup:
 	$(GOENV) go mod download
@@ -33,6 +33,12 @@ build:
 
 test:
 	$(GOENV) go test ./...
+
+# Deterministic precision/recall gate over the labeled snapshot corpus in
+# testdata/corpus/. Runs the analyzer engine in-process (no cluster, no Docker)
+# and prints a per-case scorecard. Also runs as part of `make test`.
+corpus:
+	$(GOENV) go test ./internal/corpus/... -run TestCorpusPrecisionRecall -v
 
 lint:
 	@test -z "$$(gofmt -l $(GOFILES))" || (echo "gofmt check failed"; gofmt -l $(GOFILES); exit 1)
