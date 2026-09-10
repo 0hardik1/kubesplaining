@@ -225,17 +225,19 @@ func accessEntryOverbroadFinding(state *models.EKSCloudState, entry models.EKSAc
 	}
 }
 
-// notEvaluatedFinding is the coverage gap. Severity depends on what the
-// snapshot could see: LOW when kube-system/aws-auth is absent too, because
-// then no IAM-to-RBAC rule ran at all and a clean report is unearned; INFO
-// when aws-auth was analyzed, because the ConfigMap half is covered and only
-// the access-entry half is unknown.
+// notEvaluatedFinding is the coverage gap. It is always LOW, never INFO: the
+// default --severity-threshold is low, and a finding whose whole job is to
+// say "this scan could not see the IAM mappings" must survive the default
+// filter or the report is silent in exactly the case it exists for. The
+// score and the wording still distinguish the two situations: aws-auth
+// absent (no IAM-to-RBAC rule ran at all) scores higher than aws-auth
+// analyzed (only the access-entry half is unknown).
 func notEvaluatedFinding(snapshot models.Snapshot) models.Finding {
 	_, hasAWSAuth := findAWSAuthConfigMap(snapshot)
 	content := contentAccessEntryNotEvaluated(hasAWSAuth)
 	severity, score := models.SeverityLow, 2.5
 	if hasAWSAuth {
-		severity, score = models.SeverityInfo, 1.0
+		score = 2.0
 	}
 	evidence := map[string]any{
 		"awsAuthConfigMapPresent": hasAWSAuth,

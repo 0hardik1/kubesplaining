@@ -7,7 +7,7 @@
 # (anchored in kube-system) is not dropped by the standard exclusions preset.
 KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001
 # No --eks-access-entries export is passed to the e2e scan, so the coverage
-# rule must fire (INFO here, because aws-auth is present and analyzed).
+# rule must fire (LOW; the default severity threshold would hide INFO).
 KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001
 KUBE-CLOUD-IRSA-ADMIN-ROLE-001
 KUBE-CLOUD-IRSA-MISSING-001

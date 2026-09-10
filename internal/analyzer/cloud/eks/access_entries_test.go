@@ -59,12 +59,20 @@ func TestAnalyzeAccessEntries_NotEvaluatedWithoutExport(t *testing.T) {
 		t.Errorf("evidence = %v", ev)
 	}
 
-	// With aws-auth present the ConfigMap half is covered: INFO.
+	// With aws-auth present the ConfigMap half is covered: still LOW (the
+	// default severity threshold hides INFO, and a hidden coverage-gap
+	// finding is no finding), but scored below the no-aws-auth case.
 	withAuth := awsAuthSnapshot(t, "kube-system", "aws-auth", map[string]string{"mapRoles": "[]\n"}, nil)
 	withAuth.Metadata.CloudProvider = "eks"
-	got = AnalyzeAccessEntries(withAuth)
-	if len(got) != 1 || got[0].Severity != models.SeverityInfo {
-		t.Fatalf("with aws-auth: findings = %+v, want one INFO", got)
+	withAuthFindings := AnalyzeAccessEntries(withAuth)
+	if len(withAuthFindings) != 1 || withAuthFindings[0].Severity != models.SeverityLow {
+		t.Fatalf("with aws-auth: findings = %+v, want one LOW", withAuthFindings)
+	}
+	if withAuthFindings[0].Score >= got[0].Score {
+		t.Errorf("with aws-auth score %.1f should be below the no-aws-auth score %.1f", withAuthFindings[0].Score, got[0].Score)
+	}
+	if ev := evidenceOf(t, withAuthFindings[0]); ev["awsAuthConfigMapPresent"] != true {
+		t.Errorf("evidence = %v", ev)
 	}
 }
 
