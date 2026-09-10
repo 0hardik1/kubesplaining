@@ -40,10 +40,13 @@ type awsAuthEntry struct {
 }
 
 // AnalyzeAWSAuth returns aws-auth findings for the given snapshot.
-// Returns nil if no aws-auth ConfigMap is present in kube-system.
+// Returns nil if no aws-auth ConfigMap is present in kube-system, or if a
+// loaded access-entries export says the cluster runs in API authentication
+// mode: the apiserver then ignores the ConfigMap, so a mapping in it grants
+// nothing and reporting it would be a false positive.
 func AnalyzeAWSAuth(snapshot models.Snapshot) []models.Finding {
 	cm, ok := findAWSAuthConfigMap(snapshot)
-	if !ok {
+	if !ok || snapshot.Cloud.EKS.AWSAuthIgnored() {
 		return nil
 	}
 

@@ -1,0 +1,132 @@
+{
+  "metadata": {
+    "kubesplaining_version": "dev",
+    "snapshot_timestamp": "2026-09-10T00:00:00Z",
+    "cluster_name": "eks-access-entries-fixture",
+    "cluster_version": "v1.36.0",
+    "api_server_url": "https://fixture.eks.local",
+    "cloud_provider": "eks"
+  },
+  "resources": {
+    "namespaces": [
+      {
+        "metadata": {
+          "name": "kube-system"
+        }
+      },
+      {
+        "metadata": {
+          "name": "default"
+        }
+      }
+    ],
+    "cluster_roles": [
+      {
+        "metadata": {
+          "name": "cluster-admin"
+        },
+        "rules": [
+          {
+            "apiGroups": [
+              "*"
+            ],
+            "resources": [
+              "*"
+            ],
+            "verbs": [
+              "*"
+            ]
+          }
+        ]
+      }
+    ],
+    "cluster_role_bindings": [
+      {
+        "metadata": {
+          "name": "platform-admins"
+        },
+        "roleRef": {
+          "apiGroup": "rbac.authorization.k8s.io",
+          "kind": "ClusterRole",
+          "name": "cluster-admin"
+        },
+        "subjects": [
+          {
+            "kind": "Group",
+            "name": "platform-admins",
+            "apiGroup": "rbac.authorization.k8s.io"
+          }
+        ]
+      }
+    ]
+  },
+  "cloud": {
+    "eks": {
+      "cluster_name": "eks-access-entries-fixture",
+      "authentication_mode": "API",
+      "source": "testdata/snapshots/eks-access-entries.json",
+      "access_entries": [
+        {
+          "principal_arn": "arn:aws:iam::123456789012:role/BreakGlassAdmin",
+          "type": "STANDARD",
+          "username": "arn:aws:sts::123456789012:assumed-role/BreakGlassAdmin/{{SessionName}}",
+          "access_policies": [
+            {
+              "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy",
+              "scope_type": "cluster"
+            }
+          ]
+        },
+        {
+          "principal_arn": "arn:aws:iam::123456789012:role/DataPlatformOps",
+          "type": "STANDARD",
+          "access_policies": [
+            {
+              "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy",
+              "scope_type": "cluster"
+            }
+          ]
+        },
+        {
+          "principal_arn": "arn:aws:iam::123456789012:role/Developers",
+          "type": "STANDARD",
+          "kubernetes_groups": [
+            "developers",
+            "platform-admins"
+          ]
+        },
+        {
+          "principal_arn": "arn:aws:iam::123456789012:role/TeamAEdit",
+          "type": "STANDARD",
+          "access_policies": [
+            {
+              "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy",
+              "scope_type": "namespace",
+              "namespaces": [
+                "team-a"
+              ]
+            }
+          ]
+        },
+        {
+          "principal_arn": "arn:aws:iam::123456789012:role/ReadOnly",
+          "type": "STANDARD",
+          "access_policies": [
+            {
+              "policy_arn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy",
+              "scope_type": "cluster"
+            }
+          ]
+        },
+        {
+          "principal_arn": "arn:aws:iam::123456789012:role/eks-nodegroup-role",
+          "type": "EC2_LINUX",
+          "kubernetes_groups": [
+            "system:nodes",
+            "system:bootstrappers"
+          ]
+        }
+      ]
+    }
+  }
+}

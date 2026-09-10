@@ -11,6 +11,7 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/baseline"
 	"github.com/0hardik1/kubesplaining/internal/collector"
 	"github.com/0hardik1/kubesplaining/internal/connection"
+	"github.com/0hardik1/kubesplaining/internal/eksaccess"
 	"github.com/0hardik1/kubesplaining/internal/exclusions"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/report"
@@ -52,6 +53,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		baselineFormat       string
 		remediationPatches   bool
 		cloudProvider        string
+		eksAccessEntriesFile string
 	)
 
 	cmd := &cobra.Command{
@@ -104,6 +106,23 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			// concrete provider names pin detection so an operator can opt in even
 			// when the snapshot lacks the usual heuristic signals (e.g. an EKS
 			// cluster without aws-auth in kube-system).
+			// --eks-access-entries loads the AWS-side half of EKS authentication,
+			// which no Kubernetes API call can return. Supplying it is also a
+			// strong provider signal, so under "auto" it promotes an undetected
+			// snapshot to eks (an API-mode cluster has no aws-auth ConfigMap to
+			// detect from).
+			if eksAccessEntriesFile != "" {
+				state, warnings, err := eksaccess.Load(eksAccessEntriesFile)
+				if err != nil {
+					return err
+				}
+				snapshot.Cloud.EKS = state
+				snapshot.Metadata.CollectionWarnings = append(snapshot.Metadata.CollectionWarnings, warnings...)
+				if cloudProvider == "auto" && (snapshot.Metadata.CloudProvider == "" || snapshot.Metadata.CloudProvider == "none") {
+					snapshot.Metadata.CloudProvider = "eks"
+				}
+			}
+
 			switch cloudProvider {
 			case "auto":
 				// keep whatever the collector / manifest loader populated
@@ -277,6 +296,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().StringVar(&baselineFile, "baseline", "", "Path to a previous findings JSON file. When set, a diff.{txt,md,sarif} is written alongside the report and (in --ci-mode) ci-max-* gates count Added findings only, not the absolute scan tally.")
 	cmd.Flags().StringVar(&baselineFormat, "baseline-format", "text", "Format for the baseline diff sidecar: text|markdown|sarif")
 	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Attach structured remediation hints (kubectl patch, Kyverno / Gatekeeper policy, RBAC diff) to every finding. Adds to JSON/SARIF output and the 'Structured remediation' section in HTML. Off by default.")
+	cmd.Flags().StringVar(&eksAccessEntriesFile, "eks-access-entries", "", "Path to an EKS access-entries export produced by scripts/eks-access-entries.sh. Enables the KUBE-CLOUD-ACCESSENTRY-* rules; without it an EKS scan reports KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001 because access entries live in the EKS API, not the cluster.")
 	cmd.Flags().StringVar(&cloudProvider, "cloud-provider", "auto", "Cloud provider hint for cloud-aware detectors: auto|eks|gke|aks|none. 'auto' keeps the collector / manifest-loader auto-detection; the concrete names override it; 'none' forces detectors off.")
 
 	return cmd
