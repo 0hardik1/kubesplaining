@@ -1,0 +1,37 @@
+{
+  "name": "eks-access-entries",
+  "description": "EKS cluster in API authentication mode (no aws-auth ConfigMap) with an access-entries export loaded. Three entries must flag: AmazonEKSClusterAdminPolicy at cluster scope, AmazonEKSAdminPolicy at cluster scope (reads every namespace's Secrets), and a kubernetesGroups entry bound to cluster-admin through a ClusterRoleBinding. Three must stay silent: a namespace-scoped edit policy, a cluster-scoped view policy, and the EC2 node entry. The coverage-gap rule must not fire because the export is present.",
+  "snapshot": "testdata/snapshots/eks-access-entries.json",
+  "options": {
+    "max_privesc_depth": 5,
+    "admission_mode": "suppress"
+  },
+  "expected": [
+    "KUBE-ADMISSION-NO-POLICY-ENGINE-001",
+    "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001:arn_aws_iam__123456789012_role_BreakGlassAdmin",
+    "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001:arn_aws_iam__123456789012_role_DataPlatformOps",
+    "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001:arn_aws_iam__123456789012_role_Developers",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:default",
+    "KUBE-PRIVESC-007:Group/platform-admins::*",
+    "KUBE-PRIVESC-011:Group/platform-admins::*",
+    "KUBE-PRIVESC-016:Group/platform-admins::*",
+    "KUBE-PRIVESC-017:Group/platform-admins::*",
+    "KUBE-PRIVESC-019:Group/platform-admins::*",
+    "KUBE-PRIVESC-024:Group/platform-admins::*",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:Group/platform-admins:cluster_admin_equivalent",
+    "KUBE-PRIVESC-PATH-GENERIC:Group/platform-admins:token_mint",
+    "KUBE-PRIVESC-PATH-NODE-ESCAPE:Group/platform-admins:node_escape",
+    "KUBE-RBAC-OVERBROAD-001:Group/platform-admins::"
+  ],
+  "deny": [
+    "KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001",
+    "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001:arn_aws_iam__123456789012_role_TeamAEdit",
+    "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001:arn_aws_iam__123456789012_role_ReadOnly",
+    "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001:arn_aws_iam__123456789012_role_eks-nodegroup-role",
+    "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001:arn_aws_iam__123456789012_role_TeamAEdit",
+    "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001:arn_aws_iam__123456789012_role_ReadOnly",
+    "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001:arn_aws_iam__123456789012_role_eks-nodegroup-role",
+    "KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001",
+    "KUBE-CLOUD-AWSAUTH-OVERBROAD-001"
+  ]
+}

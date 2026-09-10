@@ -203,3 +203,47 @@ func TestForCloudIMDSPivotWithoutSAEvidence(t *testing.T) {
 		t.Errorf("Command should still include IMDS deny, got: %s", hint.Patch.Command)
 	}
 }
+
+func TestForCloudAccessEntryClusterAdmin(t *testing.T) {
+	t.Parallel()
+	const arn = "arn:aws:iam::123456789012:role/PlatformAdmin"
+	f := makeCloudFinding(t, "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001",
+		&models.SubjectRef{Kind: "User", Name: arn},
+		&models.ResourceRef{Kind: "AccessEntry", Name: arn},
+		map[string]any{"arn": arn, "clusterName": "prod", "policyArn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"})
+	hint := ForCloud(f.RuleID, f)
+	if hint == nil || hint.Patch == nil {
+		t.Fatalf("hint = %+v, want a command-only patch", hint)
+	}
+	if hint.Patch.Target.Kind != "AccessEntry" || hint.Patch.Target.Name != arn {
+		t.Errorf("target = %+v", hint.Patch.Target)
+	}
+	for _, want := range []string{"aws eks disassociate-access-policy --cluster-name prod --principal-arn " + arn, "AmazonEKSClusterAdminPolicy", "delete-access-entry"} {
+		if !strings.Contains(hint.Patch.Command, want) {
+			t.Errorf("command lacks %q:\n%s", want, hint.Patch.Command)
+		}
+	}
+}
+
+func TestForCloudAccessEntryOverbroadBranches(t *testing.T) {
+	t.Parallel()
+	const arn = "arn:aws:iam::123456789012:role/Devs"
+	policy := makeCloudFinding(t, "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001",
+		&models.SubjectRef{Kind: "User", Name: arn}, &models.ResourceRef{Kind: "AccessEntry", Name: arn},
+		map[string]any{"arn": arn, "reason": "cluster-scoped-secrets-policy", "policyArn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy"})
+	hint := ForCloud(policy.RuleID, policy)
+	if hint == nil || !strings.Contains(hint.Patch.Command, "disassociate-access-policy") || !strings.Contains(hint.Patch.Command, "type=namespace") {
+		t.Fatalf("policy branch hint = %+v", hint)
+	}
+	if strings.Contains(hint.Patch.Command, "<cluster>") == false {
+		t.Errorf("missing clusterName evidence should fall back to a <cluster> placeholder:\n%s", hint.Patch.Command)
+	}
+
+	group := makeCloudFinding(t, "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001",
+		&models.SubjectRef{Kind: "User", Name: arn}, &models.ResourceRef{Kind: "AccessEntry", Name: arn},
+		map[string]any{"arn": arn, "reason": "group-bound-to-admin-clusterrole", "viaBinding": "platform-admins-crb", "clusterName": "prod"})
+	hint = ForCloud(group.RuleID, group)
+	if hint == nil || !strings.Contains(hint.Patch.Command, "update-access-entry --cluster-name prod") || !strings.Contains(hint.Patch.Command, `"platform-admins-crb"`) {
+		t.Fatalf("group branch hint = %+v", hint)
+	}
+}

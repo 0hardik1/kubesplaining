@@ -17,6 +17,9 @@ import (
 type Snapshot struct {
 	Metadata  SnapshotMetadata  `json:"metadata"`
 	Resources SnapshotResources `json:"resources"`
+	// Cloud holds provider control-plane state supplied out of band (for
+	// example an EKS access-entries export); the collector leaves it empty.
+	Cloud CloudSnapshot `json:"cloud,omitzero"`
 }
 
 // SnapshotMetadata records provenance and collection-time context so downstream consumers can reason about what is/isn't present.

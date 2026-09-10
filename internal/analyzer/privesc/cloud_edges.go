@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer/cloud"
+	cloudeks "github.com/0hardik1/kubesplaining/internal/analyzer/cloud/eks"
 	"github.com/0hardik1/kubesplaining/internal/analyzer/network"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/permissions"
@@ -61,6 +62,9 @@ func addCloudEdges(graph *models.EscalationGraph, snapshot models.Snapshot) {
 		}
 		if len(identity.MappedGroups) > 0 {
 			addAWSAuthEdges(graph, snapshot, identity)
+		}
+		if identity.AccessEntry != nil {
+			addAccessEntryEdges(graph, snapshot, identity)
 		}
 	}
 
@@ -185,6 +189,67 @@ func addAWSAuthEdges(graph *models.EscalationGraph, snapshot models.Snapshot, id
 			Action:      "aws_auth_admin",
 			Permission:  fmt.Sprintf("mapped to group %s bound to ClusterRole %s", group, roleName),
 			Description: fmt.Sprintf("external IAM principal %s is mapped to group %s, which is bound to ClusterRole %s (admin-equivalent) via a ClusterRoleBinding", identity.ARN, group, roleName),
+		})
+	}
+}
+
+// addAccessEntryEdges wires external IAM principal -> cluster sinks for an
+// EKS access entry. AmazonEKSClusterAdminPolicy at cluster scope is the
+// cluster-admin ClusterRole by definition; AmazonEKSAdminPolicy and
+// AmazonEKSAdminViewPolicy at cluster scope read Secrets in every namespace,
+// so they reach kube_system_secrets; a kubernetesGroups entry is followed
+// through ClusterRoleBindings exactly like an aws-auth group.
+func addAccessEntryEdges(graph *models.EscalationGraph, snapshot models.Snapshot, identity models.CloudIdentity) {
+	entry := identity.AccessEntry
+	if identity.ARN == "" || entry == nil {
+		return
+	}
+	externalID := ensureExternalAWSIAMNode(graph, identity.ARN, false)
+	for _, policy := range entry.AccessPolicies {
+		if cloudeks.ClusterAdminPolicy(policy) {
+			addEdge(graph, externalID, sinkClusterAdmin, &models.EscalationEdge{
+				Technique:   "KUBE-CLOUD-ACCESSENTRY",
+				Action:      "access_entry_admin",
+				Permission:  "AmazonEKSClusterAdminPolicy at cluster scope",
+				Description: "external IAM principal " + identity.ARN + " holds AmazonEKSClusterAdminPolicy at cluster scope through an EKS access entry",
+			})
+			continue
+		}
+		if policy.ScopeType != "cluster" {
+			continue
+		}
+		switch cloudeks.AccessPolicyName(policy.PolicyARN) {
+		case "AmazonEKSAdminPolicy", "AmazonEKSAdminViewPolicy":
+			addEdge(graph, externalID, sinkKubeSystemSecrets, &models.EscalationEdge{
+				Technique:   "KUBE-CLOUD-ACCESSENTRY",
+				Action:      "access_entry_secrets_read",
+				Permission:  cloudeks.AccessPolicyName(policy.PolicyARN) + " at cluster scope",
+				Description: "external IAM principal " + identity.ARN + " can read Secrets in every namespace through " + cloudeks.AccessPolicyName(policy.PolicyARN) + " on an EKS access entry",
+			})
+		}
+	}
+	for _, group := range entry.KubernetesGroups {
+		if group == "" {
+			continue
+		}
+		if group == "system:masters" {
+			addEdge(graph, externalID, sinkSystemMasters, &models.EscalationEdge{
+				Technique:   "KUBE-CLOUD-ACCESSENTRY",
+				Action:      "access_entry_admin",
+				Permission:  "system:masters via access entry",
+				Description: "external IAM principal " + identity.ARN + " is mapped to system:masters through an EKS access entry",
+			})
+			continue
+		}
+		roleName, ok := groupBoundToAdminEquivalentRole(snapshot, group)
+		if !ok {
+			continue
+		}
+		addEdge(graph, externalID, sinkClusterAdmin, &models.EscalationEdge{
+			Technique:   "KUBE-CLOUD-ACCESSENTRY",
+			Action:      "access_entry_admin",
+			Permission:  fmt.Sprintf("access entry group %s bound to ClusterRole %s", group, roleName),
+			Description: fmt.Sprintf("external IAM principal %s is mapped to group %s through an EKS access entry, and that group is bound to ClusterRole %s (admin-equivalent) via a ClusterRoleBinding", identity.ARN, group, roleName),
 		})
 	}
 }

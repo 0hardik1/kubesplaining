@@ -169,3 +169,50 @@ func TestCloudIdentitiesForSnapshotMalformedAWSAuthSkipped(t *testing.T) {
 		t.Errorf("expected only the mapUsers entry to survive, got %+v", got[0])
 	}
 }
+
+func TestCloudIdentitiesForSnapshotAccessEntries(t *testing.T) {
+	t.Parallel()
+	snap := snapshotWithAWSAuth(awsAuthMapRolesYAML, awsAuthMapUsersYAML)
+	snap.Cloud.EKS = &models.EKSCloudState{
+		AuthenticationMode: models.EKSAuthModeAPIAndConfigMap,
+		AccessEntries: []models.EKSAccessEntry{
+			{PrincipalARN: "arn:aws:iam::123456789012:user/break-glass", KubernetesGroups: []string{"ops"}},
+			{PrincipalARN: "arn:aws:iam::123456789012:role/PlatformAdmin", AccessPolicies: []models.EKSAccessPolicyAssociation{{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy", ScopeType: "cluster"}}},
+			{PrincipalARN: "not-an-arn"},
+		},
+	}
+	got := CloudIdentitiesForSnapshot(snap)
+	byARN := map[string]models.CloudIdentity{}
+	for _, id := range got {
+		byARN[id.ARN] = id
+	}
+	// break-glass is in both aws-auth (mapUsers) and an access entry: one
+	// identity, both axes populated, aws-auth groups kept separate.
+	bg, ok := byARN["arn:aws:iam::123456789012:user/break-glass"]
+	if !ok || bg.AccessEntry == nil || bg.Kind != models.CloudIdentityKindAWSIAMUser {
+		t.Fatalf("break-glass identity = %+v", bg)
+	}
+	if !reflect.DeepEqual(bg.MappedGroups, []string{"system:masters"}) || !reflect.DeepEqual(bg.AccessEntry.KubernetesGroups, []string{"ops"}) {
+		t.Errorf("groups not kept per source: mapped=%v entry=%v", bg.MappedGroups, bg.AccessEntry.KubernetesGroups)
+	}
+	pa, ok := byARN["arn:aws:iam::123456789012:role/PlatformAdmin"]
+	if !ok || pa.DetectedFrom != "eks-access-entry" || pa.Kind != models.CloudIdentityKindAWSIAMRole || pa.RoleName != "PlatformAdmin" {
+		t.Fatalf("PlatformAdmin identity = %+v", pa)
+	}
+	if _, ok := byARN["not-an-arn"]; ok {
+		t.Error("unparseable principal ARN must be skipped")
+	}
+
+	// API mode: the aws-auth ConfigMap is ignored, so its identities vanish
+	// while the access-entry ones stay.
+	snap.Cloud.EKS.AuthenticationMode = models.EKSAuthModeAPI
+	got = CloudIdentitiesForSnapshot(snap)
+	for _, id := range got {
+		if id.ARN == "arn:aws:iam::123456789012:role/eksNodeRole" {
+			t.Errorf("aws-auth-only identity survived API mode: %+v", id)
+		}
+		if id.ARN == "arn:aws:iam::123456789012:user/break-glass" && len(id.MappedGroups) != 0 {
+			t.Errorf("aws-auth groups survived API mode: %+v", id)
+		}
+	}
+}

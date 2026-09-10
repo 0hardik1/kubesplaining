@@ -419,3 +419,52 @@ func TestAddCloudEdgesEmptySnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestAddCloudEdgesAccessEntries(t *testing.T) {
+	t.Parallel()
+	const (
+		adminARN   = "arn:aws:iam::123456789012:role/PlatformAdmin"
+		secretsARN = "arn:aws:iam::123456789012:role/NsAdmin"
+		groupARN   = "arn:aws:iam::123456789012:role/Devs"
+		viewARN    = "arn:aws:iam::123456789012:role/Viewer"
+	)
+	snapshot := models.Snapshot{
+		Metadata: models.SnapshotMetadata{CloudProvider: "eks"},
+		Cloud: models.CloudSnapshot{EKS: &models.EKSCloudState{
+			AuthenticationMode: models.EKSAuthModeAPI,
+			AccessEntries: []models.EKSAccessEntry{
+				{PrincipalARN: adminARN, AccessPolicies: []models.EKSAccessPolicyAssociation{{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy", ScopeType: "cluster"}}},
+				{PrincipalARN: secretsARN, AccessPolicies: []models.EKSAccessPolicyAssociation{{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy", ScopeType: "cluster"}}},
+				{PrincipalARN: groupARN, KubernetesGroups: []string{"platform-admins"}},
+				{PrincipalARN: viewARN, AccessPolicies: []models.EKSAccessPolicyAssociation{{PolicyARN: "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy", ScopeType: "namespace", Namespaces: []string{"a"}}}},
+			},
+		}},
+		Resources: models.SnapshotResources{
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform-admins-crb"},
+				RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+				Subjects:   []rbacv1.Subject{{Kind: "Group", Name: "platform-admins"}},
+			}},
+		},
+	}
+	graph := BuildGraph(snapshot)
+
+	if e := findEdge(graph, externalAWSIAMNodeID(adminARN), sinkClusterAdmin, "access_entry_admin"); e == nil {
+		t.Errorf("expected access_entry_admin edge to cluster_admin for %s", adminARN)
+	} else if e.Technique != "KUBE-CLOUD-ACCESSENTRY" || e.Difficulty != difficultyModerate {
+		t.Errorf("edge = %+v", e)
+	}
+	if findEdge(graph, externalAWSIAMNodeID(secretsARN), sinkKubeSystemSecrets, "access_entry_secrets_read") == nil {
+		t.Errorf("expected access_entry_secrets_read edge to kube_system_secrets for %s", secretsARN)
+	}
+	if findEdge(graph, externalAWSIAMNodeID(groupARN), sinkClusterAdmin, "access_entry_admin") == nil {
+		t.Errorf("expected access_entry_admin edge via admin-bound group for %s", groupARN)
+	}
+	if hasNode(graph, externalAWSIAMNodeID(viewARN)) {
+		for _, e := range graph.Edges {
+			if e.From == externalAWSIAMNodeID(viewARN) {
+				t.Errorf("namespace-scoped admin policy must add no edge: %+v", e)
+			}
+		}
+	}
+}
