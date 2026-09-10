@@ -6,9 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-10
+
+This release closes a detection gap that opened when Kubernetes v1.36 promoted `MutatingAdmissionPolicy` to GA: the in-process CEL/JSONPatch mutator has now shipped on two upstream minors (v1.36 and v1.37) and on EKS, and until now a subject able to write both halves of one was invisible to every rule in the tool. Alongside the new rule, a correctness pass over the privesc graph removes two edge families that claimed routes the API server refuses, and closes a silent false negative for aggregated ClusterRoles in manifest-sourced snapshots.
+
 ### Added
 
 - **`KUBE-PRIVESC-019`: mutating admission policy injection.** Kubesplaining was blind to `MutatingAdmissionPolicy`, the webhookless CEL/JSONPatch mutator that went GA (`admissionregistration.k8s.io/v1`) in Kubernetes v1.36 and is available on EKS. Unlike a mutating webhook it carries its mutation in etcd and runs in-process, so a subject that can write both `mutatingadmissionpolicies` and `mutatingadmissionpolicybindings` can inject `privileged: true`, a `hostPath`, or a sidecar into every future pod at admission time. The collector now lists both resources (they degrade to a warning on clusters that do not serve them, exactly as `ValidatingAdmissionPolicy` does), the snapshot carries them, the rbac analyzer emits a CRITICAL finding when a subject holds write access to both halves, and the privesc graph draws a `mutating_policy_inject` edge to `node_escape`. The edge is gated on at least one namespace Pod Security Admission does not restrict, because mutating admission runs before validating admission: the injected privileged pod still faces PSA, so it lands in an unlabeled or `privileged`-labelled namespace (which every cluster has). Both halves are required, mirroring why `KUBE-PRIVESC-010` needs the `bind` verb rather than a binding write alone.
+
+### Fixed
+
+- **Two privesc edge families claimed routes the API server refuses.** `modify_role_binding` and `bind_or_escalate` each fired from a single verb. Kubernetes runs an escalation-prevention check on every (Cluster)RoleBinding create and update: the writer must already hold every permission the referenced role grants, or hold `bind` on that role, and `escalate` is the same carve-out for role content. Each verb is inert alone. Both edges are now conjunctions built in a per-subject pass, since nothing makes a subject collect both halves through one binding. The flat `KUBE-PRIVESC-009` / `-010` findings still fire on the bare grant; only the claimed *path* is gone. The `namespace_admin` sink needs cluster-scoped `bind` on `clusterroles` for the same reason.
+- **`impersonate` on users no longer reaches `cluster_admin` unconditionally.** No username is privileged by construction, so the edge is now one `impersonate_user` hop per User subject a binding actually names. `impersonate` on groups stays unconditional (`impersonate_system_masters`), since `system:masters` is impersonable whether or not any binding mentions it. On a stock kubeadm / kind cluster the admin identity rides on the group `kubeadm:cluster-admins` and no non-system User is bound, so the grant escalates nothing there.
+- **Aggregated ClusterRoles were empty in manifest-sourced snapshots.** `permissions.Aggregate` read `clusterRole.rules` only. kube-controller-manager fills `.rules` for an aggregating ClusterRole on a live cluster, so live snapshots were fine, but a rendered chart or `scan-resource` input carries an empty `.rules` and the role registered as granting nothing: a silent false negative for every rule that reads effective permissions. `Aggregate` now expands `aggregationRule` when `.rules` is empty, trusts `.rules` when the controller has already reconciled it, and terminates on a ClusterRole whose own labels satisfy its own selector. `EffectiveRule` also carries `nonResourceURLs` instead of dropping them.
+
+### Changed
+
+- **Krew index updates are automated.** The release workflow now runs `krew-release-bot` after GoReleaser publishes, rendering `.krew.yaml` against the published assets and opening the version-bump PR on `kubernetes-sigs/krew-index`. `kubectl krew install kubesplaining` is documented in the README.
+- **Pull requests are gated on `make e2e`.** The kind-based end-to-end run (recall lists, ruleset goldens, deny guards, chain-shape assertions, the alternate-path invariant, and the remediation-patch rescan) now runs on every PR rather than only on merges to `main`.
 
 
 ## [1.2.0] - 2026-07-31
@@ -199,7 +214,8 @@ The differentiator is **graph-based privilege-escalation path detection**: BFS f
 - Forbidden/Unauthorized list errors are downgraded to `CollectionWarnings` rather than aborting — locked-down clusters still produce a useful partial-snapshot report.
 - Vulnerability disclosure: GitHub Private Vulnerability Reporting only. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/0hardik1/kubesplaining/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/0hardik1/kubesplaining/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.1.0
 [1.0.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.0.0
