@@ -1,0 +1,3 @@
+# Workloads from 20-privesc-footholds.yaml the e2e script must wait for before scanning.
+deploy/foothold-priv-app:foothold-fixtures
+deploy/foothold-quiet-app:foothold-fixtures

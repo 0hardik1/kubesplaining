@@ -1,0 +1,15 @@
+# Chain-shape assertions for 20-privesc-footholds.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# These are the routes footholds.deny must not over-suppress.
+#
+# Exec lands inside the privileged pod, so the pod's host escape stays reachable.
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/foothold-ops/foothold-execer:node_escape 2 pod_exec,pod_host_escape
+#
+# A minted token is a real API credential whatever the automount setting says, so
+# foothold-minter still holds foothold-quiet's kube-system secrets read.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-fixtures/foothold-minter:kube_system_secrets 2 token_request,read_secrets
+#
+# The resourceNames-scoped exec still reaches the pod it does name: foothold-target
+# runs as foothold-reader, which reads kube-system secrets.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-ops/foothold-named-execer:kube_system_secrets 2 pod_exec,read_secrets

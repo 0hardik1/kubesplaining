@@ -1,0 +1,21 @@
+# Negative guards for 20-privesc-footholds.yaml, checked against the standard-preset
+# full scan (.tmp/e2e-report-full/findings.json). A line matches when a finding's id
+# equals it or starts with "<line>:".
+#
+# foothold-minter can mint a token for foothold-priv, whose pod is privileged. A
+# minted token puts nobody inside that pod, so none of these may appear. The last
+# two are the kind control-plane continuation of the same false node escape.
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/foothold-fixtures/foothold-minter
+KUBE-PRIVESC-PATH-SYSTEM-MASTERS:ServiceAccount/foothold-fixtures/foothold-minter
+KUBE-PRIVESC-PATH-GENERIC:ServiceAccount/foothold-fixtures/foothold-minter
+#
+# foothold-execer can exec into foothold-quiet-app, but foothold-quiet opts out of
+# token automount, so the shell carries no token and foothold-quiet's kube-system
+# secrets read is not theirs.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-ops/foothold-execer
+#
+# foothold-named-execer's `create pods/exec` names only foothold-target, so it must not
+# reach cluster-admin through foothold-decoy, a pod it has no name for. cluster-admin is
+# the check because IMDS (which the EKS-labeled e2e cluster gives every pod) cannot
+# reach it, unlike node escape.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/foothold-ops/foothold-named-execer

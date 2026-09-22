@@ -1521,3 +1521,61 @@ func TestImpersonateGroupsStaysUnconditional(t *testing.T) {
 		t.Fatal("impersonate groups must still reach cluster-admin with no further precondition")
 	}
 }
+
+// TestExecResourceNamesScopesToNamedPods pins that a `create pods/exec` grant carrying
+// resourceNames reaches only the named pods' ServiceAccounts. Before this, exec edges
+// were drawn to every ServiceAccount any pod ran as, so a break-glass grant scoped to
+// one debug pod fabricated a path into every workload identity. An unrestricted grant
+// still reaches both.
+func TestExecResourceNamesScopesToNamedPods(t *testing.T) {
+	t.Parallel()
+
+	build := func(resourceNames []string) *models.EscalationGraph {
+		snapshot := models.Snapshot{
+			Resources: models.SnapshotResources{
+				Namespaces: []corev1.Namespace{{ObjectMeta: objectMeta("apps", "")}},
+				ServiceAccounts: []corev1.ServiceAccount{
+					{ObjectMeta: objectMeta("sa-named", "apps")},
+					{ObjectMeta: objectMeta("sa-other", "apps")},
+					{ObjectMeta: objectMeta("execer", "apps")},
+				},
+				Pods: []corev1.Pod{
+					{ObjectMeta: objectMeta("named-pod", "apps"), Spec: corev1.PodSpec{ServiceAccountName: "sa-named"}},
+					{ObjectMeta: objectMeta("other-pod", "apps"), Spec: corev1.PodSpec{ServiceAccountName: "sa-other"}},
+				},
+				Roles: []rbacv1.Role{{ObjectMeta: objectMeta("exec", "apps"), Rules: []rbacv1.PolicyRule{
+					{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}, ResourceNames: resourceNames},
+				}}},
+				RoleBindings: []rbacv1.RoleBinding{{
+					ObjectMeta: objectMeta("exec", "apps"),
+					RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "exec"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "execer", Namespace: "apps"}},
+				}},
+			},
+		}
+		return BuildGraph(snapshot)
+	}
+	const from = "subject:ServiceAccount/apps/execer"
+	execTo := func(g *models.EscalationGraph) map[string]bool {
+		to := map[string]bool{}
+		for _, e := range g.Edges {
+			if e.From == from && e.Action == "pod_exec" {
+				to[e.To] = true
+			}
+		}
+		return to
+	}
+
+	scoped := execTo(build([]string{"named-pod"}))
+	if !scoped["subject:ServiceAccount/apps/sa-named"] {
+		t.Error("name-scoped exec should reach the named pod's ServiceAccount")
+	}
+	if scoped["subject:ServiceAccount/apps/sa-other"] {
+		t.Errorf("name-scoped exec must not reach a pod it cannot exec into; edges to %v", scoped)
+	}
+
+	unrestricted := execTo(build(nil))
+	if !unrestricted["subject:ServiceAccount/apps/sa-named"] || !unrestricted["subject:ServiceAccount/apps/sa-other"] {
+		t.Errorf("unrestricted exec should reach both ServiceAccounts, got %v", unrestricted)
+	}
+}

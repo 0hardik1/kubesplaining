@@ -154,6 +154,15 @@ func addIRSAEdge(graph *models.EscalationGraph, identity models.CloudIdentity) {
 		Action:      "irsa_assume_role",
 		Permission:  identity.ARN,
 		Description: "ServiceAccount can assume " + identity.ARN + " via IRSA",
+		// STS AssumeRoleWithWebIdentity needs a signed OIDC token for the SA, not the
+		// ability to act as it against the Kubernetes API. So bare FootholdIdentity
+		// (impersonation, or steering a controller that runs as the SA) does not reach
+		// the role: neither mints a token. What does: a token in hand (FootholdToken,
+		// e.g. the TokenRequest API can mint one with the sts.amazonaws.com audience),
+		// a shell in one of the SA's pods (the IRSA webhook projects the web-identity
+		// token there whatever automountServiceAccountToken says), or a new pod created
+		// as the SA (the webhook injects the same volume).
+		Needs: models.FootholdToken | models.FootholdPod | models.FootholdNewPod,
 	})
 }
 
@@ -339,6 +348,10 @@ func addIMDSPivotEdges(graph *models.EscalationGraph, snapshot models.Snapshot) 
 			Action:      "imds_node_role_pivot",
 			Permission:  "IMDS reachable, IRSA unbound",
 			Description: fmt.Sprintf("pod %s/%s falls back to node IAM role via IMDS", pod.Namespace, pod.Name),
+			// IMDS answers a network position, not a credential: the attacker needs
+			// code in this pod, or in a new pod they created as the SA with the same
+			// labels. A minted token or an impersonation reaches nothing.
+			Needs: models.FootholdPod | models.FootholdNewPod,
 		})
 	}
 }

@@ -2,6 +2,7 @@ package privesc
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -37,6 +38,74 @@ func TestFindPathsContinuesThroughTraversableSink(t *testing.T) {
 	if deepest != 2 {
 		t.Fatalf("want a 2-hop chain through the traversable sink, deepest was %d", deepest)
 	}
+}
+
+// TestFootholdGatesEdges checks the two halves of the foothold rule at graph level.
+// An edge that needs a shell in the pod is not walkable from a token, and a shell
+// in a pod that mounts no token does not walk the ServiceAccount's RBAC edges.
+func TestFootholdGatesEdges(t *testing.T) {
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	minter := models.SubjectRef{Kind: "ServiceAccount", Name: "minter", Namespace: "app"}
+	sheller := models.SubjectRef{Kind: "ServiceAccount", Name: "sheller", Namespace: "app"}
+	victim := models.SubjectRef{Kind: "ServiceAccount", Name: "victim", Namespace: "app"}
+	for _, ref := range []models.SubjectRef{minter, sheller, victim} {
+		ensureSubjectNode(graph, ref)
+	}
+	graph.Nodes[sinkNodeEscape] = &models.EscalationNode{ID: sinkNodeEscape, IsSink: true, Target: models.TargetNodeEscape}
+	graph.Nodes[sinkClusterAdmin] = &models.EscalationNode{ID: sinkClusterAdmin, IsSink: true, Target: models.TargetClusterAdmin}
+	addEdge(graph, nodeID(minter), nodeID(victim), &models.EscalationEdge{Action: "token_request"})
+	addEdge(graph, nodeID(sheller), nodeID(victim), &models.EscalationEdge{Action: "pod_exec", Grants: models.FootholdPod})
+	addEdge(graph, nodeID(victim), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape", Needs: models.FootholdPod})
+	addEdge(graph, nodeID(victim), sinkClusterAdmin, &models.EscalationEdge{Action: "bound_to_cluster_admin"})
+
+	reached := map[string][]string{}
+	for _, p := range FindPaths(graph, 5) {
+		reached[p.Source.Name] = append(reached[p.Source.Name], string(p.Target))
+	}
+	want := map[string][]string{
+		"minter":  {string(models.TargetClusterAdmin)},
+		"sheller": {string(models.TargetNodeEscape)},
+		"victim":  {string(models.TargetClusterAdmin), string(models.TargetNodeEscape)},
+	}
+	for name, targets := range want {
+		if strings.Join(reached[name], ",") != strings.Join(targets, ",") {
+			t.Errorf("%s reaches %v, want %v", name, reached[name], targets)
+		}
+	}
+}
+
+// TestLaterFootholdArrivalIsWalked guards the visited rule. The source reaches
+// victim first by token_request, one hop away, and later by pod_exec through mid,
+// two hops away. Pruning on the node alone would drop the second arrival as longer,
+// and with it the only route that may walk victim's host escape.
+func TestLaterFootholdArrivalIsWalked(t *testing.T) {
+	graph := &models.EscalationGraph{Nodes: map[string]*models.EscalationNode{}}
+	src := models.SubjectRef{Kind: "ServiceAccount", Name: "src", Namespace: "app"}
+	mid := models.SubjectRef{Kind: "ServiceAccount", Name: "mid", Namespace: "app"}
+	victim := models.SubjectRef{Kind: "ServiceAccount", Name: "victim", Namespace: "app"}
+	for _, ref := range []models.SubjectRef{src, mid, victim} {
+		ensureSubjectNode(graph, ref)
+	}
+	graph.Nodes[sinkNodeEscape] = &models.EscalationNode{ID: sinkNodeEscape, IsSink: true, Target: models.TargetNodeEscape}
+	addEdge(graph, nodeID(src), nodeID(victim), &models.EscalationEdge{Action: "token_request"})
+	addEdge(graph, nodeID(src), nodeID(mid), &models.EscalationEdge{Action: "impersonate_serviceaccount"})
+	addEdge(graph, nodeID(mid), nodeID(victim), &models.EscalationEdge{Action: "pod_exec", Grants: models.FootholdPod | models.FootholdIdentity})
+	addEdge(graph, nodeID(victim), sinkNodeEscape, &models.EscalationEdge{Action: "pod_host_escape", Needs: models.FootholdPod})
+
+	for _, p := range FindPaths(graph, 5) {
+		if p.Source.Name != "src" || p.Target != models.TargetNodeEscape {
+			continue
+		}
+		var actions []string
+		for _, hop := range p.Hops {
+			actions = append(actions, hop.Action)
+		}
+		if got, want := strings.Join(actions, ","), "impersonate_serviceaccount,pod_exec,pod_host_escape"; got != want {
+			t.Fatalf("src node-escape path = %s, want %s", got, want)
+		}
+		return
+	}
+	t.Fatal("src has no node-escape path; the pod_exec arrival at victim was pruned")
 }
 
 // bindingEdge is a test helper: an edge carrying binding provenance.

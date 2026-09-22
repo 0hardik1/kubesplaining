@@ -128,3 +128,94 @@ spec:
         - name: app
           image: public.ecr.aws/aws-cli/aws-cli:latest
           command: ["sleep", "3600"]
+---
+# Scenario (5): the identity/token split at the IRSA edge. Both subjects below can
+# take over an IRSA-annotated ServiceAccount whose role is mapped onward to
+# system:masters by scenario (1). Only one ends up holding a credential STS accepts.
+#
+# eks-impersonator lives in its own namespace, cloud-eks-imp, alongside a single IRSA
+# SA (imp-irsa) and nothing that can mint a token. It can impersonate any SA in that
+# namespace, but impersonation authorizes API calls as the SA and mints no token, so
+# it must NOT reach the AWS IAM role. It is kept away from cloud-eks-test on purpose:
+# impersonating a token-minter there would be a real route (impersonation confers the
+# minter's RBAC), which is not the case under test. Guard: cloud-eks.deny.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloud-eks-imp
+---
+# An admin-flavored IRSA role of its own (the cloud-identity loader keys by ARN, so
+# it must differ from scenario (2)'s to get its own edge). No pod runs as it: the IRSA
+# edge is built from the annotation, so only FootholdToken / FootholdPod /
+# FootholdNewPod can walk it, none of which bare impersonation confers.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: imp-irsa
+  namespace: cloud-eks-imp
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ImpersonatorAdminRole
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eks-impersonator
+  namespace: cloud-eks-imp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eks-impersonator
+  namespace: cloud-eks-imp
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eks-impersonator
+  namespace: cloud-eks-imp
+subjects:
+  - kind: ServiceAccount
+    name: eks-impersonator
+    namespace: cloud-eks-imp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eks-impersonator
+---
+# eks-token-minter can mint a token for any ServiceAccount in cloud-eks-test,
+# including eks-admin-irsa. A minted token is a credential in hand and can carry the
+# sts.amazonaws.com audience, so it DOES reach the AWS IAM role. Assertion:
+# cloud-eks.chain.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eks-token-minter
+  namespace: cloud-eks-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eks-token-minter
+  namespace: cloud-eks-test
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eks-token-minter
+  namespace: cloud-eks-test
+subjects:
+  - kind: ServiceAccount
+    name: eks-token-minter
+    namespace: cloud-eks-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eks-token-minter

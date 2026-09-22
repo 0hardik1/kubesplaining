@@ -1,0 +1,310 @@
+# Privesc foothold fixture. One ServiceAccount graph node stands for two positions:
+# holding the SA's API token, and running inside the pods that already run as it.
+# They are not interchangeable, and this shard pins both directions.
+#
+# 1. A minted token does not put anyone inside a pod. foothold-minter can mint a
+#    token for every SA in this namespace, including foothold-priv, whose pod is
+#    privileged. That reaches foothold-priv's RBAC (none) but not the pod's host
+#    escape. Before the fix it was reported as node escape, then system:masters and
+#    token-mint through the kind control-plane continuation. Guards:
+#    footholds.deny.
+# 2. A shell in a pod that mounts no API token does not hand over the SA's RBAC.
+#    foothold-quiet reads kube-system secrets, but its ServiceAccount opts out of
+#    automount, so foothold-execer's exec into foothold-quiet-app yields a shell and
+#    no token. Guard: footholds.deny. foothold-minter, by contrast, mints a real
+#    token for foothold-quiet, and that path must survive. Assertion: footholds.chain.
+# 3. Exec does land inside the privileged pod, so foothold-execer still reaches node
+#    escape through foothold-priv-app. Assertion: footholds.chain.
+# 4. A `create pods/exec` grant carrying resourceNames only reaches the named pods.
+#    foothold-named-execer can exec only foothold-target, which runs as foothold-reader
+#    (reads kube-system secrets), so it reaches those secrets. It must NOT reach
+#    cluster-admin through foothold-decoy, a pod it has no name for whose SA is bound
+#    to cluster-admin. cluster-admin is the discriminator because, unlike node escape,
+#    it is not reachable from any pod through the IMDS pivot the EKS-labeled e2e
+#    cluster gives every workload. Guard: footholds.deny. Assertion: footholds.chain.
+#
+# foothold-execer and foothold-named-execer live in foothold-ops and get their exec
+# verb in the pods' namespace through a RoleBinding. If foothold-execer lived in
+# foothold-fixtures, foothold-minter could mint its token and exec into the privileged
+# pod as it: a real three-hop route to node escape that would hide the false two-hop
+# route this shard guards.
+#
+# The namespace carries no pod-security.kubernetes.io/enforce label, so the
+# privileged pod is admitted. Neither subject holds `create pods`, so the one-hop
+# pod_create_privileged_escape edge cannot mask the chains under test.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: foothold-fixtures
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: foothold-ops
+---
+# Scenario 4's pods live here, apart from foothold-fixtures, so the cluster-admin decoy
+# does not perturb which route scenario 3's foothold-execer (unrestricted exec in
+# foothold-fixtures) reports to node escape.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: foothold-exec
+---
+# The privileged pod's identity. It holds no RBAC: its only graph edge is the pod's
+# host escape.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-priv
+  namespace: foothold-fixtures
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foothold-priv-app
+  namespace: foothold-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: foothold-priv-app
+  template:
+    metadata:
+      labels:
+        app: foothold-priv-app
+    spec:
+      serviceAccountName: foothold-priv
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+          securityContext:
+            privileged: true
+---
+# A privileged identity whose pods carry no API token. The opt-out sits on the
+# ServiceAccount, so the pod spec leaves automountServiceAccountToken unset and the
+# admission plugin applies the SA's false.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-quiet
+  namespace: foothold-fixtures
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foothold-quiet-secrets
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foothold-quiet-secrets
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: foothold-quiet
+    namespace: foothold-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foothold-quiet-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foothold-quiet-app
+  namespace: foothold-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: foothold-quiet-app
+  template:
+    metadata:
+      labels:
+        app: foothold-quiet-app
+    spec:
+      serviceAccountName: foothold-quiet
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+---
+# Holds token minting in the namespace, and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-minter
+  namespace: foothold-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foothold-minter
+  namespace: foothold-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foothold-minter
+  namespace: foothold-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: foothold-minter
+    namespace: foothold-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foothold-minter
+---
+# Holds exec in foothold-fixtures, and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-execer
+  namespace: foothold-ops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foothold-execer
+  namespace: foothold-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foothold-execer
+  namespace: foothold-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: foothold-execer
+    namespace: foothold-ops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foothold-execer
+---
+# Scenario 4: resourceNames-scoped exec. foothold-target is a bare Pod with a fixed
+# name (a Deployment's generated pod name could not be named in resourceNames), so
+# foothold-named-execer's exec grant can name it. It runs as foothold-reader, which
+# reads kube-system secrets and mounts a token by default, so exec into it yields
+# that identity.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-reader
+  namespace: foothold-exec
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foothold-reader-secrets
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foothold-reader-secrets
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: foothold-reader
+    namespace: foothold-exec
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foothold-reader-secrets
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold-target
+  namespace: foothold-exec
+spec:
+  serviceAccountName: foothold-reader
+  containers:
+    - name: app
+      image: registry.k8s.io/pause:3.10
+---
+# foothold-decoy is the pod foothold-named-execer must NOT reach: its SA is bound to
+# cluster-admin, so exec into it would confer cluster-admin, but its name is not in the
+# exec grant's resourceNames.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-decoy-sa
+  namespace: foothold-exec
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: foothold-decoy-admin
+subjects:
+  - kind: ServiceAccount
+    name: foothold-decoy-sa
+    namespace: foothold-exec
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: foothold-decoy
+  namespace: foothold-exec
+spec:
+  serviceAccountName: foothold-decoy-sa
+  containers:
+    - name: app
+      image: registry.k8s.io/pause:3.10
+---
+# Exec scoped to foothold-target only. Reaches foothold-reader's kube-system secrets
+# through it, and nothing else: not foothold-decoy's cluster-admin, which it has no
+# name for.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-named-execer
+  namespace: foothold-ops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foothold-named-execer
+  namespace: foothold-exec
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+    resourceNames: ["foothold-target"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foothold-named-execer
+  namespace: foothold-exec
+subjects:
+  - kind: ServiceAccount
+    name: foothold-named-execer
+    namespace: foothold-ops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foothold-named-execer

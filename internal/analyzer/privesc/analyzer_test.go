@@ -123,65 +123,176 @@ func TestAnalyzerFindsClusterAdminAndSecretsPaths(t *testing.T) {
 	}
 }
 
-func TestAnalyzerFindsPodEscapeChain(t *testing.T) {
-	t.Parallel()
-
-	privileged := true
-	snapshot := models.Snapshot{
+// footholdSnapshot builds the fixture the foothold tests share. Namespace "default"
+// enforces Restricted, so the one-hop pod_create_privileged_escape edge never fires
+// and a node-escape path from "deployer" must run through an existing pod. The
+// deployer SA holds rule through a RoleBinding in "default"; pods and serviceAccounts
+// populate the rest of the namespace.
+func footholdSnapshot(rule rbacv1.PolicyRule, pods []corev1.Pod, serviceAccounts []corev1.ServiceAccount) models.Snapshot {
+	return models.Snapshot{
 		Resources: models.SnapshotResources{
 			Namespaces: []corev1.Namespace{
-				// Enforce Restricted so the direct KUBE-PRIVESC-002
-				// (pod_create_privileged_escape) edge does not fire; this test
-				// exercises the multi-hop create-pod -> mount SA -> escape chain
-				// via the already-running privileged pod. The -002 1-hop edge has
-				// its own coverage in TestPrivilegedPodCreateEscapeEdge.
 				{ObjectMeta: metav1.ObjectMeta{Name: "default", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}}},
 			},
-			Pods: []corev1.Pod{
-				{
-					ObjectMeta: objectMeta("risky", "default"),
-					Spec: corev1.PodSpec{
-						ServiceAccountName: "default",
-						Containers: []corev1.Container{
-							{Name: "app", SecurityContext: &corev1.SecurityContext{Privileged: &privileged}},
-						},
-					},
-				},
+			ServiceAccounts: serviceAccounts,
+			Pods:            pods,
+			Roles: []rbacv1.Role{
+				{ObjectMeta: objectMeta("grant", "default"), Rules: []rbacv1.PolicyRule{rule}},
 			},
-			ClusterRoles: []rbacv1.ClusterRole{
+			RoleBindings: []rbacv1.RoleBinding{
 				{
-					ObjectMeta: objectMeta("pod-creator", ""),
-					Rules: []rbacv1.PolicyRule{
-						{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}},
-					},
-				},
-			},
-			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
-				{
-					ObjectMeta: objectMeta("pod-creator", ""),
-					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "pod-creator"},
-					Subjects: []rbacv1.Subject{
-						{Kind: "ServiceAccount", Name: "deployer", Namespace: "default"},
-					},
+					ObjectMeta: objectMeta("grant", "default"),
+					RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "grant"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "deployer", Namespace: "default"}},
 				},
 			},
 		},
 	}
+}
 
+// coreRule is a core-API-group rule, the group pods and serviceaccounts live in.
+func coreRule(resources []string, verbs ...string) rbacv1.PolicyRule {
+	return rbacv1.PolicyRule{APIGroups: []string{""}, Resources: resources, Verbs: verbs}
+}
+
+// deployerPath returns the hop actions of the deployer SA's finding for ruleID, and
+// whether one exists.
+func deployerPath(t *testing.T, snapshot models.Snapshot, ruleID string) ([]string, bool) {
+	t.Helper()
 	findings, err := New().Analyze(context.Background(), snapshot)
 	if err != nil {
 		t.Fatalf("Analyze() error = %v", err)
 	}
-
-	var sawNodeEscape bool
 	for _, f := range findings {
-		if f.RuleID == "KUBE-PRIVESC-PATH-NODE-ESCAPE" && f.Subject != nil && f.Subject.Name == "deployer" && len(f.EscalationPath) >= 2 {
-			sawNodeEscape = true
-			break
+		if f.RuleID != ruleID || f.Subject == nil || f.Subject.Name != "deployer" {
+			continue
 		}
+		actions := make([]string, 0, len(f.EscalationPath))
+		for _, hop := range f.EscalationPath {
+			actions = append(actions, hop.Action)
+		}
+		return actions, true
 	}
-	if !sawNodeEscape {
-		t.Fatalf("expected multi-hop node-escape path from deployer SA, findings=%v", findings)
+	return nil, false
+}
+
+// TestPodEscapeNeedsAShellInThePod pins the fix for the SA-node conflation: one
+// ServiceAccount node stands for both "holds the SA's token" and "runs inside the
+// SA's pods", and only the second reaches an existing pod's host escape. A minted
+// token, an impersonation, or a new pod created as the SA puts nobody inside the
+// privileged pod "risky", so those chains are false. Exec, attach, and an ephemeral
+// container do land inside it.
+func TestPodEscapeNeedsAShellInThePod(t *testing.T) {
+	t.Parallel()
+
+	privileged := true
+	risky := corev1.Pod{
+		ObjectMeta: objectMeta("risky", "default"),
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "default",
+			Containers: []corev1.Container{
+				{Name: "app", SecurityContext: &corev1.SecurityContext{Privileged: &privileged}},
+			},
+		},
+	}
+
+	cases := []struct {
+		name string
+		rule rbacv1.PolicyRule
+		want []string // nil: no node-escape path from deployer
+	}{
+		{name: "pod create", rule: coreRule([]string{"pods"}, "create")},
+		{name: "token request", rule: coreRule([]string{"serviceaccounts/token"}, "create")},
+		{name: "impersonate serviceaccounts", rule: coreRule([]string{"serviceaccounts"}, "impersonate")},
+		{name: "exec", rule: coreRule([]string{"pods/exec"}, "create"), want: []string{"pod_exec", "pod_host_escape"}},
+		{name: "attach", rule: coreRule([]string{"pods/attach"}, "create"), want: []string{"pod_exec", "pod_host_escape"}},
+		{name: "ephemeral container", rule: coreRule([]string{"pods/ephemeralcontainers"}, "patch"), want: []string{"ephemeral_container_inject", "pod_host_escape"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := deployerPath(t, footholdSnapshot(tc.rule, []corev1.Pod{risky}, nil), "KUBE-PRIVESC-PATH-NODE-ESCAPE")
+			if tc.want == nil {
+				if ok {
+					t.Fatalf("want no node-escape path from deployer, got %v", got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("want node-escape path %v from deployer, got none", tc.want)
+			}
+			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("node-escape path = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExecYieldsIdentityOnlyWithAMountedToken covers the automount check. Exec into
+// a pod hands over the ServiceAccount's RBAC only when the pod carries an API token,
+// which follows the admission plugin's rule: the pod's automountServiceAccountToken
+// wins, then the SA's, then true. A pod that opts out can still project a token
+// itself. A shell without a token still reaches the pod's own host escape.
+func TestExecYieldsIdentityOnlyWithAMountedToken(t *testing.T) {
+	t.Parallel()
+
+	yes, no, privileged := true, false, true
+	projected := func(audience string) corev1.Volume {
+		return corev1.Volume{Name: "token", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+			Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{Audience: audience, Path: "token"}}},
+		}}}
+	}
+
+	cases := []struct {
+		name           string
+		podAutomount   *bool
+		saAutomount    *bool
+		volumes        []corev1.Volume
+		privileged     bool
+		wantAdmin      bool
+		wantNodeEscape bool
+	}{
+		{name: "default automount", wantAdmin: true},
+		{name: "pod opts out", podAutomount: &no},
+		{name: "serviceaccount opts out", saAutomount: &no},
+		{name: "pod opts in over serviceaccount", podAutomount: &yes, saAutomount: &no, wantAdmin: true},
+		{name: "pod projects an API token", podAutomount: &no, volumes: []corev1.Volume{projected("")}, wantAdmin: true},
+		{name: "projected token with an audience", podAutomount: &no, volumes: []corev1.Volume{projected("vault")}},
+		{name: "no token, privileged pod", podAutomount: &no, privileged: true, wantNodeEscape: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			container := corev1.Container{Name: "app"}
+			if tc.privileged {
+				container.SecurityContext = &corev1.SecurityContext{Privileged: &privileged}
+			}
+			pod := corev1.Pod{
+				ObjectMeta: objectMeta("worker", "default"),
+				Spec: corev1.PodSpec{
+					ServiceAccountName:           "powerful",
+					AutomountServiceAccountToken: tc.podAutomount,
+					Volumes:                      tc.volumes,
+					Containers:                   []corev1.Container{container},
+				},
+			}
+			sa := corev1.ServiceAccount{ObjectMeta: objectMeta("powerful", "default"), AutomountServiceAccountToken: tc.saAutomount}
+			snapshot := footholdSnapshot(coreRule([]string{"pods/exec"}, "create"), []corev1.Pod{pod}, []corev1.ServiceAccount{sa})
+			snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+				ObjectMeta: objectMeta("powerful-admin", ""),
+				RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "powerful", Namespace: "default"}},
+			}}
+
+			admin, gotAdmin := deployerPath(t, snapshot, "KUBE-PRIVESC-PATH-CLUSTER-ADMIN")
+			if gotAdmin != tc.wantAdmin {
+				t.Errorf("cluster-admin path from deployer: got %v (%v), want %v", gotAdmin, admin, tc.wantAdmin)
+			}
+			escape, gotEscape := deployerPath(t, snapshot, "KUBE-PRIVESC-PATH-NODE-ESCAPE")
+			if gotEscape != tc.wantNodeEscape {
+				t.Errorf("node-escape path from deployer: got %v (%v), want %v", gotEscape, escape, tc.wantNodeEscape)
+			}
+		})
 	}
 }
 

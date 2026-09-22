@@ -1,0 +1,11 @@
+# Negative guards for the cloud-eks shard (15-cloud-eks.yaml), checked against the
+# standard-preset full scan. A line matches when a finding's id equals it or begins
+# with "<line>:".
+#
+# eks-impersonator can impersonate any ServiceAccount in cloud-eks-imp, including the
+# IRSA-annotated imp-irsa. Impersonation authorizes API calls as the SA but mints no
+# token, and STS AssumeRoleWithWebIdentity needs a token, so it must NOT reach the AWS
+# IAM role. (imp-irsa reaches the role from its own workload, and eks-token-minter
+# reaches it by minting a token: those are the correct positives, pinned in
+# cloud-eks.chain, so this deny is not suppressing a real route.)
+KUBE-PRIVESC-PATH-AWS-IAM-ROLE:ServiceAccount/cloud-eks-imp/eks-impersonator
