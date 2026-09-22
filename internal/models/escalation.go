@@ -30,6 +30,13 @@ type EscalationNode struct {
 	// exactly what a real escalation launders through. They are still never seeded
 	// as path-search sources, which would report the control plane escalating to itself.
 	IsControlPlane bool `json:"is_control_plane,omitempty"`
+	// IsImplicitGroup marks a group the authenticator adds to requests without any
+	// binding naming the members: system:authenticated, system:serviceaccounts, and
+	// system:serviceaccounts:<namespace>. Its members reach it through membership
+	// edges, so path search traverses it, but never seeds it as a source: the
+	// group's reach is reported once per member instead, on a subject an operator
+	// can recognize and that the default exclusions preset does not hide.
+	IsImplicitGroup bool `json:"is_implicit_group,omitempty"`
 	// external (non-Kubernetes) subject such as a cloud IAM role; not seeded as a BFS source this slot
 	IsExternal bool `json:"is_external,omitempty"`
 	IsSink     bool `json:"is_sink,omitempty"`

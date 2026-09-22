@@ -457,7 +457,7 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 ## FAQ
 
 **Why is `system:masters` flagged in some clusters but not others?**
-The privesc analyzer skips `system:*` subjects as *traversable intermediates* (so paths don't launder through the control plane) but it *does* report `system:*` as a sink-reach target if you can impersonate or otherwise escalate into it. If the analyzer doesn't see anyone with that capability, the rule stays silent.
+The privesc analyzer skips `system:*` subjects as *traversable intermediates* (so paths don't launder through the control plane) but it *does* report `system:*` as a sink-reach target if you can impersonate or otherwise escalate into it. If the analyzer doesn't see anyone with that capability, the rule stays silent. Three built-in groups are traversed rather than skipped: `system:authenticated`, `system:serviceaccounts`, and `system:serviceaccounts:<ns>`. Every identity of the matching type belongs to them, so a grant to one of them is reported as a path from each member.
 
 **How accurate are the privesc paths?**
 Each hop is validated against the snapshot's RBAC and pod state. The analyzer doesn't speculate. False positives come from chains that are *structurally* possible but operationally suppressed (e.g. an SA bound to a role that's never actually used). Severity is attenuated by chain length (hops ≥ 3 drop one bucket); use `--max-privesc-depth` to limit BFS aggressiveness.

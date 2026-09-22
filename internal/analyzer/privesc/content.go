@@ -158,6 +158,24 @@ func hopNarrative(hop models.EscalationHop) string {
 	case "mint_arbitrary_token":
 		return fmt.Sprintf("Acting as %s, the attacker calls `serviceaccounts/token` at cluster scope (%s) to mint a token for any ServiceAccount in any namespace. With no `resourceNames` constraint, the verb amounts to a credential-issuing oracle.", from, perm)
 
+	case "workload_create_token_theft":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker creates a workload (%s) whose pod template runs as %s. The workload controller creates the pods, and nothing checks whether the writer may use that ServiceAccount, so the attacker's container holds its token. This is the same reach as creating the pod directly.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker creates a workload (%s) whose pods run as a more privileged ServiceAccount and holds that ServiceAccount's token from inside them.", from, perm)
+
+	case "workload_hijack":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker rewrites the pod template of an existing workload (%s) so that its pods run the attacker's code as %s. The controller rolls out the change itself. The rewritten pods keep the rest of the workload's spec, including any host access it already had.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker rewrites the pod template of an existing workload (%s) so that its controller runs the attacker's code.", from, perm)
+
+	case "workload_privileged_escape":
+		return fmt.Sprintf("Acting as %s, the attacker writes a workload (%s) whose pod template is privileged or mounts the host, in a namespace where Pod Security Admission does not block it. The controller creates those pods, and from them the attacker reaches the node.", from, perm)
+
+	case "implicit_group_membership":
+		return fmt.Sprintf("%s needs no extra step here: the API server adds %s to every request it authenticates as this identity. No binding lists the members of this group, so anything bound to the group applies to %s as well.", from, to, from)
+
 	case "pod_host_escape":
 		return fmt.Sprintf("Acting as %s, the attacker schedules a pod with host-level access (`privileged: true`, `hostPath: /`, `hostPID`, or `hostNetwork`) and escapes onto the underlying node. From there they read every co-located pod's filesystem, every projected ServiceAccount token on that node, and the kubelet's client cert.", from)
 	}

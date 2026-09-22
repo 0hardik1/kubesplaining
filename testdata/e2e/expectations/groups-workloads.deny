@@ -1,0 +1,10 @@
+# Negative guards for 21-privesc-groups-workloads.yaml, checked against the
+# standard-preset full scan. A line matches when a finding's id equals it or starts
+# with "<line>:".
+#
+# gw-outsider is not in gw-groups, so system:serviceaccounts:gw-groups is not its group.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/gw-outsider/gw-outsider
+#
+# A Job's pod template is immutable, so update/patch on the existing Job gw-batch
+# cannot change what its pods run.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:User/gw-job-patcher

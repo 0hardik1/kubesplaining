@@ -1,0 +1,11 @@
+# Chain-shape assertions for 21-privesc-groups-workloads.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# gw-member inherits its namespace group's cluster-wide `list secrets`.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/gw-groups/gw-member:kube_system_secrets 2 implicit_group_membership,read_secrets
+#
+# `create deployments` reaches gw-powerful the same way `create pods` would.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:User/gw-deployer:kube_system_secrets 2 workload_create_token_theft,read_secrets
+#
+# `patch` on the one Deployment gw-web rewrites it to run as gw-powerful.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:User/gw-patcher:kube_system_secrets 2 workload_hijack,read_secrets

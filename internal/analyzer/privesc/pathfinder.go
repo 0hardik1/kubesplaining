@@ -42,6 +42,12 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		if node.IsControlPlane {
 			continue
 		}
+		// Implicit groups are reached through each member's membership edge, and
+		// the member is the finding's source. Seeding the group too would report
+		// the same reach again on a subject the default exclusions hide anyway.
+		if node.IsImplicitGroup {
+			continue
+		}
 		sources = append(sources, id)
 	}
 	sort.Strings(sources)

@@ -46,7 +46,9 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	tokenMounted := serviceAccountsWithAPIToken(snapshot)
 
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
+	admitsPrivileged := namespacesAdmittingPrivileged(snapshot)
 	impersonableUsers := boundUsers(snapshot)
+	workloads := updatableWorkloads(snapshot)
 
 	effective := permissions.Aggregate(snapshot)
 	for _, perms := range effective {
@@ -72,6 +74,10 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 		// for a subject that holds both certificates-API primitives.
 		addCSRApprovalEdge(graph, perms.Subject, perms.Rules)
 		addCSRSignEdge(graph, perms.Subject, perms.Rules)
+		// After the CSR builders, so nothing above changes position. Its edges reach
+		// the same ServiceAccounts as pod creation, and a pod edge inserted first
+		// stays the reported route when a subject holds both grants.
+		addWorkloadEdges(graph, perms.Subject, perms.Rules, subjectsByNs, workloads, privilegedNamespaces, admitsPrivileged)
 	}
 
 	// Runs after the per-subject loop so every namespace-admin sink that any
@@ -122,6 +128,8 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	addControlPlaneEscapeEdges(graph, snapshot)
 
 	addCloudEdges(graph, snapshot)
+
+	addImplicitGroupMembershipEdges(graph)
 
 	return graph
 }
@@ -1175,10 +1183,11 @@ func ensureSubjectNode(graph *models.EscalationGraph, ref models.SubjectRef) {
 		return
 	}
 	graph.Nodes[id] = &models.EscalationNode{
-		ID:             id,
-		Subject:        ref,
-		IsSystem:       isSystemSubject(ref),
-		IsControlPlane: isControlPlaneSubject(ref),
+		ID:              id,
+		Subject:         ref,
+		IsSystem:        isSystemSubject(ref),
+		IsControlPlane:  isControlPlaneSubject(ref),
+		IsImplicitGroup: isImplicitGroup(ref),
 	}
 }
 
@@ -1186,12 +1195,110 @@ func ensureSubjectNode(graph *models.EscalationGraph, ref models.SubjectRef) {
 // neither traversed nor seeded: laundering a chain through the control plane's own
 // built-in identities is a modeling artifact rather than an attack.
 //
+// The implicit groups are the exception. A grant to system:authenticated is held by
+// every identity in the cluster, so it is the opposite of a control-plane identity,
+// and treating it as one hid every such grant from path search.
+//
 // Note: external cloud-IAM nodes carry IDs prefixed "external:aws-iam:" (see
 // cloud_edges.go) and never flow through ensureSubjectNode, so isSystemSubject
 // is never asked about them. The "external:" prefix is therefore non-system by
 // construction; the pathfinder skips them by checking node.IsExternal directly.
 func isSystemSubject(ref models.SubjectRef) bool {
-	return strings.HasPrefix(ref.Name, "system:")
+	return strings.HasPrefix(ref.Name, "system:") && !isImplicitGroup(ref)
+}
+
+// Implicit groups: the authenticator adds these to a request by itself, so no
+// binding lists their members. system:unauthenticated is left out on purpose. It is
+// carried only by anonymous requests, which are a different identity from any
+// subject in the graph, so it cannot be modeled as a membership of one.
+const (
+	groupAuthenticated         = "system:authenticated"
+	groupServiceAccounts       = "system:serviceaccounts"
+	groupServiceAccountsPrefix = "system:serviceaccounts:"
+)
+
+// isImplicitGroup reports whether ref is one of the groups the authenticator adds to
+// requests on its own. See models.EscalationNode.IsImplicitGroup.
+func isImplicitGroup(ref models.SubjectRef) bool {
+	if ref.Kind != "Group" {
+		return false
+	}
+	return ref.Name == groupAuthenticated || ref.Name == groupServiceAccounts ||
+		strings.HasPrefix(ref.Name, groupServiceAccountsPrefix)
+}
+
+// implicitGroupsOf returns the implicit groups every request made as ref carries.
+// A ServiceAccount token authenticates with system:serviceaccounts and the
+// per-namespace group as well as system:authenticated. Any other authenticated
+// identity gets system:authenticated; a Group node stands for its members, who are
+// authenticated too. Impersonating an identity adds the same groups, so the
+// membership holds however the attacker came to act as it.
+func implicitGroupsOf(ref models.SubjectRef) []models.SubjectRef {
+	authenticated := models.SubjectRef{Kind: "Group", Name: groupAuthenticated}
+	switch ref.Kind {
+	case "ServiceAccount":
+		return []models.SubjectRef{
+			authenticated,
+			{Kind: "Group", Name: groupServiceAccounts},
+			{Kind: "Group", Name: groupServiceAccountsPrefix + ref.Namespace},
+		}
+	case "User", "Group":
+		return []models.SubjectRef{authenticated}
+	}
+	return nil
+}
+
+// addImplicitGroupMembershipEdges links each subject to the implicit groups it
+// belongs to, so the rules granted to those groups become reachable from every
+// member. Without it, a binding to system:serviceaccounts was invisible to path
+// search: the group node was skipped as a system subject, and no binding names
+// its members.
+//
+// The rules stay on the group node, and members reach them through one edge each,
+// rather than every member receiving a copy of the rules. A copy would multiply a
+// fan-out grant (create pods cluster-wide, say) into one edge per member per
+// target, which grows with the square of the ServiceAccount count.
+//
+// The cost of that choice: a correlation edge that needs two grants, one held by
+// the member and one by the group, is not detected, because no single node holds
+// both halves.
+//
+// A group with no outbound edge gets no membership edges: reaching it leads
+// nowhere. This runs last in BuildGraph so every builder has already added the
+// group's own edges, and so a membership edge never wins a BFS tie against an edge
+// that was there before it.
+func addImplicitGroupMembershipEdges(graph *models.EscalationGraph) {
+	hasOutbound := map[string]bool{}
+	for _, edge := range graph.Edges {
+		hasOutbound[edge.From] = true
+	}
+
+	memberIDs := make([]string, 0, len(graph.Nodes))
+	for id, node := range graph.Nodes {
+		if node.IsSink || node.IsExternal || node.IsSystem || node.IsImplicitGroup {
+			continue
+		}
+		memberIDs = append(memberIDs, id)
+	}
+	sort.Strings(memberIDs)
+
+	for _, memberID := range memberIDs {
+		member := graph.Nodes[memberID].Subject
+		for _, group := range implicitGroupsOf(member) {
+			groupID := nodeID(group)
+			if _, ok := graph.Nodes[groupID]; !ok || !hasOutbound[groupID] {
+				continue
+			}
+			addEdge(graph, memberID, groupID, &models.EscalationEdge{
+				Action:      "implicit_group_membership",
+				Permission:  "member of " + group.Name,
+				Description: fmt.Sprintf("is a member of %s, so every request it makes carries that group's grants", group.Name),
+				// Acting as the member is what carries the group. A shell in a pod that
+				// mounts no API token cannot authenticate as the ServiceAccount, so it
+				// cannot use the group's grants either: zero Needs is FootholdIdentity.
+			})
+		}
+	}
 }
 
 // isControlPlaneSubject flags a non-built-in ServiceAccount in a control-plane
@@ -1235,12 +1342,16 @@ var actionDifficulty = map[string]string{
 	"csr_approve":                difficultyEasy,
 	"operator_reconcile":         difficultyEasy,
 	"colocated_sa_token_theft":   difficultyEasy,
+	"implicit_group_membership":  difficultyEasy,
 
 	// Needs a workload to exist, be created, or land somewhere specific.
 	"pod_create_token_theft":       difficultyModerate,
 	"pod_exec":                     difficultyModerate,
 	"ephemeral_container_inject":   difficultyModerate,
 	"pod_create_privileged_escape": difficultyModerate,
+	"workload_create_token_theft":  difficultyModerate,
+	"workload_hijack":              difficultyModerate,
+	"workload_privileged_escape":   difficultyModerate,
 	"pod_host_escape":              difficultyModerate,
 	"mutating_policy_inject":       difficultyModerate,
 	"nodes_proxy":                  difficultyModerate,

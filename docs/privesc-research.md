@@ -562,6 +562,27 @@ Landed on the deep-chain work (see `docs/superpowers/specs/2026-07-24-privesc-de
   CSR → `system:node:<name>`) needs the node-identity sink §N proposes, and the cert-manager CA
   `ClusterIssuer` route in §C stays Tier C on whether the issuer's CA is in `--client-ca-file`.
 
+### O1c. Implemented 2026-09-22: implicit groups and workload controllers
+
+Two graph gaps found by reading the code, not listed in sections A-N:
+
+- **Grants to implicit groups were invisible.** `system:authenticated`, `system:serviceaccounts`,
+  and `system:serviceaccounts:<ns>` were `IsSystem` by name prefix, so path search neither seeded
+  nor traversed them, and `permissions.Aggregate` cannot credit members that no binding lists.
+  They are now `IsImplicitGroup` nodes: traversed, never seeded, and reached by an
+  `implicit_group_membership` edge from each member. The group keeps its own edges rather than
+  having its rules copied onto each member, because a copied fan-out grant (`create pods`
+  cluster-wide to `system:serviceaccounts`) costs members × targets edges. The trade: a
+  conjunction split between a member and its group is not detected. `system:unauthenticated`
+  stays out, since the anonymous identity is not a subject in the graph.
+- **Workload controllers had no edges.** `KUBE-PRIVESC-003` fired as a flat finding only.
+  `workloads.go` adds `workload_create_token_theft` (create, same reach as `create pods`),
+  `workload_hijack` (update/patch on an existing Deployment, DaemonSet, StatefulSet, or CronJob:
+  re-point the template at any ServiceAccount in the namespace, and keep the workload's own host
+  access where Pod Security admits it), and `workload_privileged_escape`. Jobs get no update
+  edge (immutable template). This covers the `-032` row's case of rewriting an existing
+  privileged kube-system DaemonSet, which reaches node escape through that DaemonSet's own pods.
+
 ### O2. Correction to A5(b)
 
 **A5(b) is inaccurate as written, and was already inaccurate when this document was published.**
