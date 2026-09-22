@@ -42,6 +42,8 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 
 	subjectsByNs := serviceAccountsByNamespace(snapshot)
 	podSAsByNs := podServiceAccountsByNamespace(snapshot)
+	podSAsByName := podServiceAccountsByPodName(snapshot)
+	tokenMounted := serviceAccountsWithAPIToken(snapshot)
 
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
 	impersonableUsers := boundUsers(snapshot)
@@ -50,7 +52,7 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	for _, perms := range effective {
 		ensureSubjectNode(graph, perms.Subject)
 		for _, rule := range perms.Rules {
-			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, impersonableUsers)
+			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, podSAsByName, tokenMounted, impersonableUsers)
 		}
 		// Correlation edges that need the subject's full rule set at once
 		// (two RBAC verbs held together), rather than one rule at a time.
@@ -131,6 +133,8 @@ func addEdgesForRule(
 	rule permissions.EffectiveRule,
 	subjectsByNs map[string][]models.SubjectRef,
 	podSAsByNs map[string][]models.SubjectRef,
+	podSAsByName map[string]map[string]models.SubjectRef,
+	tokenMounted map[string]bool,
 	impersonableUsers []models.SubjectRef,
 ) {
 	from := nodeID(subject)
@@ -293,12 +297,17 @@ func addEdgesForRule(
 				Action:      "pod_create_token_theft",
 				Permission:  "create pods",
 				Description: fmt.Sprintf("can create pods that mount ServiceAccount %s/%s", target.Namespace, target.Name),
+				// A new pod that mounts the SA's token: the attacker holds that token and
+				// controls the pod, but the pod carries none of the SA's existing pods'
+				// privileged settings. Creating a pod that is itself privileged is
+				// pod_create_privileged_escape, a separate edge gated on admission.
+				Grants: models.FootholdIdentity | models.FootholdToken | models.FootholdNewPod,
 			})
 		}
 	}
 
 	if matchesResourceVerb(rule, []string{"pods/exec", "pods/attach"}, []string{"create", "get"}) {
-		targets := podCreateTargets(clusterScope, rule.Namespace, podSAsByNs)
+		targets := execTargets(rule, clusterScope, podSAsByNs, podSAsByName)
 		for _, target := range targets {
 			if target.Key() == subject.Key() {
 				continue
@@ -309,12 +318,13 @@ func addEdgesForRule(
 				Action:      "pod_exec",
 				Permission:  verbResource(rule, "pods/exec|pods/attach"),
 				Description: fmt.Sprintf("can exec into pods running as ServiceAccount %s/%s", target.Namespace, target.Name),
+				Grants:      shellFoothold(target, tokenMounted),
 			})
 		}
 	}
 
 	if matchesResourceVerb(rule, []string{"pods/ephemeralcontainers"}, []string{"update", "patch"}) {
-		targets := podCreateTargets(clusterScope, rule.Namespace, podSAsByNs)
+		targets := execTargets(rule, clusterScope, podSAsByNs, podSAsByName)
 		for _, target := range targets {
 			if target.Key() == subject.Key() {
 				continue
@@ -325,6 +335,7 @@ func addEdgesForRule(
 				Action:      "ephemeral_container_inject",
 				Permission:  verbResource(rule, "pods/ephemeralcontainers"),
 				Description: fmt.Sprintf("can inject an ephemeral container into pods running as ServiceAccount %s/%s", target.Namespace, target.Name),
+				Grants:      shellFoothold(target, tokenMounted),
 			})
 		}
 	}
@@ -341,6 +352,9 @@ func addEdgesForRule(
 				Action:      "token_request",
 				Permission:  "create serviceaccounts/token",
 				Description: fmt.Sprintf("can mint tokens for ServiceAccount %s/%s", target.Namespace, target.Name),
+				// A minted token is a credential in hand: the holder can request it with
+				// any audience, so it also reaches an external exchange such as IRSA.
+				Grants: models.FootholdIdentity | models.FootholdToken,
 			})
 		}
 	}
@@ -384,6 +398,9 @@ func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByN
 				Action:      "colocated_sa_token_theft",
 				Permission:  "namespace-admin in " + namespace,
 				Description: fmt.Sprintf("can steal the token of co-located ServiceAccount %s/%s", target.Namespace, target.Name),
+				// Namespace-admin can create pods as the SA, exec into its pods, and
+				// mint its tokens, so it holds every position the SA node stands for.
+				Grants: footholdAll,
 			})
 		}
 	}
@@ -910,23 +927,90 @@ func namespacesAllowingPrivileged(snapshot models.Snapshot) map[string]bool {
 }
 
 // addPodEscapeEdges links a pod's ServiceAccount to the node-escape sink when the pod has host-escape-enabling settings.
+//
+// The edge needs FootholdPod: the escape uses this pod's own spec, so only code
+// already running inside it can walk the edge. Holding the ServiceAccount's token
+// (token_request, impersonation) or a new pod created as it is not enough.
 func addPodEscapeEdges(graph *models.EscalationGraph, pod corev1.Pod) {
 	reasons := podEscapeReasons(pod)
 	if len(reasons) == 0 {
 		return
 	}
-	saName := pod.Spec.ServiceAccountName
-	if saName == "" {
-		saName = "default"
-	}
-	ref := models.SubjectRef{Kind: "ServiceAccount", Name: saName, Namespace: pod.Namespace}
+	ref := podServiceAccount(pod)
 	ensureSubjectNode(graph, ref)
 	addEdge(graph, nodeID(ref), sinkNodeEscape, &models.EscalationEdge{
 		Technique:   "KUBE-ESCAPE",
 		Action:      "pod_host_escape",
 		Permission:  strings.Join(reasons, ","),
 		Description: fmt.Sprintf("runs in pod %s/%s with %s", pod.Namespace, pod.Name, strings.Join(reasons, ", ")),
+		Needs:       models.FootholdPod,
 	})
+}
+
+// podServiceAccount returns the ServiceAccount a pod runs as, applying the API
+// server's "default" fallback for an empty serviceAccountName.
+func podServiceAccount(pod corev1.Pod) models.SubjectRef {
+	name := pod.Spec.ServiceAccountName
+	if name == "" {
+		name = "default"
+	}
+	return models.SubjectRef{Kind: "ServiceAccount", Name: name, Namespace: pod.Namespace}
+}
+
+// serviceAccountsWithAPIToken reports, per ServiceAccount key, whether at least one
+// pod running as that ServiceAccount carries an API token for it. A shell in such a
+// pod yields the ServiceAccount's identity. A shell in a pod without one yields the
+// pod and nothing more.
+func serviceAccountsWithAPIToken(snapshot models.Snapshot) map[string]bool {
+	saAutomount := map[string]*bool{}
+	for _, sa := range snapshot.Resources.ServiceAccounts {
+		ref := models.SubjectRef{Kind: "ServiceAccount", Name: sa.Name, Namespace: sa.Namespace}
+		saAutomount[ref.Key()] = sa.AutomountServiceAccountToken
+	}
+	result := map[string]bool{}
+	for _, pod := range snapshot.Resources.Pods {
+		ref := podServiceAccount(pod)
+		if podMountsAPIToken(pod, saAutomount[ref.Key()]) {
+			result[ref.Key()] = true
+		}
+	}
+	return result
+}
+
+// podMountsAPIToken applies the ServiceAccount admission plugin's automount rule:
+// the pod's automountServiceAccountToken wins when set, then the ServiceAccount's,
+// and the default is true. A ServiceAccount missing from the snapshot keeps the
+// default. A pod that opts out can still project a token volume itself; one with no
+// audience is valid against the API server, so it counts too. A token with an
+// audience (IRSA's sts.amazonaws.com, a Vault role) is not an API credential.
+func podMountsAPIToken(pod corev1.Pod, saAutomount *bool) bool {
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Projected == nil {
+			continue
+		}
+		for _, source := range volume.Projected.Sources {
+			if source.ServiceAccountToken != nil && source.ServiceAccountToken.Audience == "" {
+				return true
+			}
+		}
+	}
+	if pod.Spec.AutomountServiceAccountToken != nil {
+		return *pod.Spec.AutomountServiceAccountToken
+	}
+	if saAutomount != nil {
+		return *saAutomount
+	}
+	return true
+}
+
+// shellFoothold is what a shell in the pods running as target yields (exec, attach,
+// or an ephemeral container): always the pods, and, when one of them mounts the API
+// token, that token in hand (which also lets the holder act as the identity).
+func shellFoothold(target models.SubjectRef, tokenMounted map[string]bool) models.Foothold {
+	if tokenMounted[target.Key()] {
+		return models.FootholdPod | models.FootholdToken | models.FootholdIdentity
+	}
+	return models.FootholdPod
 }
 
 // podEscapeReasons lists the reasons a pod could be used to escape to the node (host namespaces, privileged, sensitive hostPath).
@@ -1222,6 +1306,59 @@ func podCreateTargets(clusterScope bool, namespace string, subjectsByNs map[stri
 	return subjectsByNs[namespace]
 }
 
+// execTargets returns the ServiceAccounts an exec/attach or ephemeral-container
+// grant can reach. A rule with resourceNames can only touch pods carrying those exact
+// names, so it is scoped to the named pods' ServiceAccounts (a name that matches no
+// pod in scope reaches nothing). An unrestricted rule reaches every SA that pods in
+// scope actually run as, exactly as before.
+//
+// resourceNames on a namespaced subresource names a pod inside the rule's namespace;
+// a cluster-scoped grant matches a named pod in any namespace. Iteration is over
+// sorted namespaces and sorted names, and deduped by subject key, so edge order stays
+// deterministic (BFS breaks ties on edge insertion order, see podCreateTargets).
+func execTargets(
+	rule permissions.EffectiveRule,
+	clusterScope bool,
+	podSAsByNs map[string][]models.SubjectRef,
+	podSAsByName map[string]map[string]models.SubjectRef,
+) []models.SubjectRef {
+	if !rule.NameScoped() {
+		return podCreateTargets(clusterScope, rule.Namespace, podSAsByNs)
+	}
+
+	namespaces := []string{rule.Namespace}
+	if clusterScope {
+		namespaces = make([]string, 0, len(podSAsByName))
+		for ns := range podSAsByName {
+			namespaces = append(namespaces, ns)
+		}
+		sort.Strings(namespaces)
+	}
+	names := append([]string(nil), rule.ResourceNames...)
+	sort.Strings(names)
+
+	seen := map[string]struct{}{}
+	var out []models.SubjectRef
+	for _, ns := range namespaces {
+		byName := podSAsByName[ns]
+		if byName == nil {
+			continue
+		}
+		for _, name := range names {
+			ref, ok := byName[name]
+			if !ok {
+				continue
+			}
+			if _, dup := seen[ref.Key()]; dup {
+				continue
+			}
+			seen[ref.Key()] = struct{}{}
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 // serviceAccountsByNamespace indexes known ServiceAccounts and guarantees each namespace has a "default" entry.
 func serviceAccountsByNamespace(snapshot models.Snapshot) map[string][]models.SubjectRef {
 	result := map[string][]models.SubjectRef{}
@@ -1242,16 +1379,30 @@ func podServiceAccountsByNamespace(snapshot models.Snapshot) map[string][]models
 	result := map[string][]models.SubjectRef{}
 	seen := map[string]struct{}{}
 	for _, pod := range snapshot.Resources.Pods {
-		sa := pod.Spec.ServiceAccountName
-		if sa == "" {
-			sa = "default"
-		}
-		ref := models.SubjectRef{Kind: "ServiceAccount", Name: sa, Namespace: pod.Namespace}
+		ref := podServiceAccount(pod)
 		if _, ok := seen[ref.Key()]; ok {
 			continue
 		}
 		seen[ref.Key()] = struct{}{}
 		result[pod.Namespace] = append(result[pod.Namespace], ref)
+	}
+	return result
+}
+
+// podServiceAccountsByPodName indexes, per namespace, each pod name to the
+// ServiceAccount that pod runs as. It backs the resourceNames-scoped branch of
+// execTargets: a `create pods/exec` grant restricted to named pods reaches only those
+// pods' identities.
+func podServiceAccountsByPodName(snapshot models.Snapshot) map[string]map[string]models.SubjectRef {
+	result := map[string]map[string]models.SubjectRef{}
+	for _, pod := range snapshot.Resources.Pods {
+		if pod.Name == "" {
+			continue
+		}
+		if result[pod.Namespace] == nil {
+			result[pod.Namespace] = map[string]models.SubjectRef{}
+		}
+		result[pod.Namespace][pod.Name] = podServiceAccount(pod)
 	}
 	return result
 }

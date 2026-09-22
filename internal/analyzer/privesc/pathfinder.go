@@ -93,10 +93,35 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 	return paths
 }
 
+// footholdAll is every foothold at once. Path search seeds each source with it: a
+// finding's source is a compromised subject, and for a ServiceAccount that means its
+// workload, token included. Namespace-admin fan-out grants it too.
+const footholdAll = models.FootholdIdentity | models.FootholdToken | models.FootholdPod | models.FootholdNewPod
+
+// edgeNeeds and edgeGrants resolve an edge's foothold sets, reading zero as
+// FootholdIdentity (see models.EscalationEdge.Needs).
+func edgeNeeds(edge *models.EscalationEdge) models.Foothold {
+	if edge.Needs == 0 {
+		return models.FootholdIdentity
+	}
+	return edge.Needs
+}
+
+func edgeGrants(edge *models.EscalationEdge) models.Foothold {
+	if edge.Grants == 0 {
+		return models.FootholdIdentity
+	}
+	return edge.Grants
+}
+
 // bfsToSinks walks the graph from sourceID and returns, for each reachable sink, the shortest step chain that got there.
 // System subjects (e.g. system:masters) are treated as non-traversable intermediates but still valid as sinks via explicit edges.
 // banned, when non-nil, removes edges from consideration: the cut-resilient pass uses it to ask what stays reachable once a
 // given binding is revoked. Passing nil bans nothing.
+//
+// Each queued position carries the footholds its last edge granted, and an edge is walked only when they include one it
+// needs. That is what stops token_request -> pod_host_escape: a minted token is FootholdIdentity, and a pod's host escape
+// needs FootholdPod, a shell inside that pod.
 func bfsToSinks(
 	graph *models.EscalationGraph,
 	adj map[string][]*models.EscalationEdge,
@@ -106,11 +131,18 @@ func bfsToSinks(
 ) map[string][]pathStep {
 	type queueItem struct {
 		nodeID string
+		held   models.Foothold
 		path   []pathStep
 	}
 
-	visited := map[string]int{sourceID: 0}
-	queue := []queueItem{{nodeID: sourceID}}
+	// visited holds the union of footholds already queued at each node. BFS dequeues in
+	// depth order, so an arrival whose footholds all sit in that union is redundant: an
+	// edge needs any one foothold and grants the same set however its source was
+	// reached, so an earlier, no-longer arrival already walked every edge this one could.
+	// A node reached a second time with a new foothold is walked again, so reaching a
+	// ServiceAccount first by token_request does not hide a later pod_exec into its pods.
+	visited := map[string]models.Foothold{sourceID: footholdAll}
+	queue := []queueItem{{nodeID: sourceID, held: footholdAll}}
 	sinks := map[string][]pathStep{}
 
 	for len(queue) > 0 {
@@ -123,23 +155,28 @@ func bfsToSinks(
 			if banned != nil && banned(edge) {
 				continue
 			}
+			if item.held&edgeNeeds(edge) == 0 {
+				continue
+			}
 			neighbor := graph.Nodes[edge.To]
 			if neighbor == nil {
 				continue
 			}
-			nextDepth := len(item.path) + 1
-			if prev, ok := visited[edge.To]; ok && prev <= nextDepth {
+			held := edgeGrants(edge)
+			if held&^visited[edge.To] == 0 {
 				continue
 			}
-			visited[edge.To] = nextDepth
+			visited[edge.To] |= held
 			nextPath := make([]pathStep, len(item.path)+1)
 			copy(nextPath, item.path)
 			nextPath[len(item.path)] = pathStep{nodeID: edge.To, edge: edge}
 
 			if neighbor.IsSink {
-				// First arrival is the shortest: the visited prune above rejects every
-				// later one, so this assignment happens at most once per sink.
-				sinks[edge.To] = nextPath
+				// First arrival is the shortest. The visited prune above rejects a later
+				// arrival unless it brings a new foothold, so keep the first chain.
+				if _, ok := sinks[edge.To]; !ok {
+					sinks[edge.To] = nextPath
+				}
 				// A traversable sink records its own path and is then walked past,
 				// so richer chains routed through it are captured as separate,
 				// longer paths. External cloud-IAM nodes carry outbound aws-auth
@@ -155,7 +192,7 @@ func bfsToSinks(
 				continue
 			}
 
-			queue = append(queue, queueItem{nodeID: edge.To, path: nextPath})
+			queue = append(queue, queueItem{nodeID: edge.To, held: held, path: nextPath})
 		}
 	}
 

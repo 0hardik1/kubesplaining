@@ -1,0 +1,9 @@
+# Chain-shape assertions for the cloud-eks shard. Format:
+#   <finding-id-prefix> <min-hops> <ordered,comma,separated,actions> [primary|alternate]
+#
+# The identity/token split at the IRSA edge cuts both ways. eks-impersonator (bare
+# identity) is denied the role in cloud-eks.deny; eks-token-minter mints a token for
+# eks-admin-irsa, which is a credential STS accepts, so it reaches the role. Pinning
+# this positive keeps the deny above honest: it proves the IRSA edge still fires for a
+# real credential rather than being closed for everyone.
+KUBE-PRIVESC-PATH-AWS-IAM-ROLE:ServiceAccount/cloud-eks-test/eks-token-minter 2 token_request,irsa_assume_role

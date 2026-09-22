@@ -43,6 +43,39 @@ type EscalationNode struct {
 	TargetNamespace string           `json:"target_namespace,omitempty"` // populated only when Target == TargetNamespaceAdmin to identify which namespace the sink represents
 }
 
+// Foothold is a bit set that says what an attacker holds at a graph node during path
+// search. A ServiceAccount node stands for more than one position, and the positions
+// are not interchangeable: a minted token does not put anyone inside a privileged pod,
+// and a shell in a pod that mounts no API token does not confer the ServiceAccount's
+// RBAC. Edges declare which positions they need at their source and which they give
+// at their destination, and path search tracks the set per node.
+type Foothold uint8
+
+const (
+	// FootholdIdentity: the attacker can make Kubernetes API calls as the node's
+	// identity. Impersonating it, steering a controller that runs as it, or holding a
+	// token for it all qualify, so this is what the identity's own RBAC edges need. It
+	// does NOT imply the attacker possesses a presentable bearer token: impersonation
+	// and controller-steering are authorization-only, they mint no credential the
+	// holder can carry off-cluster.
+	FootholdIdentity Foothold = 1 << iota
+	// FootholdToken: the attacker holds, or can mint, a real bearer token for the
+	// ServiceAccount (its mounted token, a fresh one from the TokenRequest API, or the
+	// token Secret). Unlike bare FootholdIdentity this is a credential in hand, so it
+	// also mints an audience-scoped OIDC token, which is what an external identity
+	// exchange such as IRSA needs. A grant of FootholdToken always sets FootholdIdentity
+	// too, since a token is one way to act as the identity.
+	FootholdToken
+	// FootholdPod: the attacker runs code inside a pod that already runs as the
+	// ServiceAccount, so that pod's spec (privileged, host namespaces, hostPath) and
+	// network position are theirs.
+	FootholdPod
+	// FootholdNewPod: the attacker runs code inside a pod they created as the
+	// ServiceAccount. They pick its labels and namespace, but not the privileged
+	// settings of the pods that already exist.
+	FootholdNewPod
+)
+
 // BindingRef names a (Cluster)RoleBinding. Namespace is empty for ClusterRoleBindings,
 // matching how permissions.Aggregate records it.
 type BindingRef struct {
@@ -86,6 +119,12 @@ type EscalationEdge struct {
 	// still be the sole grantor of a half, so cutting it closes the route. Graph-internal:
 	// excluded from JSON so no output surface changes.
 	CutBreakers []BindingRef `json:"-"`
+	// Needs is the set of footholds at From that let an attacker walk this edge: any
+	// one of them is enough. Grants is what the attacker holds at To after the walk.
+	// Zero means FootholdIdentity for both, which fits every edge that an RBAC grant
+	// justifies. Graph-internal: excluded from JSON so no output surface changes.
+	Needs  Foothold `json:"-"`
+	Grants Foothold `json:"-"`
 }
 
 // EscalationPath is one source → sink chain returned by path search, with each hop annotated.

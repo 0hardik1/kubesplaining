@@ -1,6 +1,7 @@
 package privesc
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -466,5 +467,148 @@ func TestAddCloudEdgesAccessEntries(t *testing.T) {
 				t.Errorf("namespace-scoped admin policy must add no edge: %+v", e)
 			}
 		}
+	}
+}
+
+// TestCloudEdgeFootholds pins what each cloud edge needs at the ServiceAccount. IMDS
+// answers a network position, so it needs code in a pod: a shell in the SA's pod or
+// a new pod created as it, never a minted token or an impersonation. IRSA needs a
+// presentable credential, not the ability to act as the SA against the Kubernetes
+// API: a minted token reaches the role (the TokenRequest API can carry the sts
+// audience), and a shell in a pod reaches it (the web-identity token is projected
+// whatever automountServiceAccountToken says, so both pods here opt out), but bare
+// impersonation does not. Both pods opting out of the API token is what makes the
+// exec case meaningful, and the impersonate case is what proves act-as is not a
+// credential.
+func TestCloudEdgeFootholds(t *testing.T) {
+	t.Parallel()
+
+	const roleARN = "arn:aws:iam::123456789012:role/AppRole"
+	no := false
+	pod := func(name, sa string) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "apps", Labels: map[string]string{"app": name}},
+			Spec: corev1.PodSpec{
+				NodeName:                     "ip-10-0-0-1.ec2.internal",
+				ServiceAccountName:           sa,
+				AutomountServiceAccountToken: &no,
+				Containers:                   []corev1.Container{{Name: "app", Image: "demo:1"}},
+			},
+		}
+	}
+	snapshotWith := func(rule rbacv1.PolicyRule) models.Snapshot {
+		return models.Snapshot{
+			Metadata: models.SnapshotMetadata{CloudProvider: "eks"},
+			Resources: models.SnapshotResources{
+				// Restricted keeps pod_create_privileged_escape out, so node escape
+				// can only come from the IMDS pivot.
+				Namespaces: []corev1.Namespace{{ObjectMeta: metav1.ObjectMeta{Name: "apps", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}}}},
+				Nodes: []corev1.Node{{ObjectMeta: metav1.ObjectMeta{
+					Name: "ip-10-0-0-1.ec2.internal", Labels: map[string]string{"eks.amazonaws.com/compute-type": "ec2"},
+				}}},
+				ServiceAccounts: []corev1.ServiceAccount{
+					{ObjectMeta: metav1.ObjectMeta{Name: "imds-sa", Namespace: "apps"}},
+					{ObjectMeta: metav1.ObjectMeta{Name: "irsa-sa", Namespace: "apps", Annotations: map[string]string{"eks.amazonaws.com/role-arn": roleARN}}},
+				},
+				Pods:  []corev1.Pod{pod("imds-pod", "imds-sa"), pod("irsa-pod", "irsa-sa")},
+				Roles: []rbacv1.Role{{ObjectMeta: objectMeta("grant", "apps"), Rules: []rbacv1.PolicyRule{rule}}},
+				RoleBindings: []rbacv1.RoleBinding{{
+					ObjectMeta: objectMeta("grant", "apps"),
+					RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "grant"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "deployer", Namespace: "apps"}},
+				}},
+			},
+		}
+	}
+	core := func(resource, verb string) rbacv1.PolicyRule {
+		return rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{resource}, Verbs: []string{verb}}
+	}
+
+	cases := []struct {
+		name       string
+		rule       rbacv1.PolicyRule
+		wantEscape string // node-escape hop actions, "" for none
+		wantRole   string // aws_iam_role hop actions, "" when the case does not assert it
+	}{
+		{name: "exec", rule: core("pods/exec", "create"), wantEscape: "pod_exec,imds_node_role_pivot", wantRole: "pod_exec,irsa_assume_role"},
+		{name: "pod create", rule: core("pods", "create"), wantEscape: "pod_create_token_theft,imds_node_role_pivot", wantRole: "pod_create_token_theft,irsa_assume_role"},
+		{name: "token request", rule: core("serviceaccounts/token", "create"), wantRole: "token_request,irsa_assume_role"},
+		{name: "impersonate", rule: core("serviceaccounts", "impersonate")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := map[models.EscalationTarget]string{}
+			for _, p := range FindPaths(BuildGraph(snapshotWith(tc.rule)), 5) {
+				if p.Source.Name != "deployer" {
+					continue
+				}
+				var actions []string
+				for _, hop := range p.Hops {
+					actions = append(actions, hop.Action)
+				}
+				got[p.Target] = strings.Join(actions, ",")
+			}
+			if got[models.TargetNodeEscape] != tc.wantEscape {
+				t.Errorf("node-escape path = %q, want %q", got[models.TargetNodeEscape], tc.wantEscape)
+			}
+			if got[models.TargetAWSIAMRole] != tc.wantRole {
+				t.Errorf("aws_iam_role path = %q, want %q", got[models.TargetAWSIAMRole], tc.wantRole)
+			}
+		})
+	}
+}
+
+// TestConfusedDeputyDoesNotReachIRSA pins the identity/token split for the operator
+// bridge. Steering a controller runs it on your behalf but hands you no token, so a
+// tenant that can only steer an IRSA-annotated controller does not reach its AWS
+// role, even though the controller reaches that role from its own workload. This is
+// the operator_reconcile counterpart to TestCloudEdgeFootholds' impersonate case:
+// both grant bare FootholdIdentity, which is not a presentable credential.
+func TestConfusedDeputyDoesNotReachIRSA(t *testing.T) {
+	t.Parallel()
+
+	const roleARN = "arn:aws:iam::123456789012:role/FluxRole"
+	snapshot := models.Snapshot{
+		Metadata: models.SnapshotMetadata{CloudProvider: "eks"},
+		Resources: models.SnapshotResources{
+			Namespaces: []corev1.Namespace{{ObjectMeta: objectMeta("flux-system", "")}, {ObjectMeta: objectMeta("tenant", "")}},
+			ServiceAccounts: []corev1.ServiceAccount{
+				{ObjectMeta: metav1.ObjectMeta{Name: "kustomize-controller", Namespace: "flux-system", Annotations: map[string]string{"eks.amazonaws.com/role-arn": roleARN}}},
+				{ObjectMeta: objectMeta("deployer", "tenant")},
+			},
+			Roles: []rbacv1.Role{{ObjectMeta: objectMeta("gitops", "tenant"), Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{"kustomize.toolkit.fluxcd.io"}, Resources: []string{"kustomizations"}, Verbs: []string{"create", "patch"}},
+			}}},
+			RoleBindings: []rbacv1.RoleBinding{{
+				ObjectMeta: objectMeta("gitops", "tenant"),
+				RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "gitops"},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "deployer", Namespace: "tenant"}},
+			}},
+		},
+	}
+	graph := BuildGraph(snapshot)
+
+	if findEdge(graph, "subject:ServiceAccount/tenant/deployer", "subject:ServiceAccount/flux-system/kustomize-controller", "operator_reconcile") == nil {
+		t.Fatal("fixture: expected an operator_reconcile bridge from deployer to the controller")
+	}
+
+	controllerReaches, deployerReaches := false, false
+	for _, p := range FindPaths(graph, 5) {
+		if p.Target != models.TargetAWSIAMRole {
+			continue
+		}
+		switch p.Source.Name {
+		case "kustomize-controller":
+			controllerReaches = true
+		case "deployer":
+			deployerReaches = true
+		}
+	}
+	if !controllerReaches {
+		t.Error("the controller should reach its own IRSA role from its workload")
+	}
+	if deployerReaches {
+		t.Error("steering the controller must not reach its IRSA role: operator_reconcile hands over no token")
 	}
 }
