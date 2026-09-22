@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-22
+
+This release closes two detection gaps. The first opened when Kubernetes v1.36 promoted `MutatingAdmissionPolicy` to GA: the in-process CEL/JSONPatch mutator has now shipped on two upstream minors (v1.36 and v1.37) and on EKS, and until now a subject able to write both halves of one was invisible to every rule in the tool. The second is on EKS: a cluster that grants IAM principals access through EKS Access Entries instead of the `aws-auth` ConfigMap came back clean from every IAM-to-RBAC rule. The scanner now reads an access-entry export, and reports when it has none. Alongside the new rules, a correctness pass over the privesc graph removes two edge families that claimed routes the API server refuses, and closes a silent false negative for aggregated ClusterRoles in manifest-sourced snapshots.
+
 ### Added
 
 - **EKS Access Entries (`KUBE-CLOUD-ACCESSENTRY-*`).** The `KUBE-CLOUD-AWSAUTH-*` family read `kube-system/aws-auth` only, so a cluster migrated to [EKS Access Entries](https://docs.aws.amazon.com/eks/latest/userguide/access-entries.html), which is where AWS points every new cluster, came back clean from the whole IAM-to-RBAC class rather than reporting no data. Access entries live in the EKS API, not in the cluster, so the scanner now reads an export: `scripts/eks-access-entries.sh <cluster> > entries.json` (four read-only `eks:*` actions) and `scan --eks-access-entries entries.json`. Three rules follow. `KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001` (HIGH) flags `AmazonEKSClusterAdminPolicy` at cluster scope, the exact equivalent of a ClusterRoleBinding to `cluster-admin` that no Kubernetes object records. `KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001` (MEDIUM) flags the two one-step-removed shapes: a cluster-scoped `AmazonEKSAdminPolicy` / `AmazonEKSAdminViewPolicy`, which reads every namespace's Secrets and so every kube-system controller token, and a `kubernetesGroups` entry that a ClusterRoleBinding ties to an admin-equivalent ClusterRole. `KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001` fires on every EKS scan that has no export loaded, so the report says what it could not see. It is LOW in both cases, never INFO, because the default severity threshold hides INFO and a hidden coverage-gap finding is no finding; the score and description say whether `aws-auth` was absent too (no IAM-to-RBAC rule ran at all) or analyzed. The privesc graph gains `access_entry_admin` and `access_entry_secrets_read` edges from the external IAM node, structured remediation hints emit the `aws eks disassociate-access-policy` / `update-access-entry` calls, and the export's `authenticationMode` now gates the aws-auth rules: in `API` mode the apiserver ignores the ConfigMap, so those findings and edges stand down instead of reporting a mapping that grants nothing.
@@ -13,7 +17,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Two privesc edge families claimed routes the API server refuses.** `modify_role_binding` and `bind_or_escalate` each fired from a single verb. Kubernetes runs an escalation-prevention check on every (Cluster)RoleBinding create and update: the writer must already hold every permission the referenced role grants, or hold `bind` on that role, and `escalate` is the same carve-out for role content. Each verb is inert alone. Both edges are now conjunctions built in a per-subject pass, since nothing makes a subject collect both halves through one binding. The flat `KUBE-PRIVESC-009` / `-010` findings still fire on the bare grant; only the claimed *path* is gone. The `namespace_admin` sink needs cluster-scoped `bind` on `clusterroles` for the same reason.
+- **`impersonate` on users no longer reaches `cluster_admin` unconditionally.** No username is privileged by construction, so the edge is now one `impersonate_user` hop per User subject a binding actually names. `impersonate` on groups stays unconditional (`impersonate_system_masters`), since `system:masters` is impersonable whether or not any binding mentions it. On a stock kubeadm / kind cluster the admin identity rides on the group `kubeadm:cluster-admins` and no non-system User is bound, so the grant escalates nothing there.
+- **Aggregated ClusterRoles were empty in manifest-sourced snapshots.** `permissions.Aggregate` read `clusterRole.rules` only. kube-controller-manager fills `.rules` for an aggregating ClusterRole on a live cluster, so live snapshots were fine, but a rendered chart or `scan-resource` input carries an empty `.rules` and the role registered as granting nothing: a silent false negative for every rule that reads effective permissions. `Aggregate` now expands `aggregationRule` when `.rules` is empty, trusts `.rules` when the controller has already reconciled it, and terminates on a ClusterRole whose own labels satisfy its own selector. `EffectiveRule` also carries `nonResourceURLs` instead of dropping them.
 - **Cloud findings never carried a structured remediation hint.** `remediation.ForCloud` existed, with hints for every `KUBE-CLOUD-AWSAUTH-*` / `-IRSA-*` / `-IMDS-PIVOT-001` rule, but nothing called it, so `--remediation-patches` attached hints to every module except `cloud`. The cloud dispatcher now runs its findings through the generator like the other modules do.
+
+### Changed
+
+- **Krew index updates are automated.** The release workflow now runs `krew-release-bot` after GoReleaser publishes, rendering `.krew.yaml` against the published assets and opening the version-bump PR on `kubernetes-sigs/krew-index`. `kubectl krew install kubesplaining` is documented in the README.
+- **Pull requests are gated on `make e2e`.** The kind-based end-to-end run (recall lists, ruleset goldens, deny guards, chain-shape assertions, the alternate-path invariant, and the remediation-patch rescan) now runs on every PR rather than only on merges to `main`.
 
 
 ## [1.2.0] - 2026-07-31
@@ -204,7 +216,8 @@ The differentiator is **graph-based privilege-escalation path detection**: BFS f
 - Forbidden/Unauthorized list errors are downgraded to `CollectionWarnings` rather than aborting — locked-down clusters still produce a useful partial-snapshot report.
 - Vulnerability disclosure: GitHub Private Vulnerability Reporting only. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/0hardik1/kubesplaining/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/0hardik1/kubesplaining/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/0hardik1/kubesplaining/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.1.0
 [1.0.0]: https://github.com/0hardik1/kubesplaining/releases/tag/v1.0.0
