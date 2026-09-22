@@ -1,0 +1,2 @@
+# Workloads from 21-privesc-groups-workloads.yaml the e2e script must wait for before scanning.
+deploy/gw-web:gw-workloads

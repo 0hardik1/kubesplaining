@@ -564,6 +564,41 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Steal the ServiceAccount token signing key", Cmd: "cat /etc/kubernetes/pki/sa.key"},
 		},
 	},
+	"workload_create_token_theft": {
+		Title: "Workload creation → ServiceAccount token theft",
+		Plain: template.HTML(`<p>A Deployment, DaemonSet, StatefulSet, Job, or CronJob carries a pod template, and its controller creates pods from that template. Whoever writes the template chooses the ServiceAccount the pods run as, and Kubernetes checks only that the ServiceAccount exists, not that the writer may use it.</p><p>So <code>create</code> on any of these kinds reaches exactly what <code>create pods</code> reaches: every ServiceAccount in the namespace (or in every namespace, for a cluster-wide grant). Removing <code>create pods</code> from a role while leaving <code>create deployments</code> changes nothing.</p>`),
+		Mitre: "T1528 — Steal Application Access Token",
+		AttackerSteps: []AttackerStep{
+			{Note: "Check which workload kinds the identity can create", Cmd: "kubectl auth can-i create deployments -n <ns> && kubectl auth can-i create jobs -n <ns>"},
+			{Note: "List the ServiceAccounts a template in that namespace could name, and what each can do", Cmd: "kubectl get serviceaccounts -n <ns>"},
+		},
+	},
+	"workload_hijack": {
+		Title: "Workload template rewrite",
+		Plain: template.HTML(`<p><code>update</code> or <code>patch</code> on an existing Deployment, DaemonSet, StatefulSet, or CronJob lets the writer change its pod template: the image, the command, and the ServiceAccount. The controller then rolls out pods from the new template on its own. The writer gains every ServiceAccount in that namespace, the same as <code>create pods</code>.</p><p>It can also give more than that. The rewritten pods keep the rest of the workload's spec, so a workload that already runs privileged or mounts the host (a CNI or log-shipper DaemonSet in <code>kube-system</code>, for example) hands that host access to the writer's code. A Job is not affected: its pod template cannot be changed after creation.</p>`),
+		Mitre: "T1525 — Implant Internal Image",
+		AttackerSteps: []AttackerStep{
+			{Note: "Check which existing workloads the identity can change", Cmd: "kubectl auth can-i patch deployments -n <ns> && kubectl auth can-i patch daemonsets -n <ns>"},
+			{Note: "Find workloads whose pods already run privileged or with host access", Cmd: "kubectl get daemonsets,deployments -A -o json | jq -r '.items[] | select(.spec.template.spec.hostNetwork or .spec.template.spec.hostPID or ([.spec.template.spec.containers[].securityContext.privileged] | any)) | \"\\(.kind) \\(.metadata.namespace)/\\(.metadata.name)\"'"},
+		},
+	},
+	"workload_privileged_escape": {
+		Title: "Privileged workload → node escape",
+		Plain: template.HTML(`<p>A workload's controller creates pods from its template, and those pods face the same Pod Security Admission check as a pod created directly. Where the namespace does not enforce <code>baseline</code> or <code>restricted</code>, a template can set <code>privileged: true</code>, host namespaces, or a <code>hostPath</code> mount, and the resulting pods reach the node.</p><p>This follows from <code>create</code> on any workload kind, or from <code>update</code>/<code>patch</code> on an existing one. The fix is the same as for pod creation: enforce a Pod Security level on the namespace, and grant workload writes only to deploy automation.</p>`),
+		Mitre: "T1611 — Escape to Host",
+		AttackerSteps: []AttackerStep{
+			{Note: "Check the namespace's Pod Security enforce level", Cmd: "kubectl get namespace <ns> -o jsonpath='{.metadata.labels.pod-security\\.kubernetes\\.io/enforce}'"},
+		},
+	},
+	"implicit_group_membership": {
+		Title: "Implicit group membership",
+		Plain: template.HTML(`<p>The API server adds some groups to a request by itself. Every authenticated identity is in <code>system:authenticated</code>. Every ServiceAccount is also in <code>system:serviceaccounts</code> and <code>system:serviceaccounts:&lt;namespace&gt;</code>. No binding lists the members of these groups, so <code>kubectl get</code> does not show who they include: it includes everyone of that type.</p><p>A binding to one of these groups is therefore a grant to every such identity at once. Kubernetes binds only harmless discovery roles to them by default, so a dangerous grant here is almost always a mistake, and the fix is to remove the group from the binding.</p>`),
+		Mitre: "T1078 — Valid Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "List every binding that names an implicit group", Cmd: "kubectl get clusterrolebindings,rolebindings -A -o json | jq -r '.items[] | select(.subjects[]? | .kind==\"Group\" and (.name==\"system:authenticated\" or (.name|startswith(\"system:serviceaccounts\")))) | .metadata.name'"},
+			{Note: "Check what any ServiceAccount inherits from those groups", Cmd: "kubectl auth can-i --list --as=system:serviceaccount:<ns>:<sa>"},
+		},
+	},
 	"operator_reconcile": {
 		Title: "Confused deputy: operator reconciliation",
 		Plain: template.HTML(`<p>Operators work by watching custom resources and acting on them with their own, usually cluster-wide, permissions. A tenant who can write one of those custom resources needs no permissions of their own: they write the instruction, and the controller carries it out as itself.</p><p>A GitOps controller pointed at an attacker-controlled repository applies whatever manifests it finds there, including a ClusterRoleBinding. A monitoring operator told to scrape a chosen <code>bearerTokenFile</code> reads and ships its own mounted token. The permission that matters belongs to the deputy, not the requester.</p>`),
@@ -646,6 +681,8 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "pod_create_token_theft"
 	case f.RuleID == "KUBE-PRIVESC-002":
 		return "pod_create_privileged_escape"
+	case f.RuleID == "KUBE-PRIVESC-003":
+		return "workload_hijack"
 	case f.RuleID == "KUBE-PRIVESC-004":
 		return "pod_exec"
 	case f.RuleID == "KUBE-PRIVESC-005":

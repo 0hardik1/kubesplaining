@@ -386,8 +386,20 @@ func ForPrivescPath(finding models.Finding, snap models.Snapshot) *models.Remedi
 	subject := *finding.Subject
 	firstHop := finding.EscalationPath[0]
 
+	// A chain that opens with implicit group membership (system:authenticated,
+	// system:serviceaccounts[:ns]) has nothing to cut at hop 1: no binding lists the
+	// members, and membership cannot be revoked. The grant lives on hop 2, whose
+	// binding names the group, so the fix is to drop the group from that binding.
+	// That removes the grant from every member at once, which is the point: a
+	// dangerous grant to an implicit group is a grant to everyone of that type.
+	if firstHop.Action == "implicit_group_membership" && len(finding.EscalationPath) > 1 {
+		subject = firstHop.ToSubject
+		firstHop = finding.EscalationPath[1]
+	}
+
 	// Cut only the binding hop 1's own provenance names: it is the only cut the
-	// cut-resilient pass ever simulated for this chain.
+	// cut-resilient pass ever simulated for this chain. (For a membership-first
+	// chain the pass simulates nothing, since hop 1 names no binding.)
 	if binding := findBindingByName(snap, firstHop.SourceBinding, firstHop.BindingNamespace); binding != nil {
 		return remediationDropSubjectFromBinding(*binding, subject, firstHop)
 	}

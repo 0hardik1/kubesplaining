@@ -203,6 +203,51 @@ func TestForPrivescPathDropsSubject(t *testing.T) {
 	}
 }
 
+// TestForPrivescPathDropsImplicitGroupFromHop2Binding covers a chain that opens with
+// implicit group membership. Hop 1 names no binding and membership cannot be
+// revoked, so the fix is to drop the group from the binding hop 2 names. The member
+// is not listed there at all, so dropping the member would be an empty diff.
+func TestForPrivescPathDropsImplicitGroupFromHop2Binding(t *testing.T) {
+	t.Parallel()
+
+	member := models.SubjectRef{Kind: "ServiceAccount", Name: "app", Namespace: "team-a"}
+	group := models.SubjectRef{Kind: "Group", Name: "system:serviceaccounts"}
+	snap := models.Snapshot{
+		Resources: models.SnapshotResources{
+			ClusterRoleBindings: []rbacv1.ClusterRoleBinding{{
+				ObjectMeta: metav1.ObjectMeta{Name: "everyone-reads-secrets"},
+				RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "secret-reader"},
+				Subjects: []rbacv1.Subject{
+					{Kind: "Group", Name: "system:serviceaccounts"},
+					{Kind: "User", Name: "auditor"},
+				},
+			}},
+		},
+	}
+	finding := models.Finding{
+		RuleID:  "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS",
+		Subject: &member,
+		EscalationPath: []models.EscalationHop{
+			{Step: 1, Action: "implicit_group_membership", FromSubject: member, ToSubject: group},
+			{Step: 2, Action: "read_secrets", FromSubject: group, SourceBinding: "everyone-reads-secrets"},
+		},
+	}
+
+	hint := ForPrivescPath(finding, snap)
+	if hint == nil || hint.Patch == nil {
+		t.Fatalf("want a binding patch, got %+v", hint)
+	}
+	if hint.Patch.Target.Name != "everyone-reads-secrets" {
+		t.Errorf("want the patch to target hop 2's binding, got %q", hint.Patch.Target.Name)
+	}
+	if !strings.Contains(hint.RBACDiff, "-  name: system:serviceaccounts") {
+		t.Errorf("want the group removed from the binding; got:\n%s", hint.RBACDiff)
+	}
+	if !strings.Contains(hint.RBACDiff, "   name: auditor") {
+		t.Errorf("want the other subject kept as context; got:\n%s", hint.RBACDiff)
+	}
+}
+
 // TestForPrivescPathFallback covers the advisory branch. When the chain
 // doesn't pass through any (Cluster)RoleBinding we can name (synthetic edges
 // like pod_host_escape), the generator emits a comment-only diff telling the

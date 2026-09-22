@@ -1,0 +1,211 @@
+# Privesc fixture for two graph gaps.
+#
+# 1. Implicit groups. The API server adds system:authenticated,
+#    system:serviceaccounts, and system:serviceaccounts:<ns> to requests by itself,
+#    so no binding lists their members. A grant to one of them used to be invisible
+#    to path search. gw-ns-group-secrets gives system:serviceaccounts:gw-groups a
+#    cluster-wide `list secrets`, so gw-groups/gw-member reaches kube-system secrets
+#    through its membership. Assertion: groups-workloads.chain. A ServiceAccount in
+#    another namespace is not a member. Guard: groups-workloads.deny.
+# 2. Workload controllers. A Deployment's controller creates pods from a template
+#    the writer controls, so `create deployments` reaches what `create pods` does,
+#    and `patch` on an existing Deployment lets the writer point its template at any
+#    ServiceAccount in the namespace.
+#    - gw-deployer can only create Deployments in gw-workloads, and reaches
+#      gw-powerful's kube-system secrets read. Assertion: groups-workloads.chain.
+#    - gw-patcher can only patch the Deployment gw-web (resourceNames), and reaches
+#      the same read by rewriting gw-web to run as gw-powerful. Assertion:
+#      groups-workloads.chain.
+#    - gw-job-patcher can update and patch Jobs, and gw-batch exists. A Job's pod
+#      template cannot be changed after creation, so that grant reaches nothing.
+#      Guard: groups-workloads.deny.
+#
+# gw-workloads enforces Pod Security baseline, so a workload write cannot land a
+# privileged pod there, and the one-hop workload_privileged_escape edge cannot hide
+# the chains under test.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gw-groups
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gw-outsider
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gw-workloads
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gw-member
+  namespace: gw-groups
+---
+# Not a member of system:serviceaccounts:gw-groups, so the group's grant is not its.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gw-outsider
+  namespace: gw-outsider
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gw-secret-lister
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gw-ns-group-secrets
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gw-secret-lister
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:gw-groups
+---
+# The identity worth stealing in gw-workloads.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gw-powerful
+  namespace: gw-workloads
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gw-powerful-secrets
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gw-secret-lister
+subjects:
+  - kind: ServiceAccount
+    name: gw-powerful
+    namespace: gw-workloads
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gw-web-sa
+  namespace: gw-workloads
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gw-web
+  namespace: gw-workloads
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gw-web
+  template:
+    metadata:
+      labels:
+        app: gw-web
+    spec:
+      serviceAccountName: gw-web-sa
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+---
+# Suspended, so it never creates a pod: it only has to exist for the Job grant below
+# to have something it could name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gw-batch
+  namespace: gw-workloads
+spec:
+  suspend: true
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: batch
+          image: registry.k8s.io/pause:3.10
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gw-deployer
+  namespace: gw-workloads
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gw-deployer
+  namespace: gw-workloads
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gw-deployer
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: gw-deployer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gw-patcher
+  namespace: gw-workloads
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["gw-web"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gw-patcher
+  namespace: gw-workloads
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gw-patcher
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: gw-patcher
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gw-job-patcher
+  namespace: gw-workloads
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gw-job-patcher
+  namespace: gw-workloads
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gw-job-patcher
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: gw-job-patcher

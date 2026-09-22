@@ -14,6 +14,10 @@ func TestNewPrivescActionsHaveTechniqueCopy(t *testing.T) {
 		"control_plane_pki_theft",
 		"static_pod_admission_bypass",
 		"operator_reconcile",
+		"implicit_group_membership",
+		"workload_create_token_theft",
+		"workload_hijack",
+		"workload_privileged_escape",
 	} {
 		explainer, ok := Techniques[action]
 		if !ok {
