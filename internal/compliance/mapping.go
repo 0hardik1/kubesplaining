@@ -350,6 +350,16 @@ var ruleControls = map[string][]models.FrameworkRef{
 		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
 		nsa("Authentication", "Identity and access management"),
 	},
+	// EKS access entries are the same IAM-to-RBAC mapping moved into the EKS
+	// control plane; the controls are identical to the aws-auth pair above.
+	"KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001": {
+		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
+		nsa("Authentication", "Identity and access management"),
+	},
+	"KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001": {
+		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
+		nsa("Authentication", "Identity and access management"),
+	},
 }
 
 // ControlsFor returns the registered framework controls for a rule ID, or nil when no entry

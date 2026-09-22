@@ -8,6 +8,7 @@ import (
 
 	"github.com/0hardik1/kubesplaining/internal/analyzer/cloud/eks"
 	"github.com/0hardik1/kubesplaining/internal/models"
+	"github.com/0hardik1/kubesplaining/internal/remediation"
 )
 
 // _ references the foundation content helper so the `unused` linter stays
@@ -44,6 +45,12 @@ func (a *Analyzer) Analyze(ctx context.Context, snapshot models.Snapshot) ([]mod
 	switch provider {
 	case "eks":
 		findings = append(findings, eks.Analyze(snapshot)...)
+		// Attach the structured hint here rather than in the eks sub-package
+		// so every provider's findings pass through the same generator. The
+		// scan command strips hints unless --remediation-patches is set.
+		for i := range findings {
+			findings[i].RemediationHint = remediation.ForCloud(findings[i].RuleID, findings[i])
+		}
 	case "gke", "aks":
 		// reserved for future slots; intentional no-op
 	case "", "none":

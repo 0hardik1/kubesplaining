@@ -41,7 +41,10 @@ type awsAuthEntry struct {
 // identities discovered in the snapshot. Sources:
 //
 //   - ServiceAccount annotations carrying eks.amazonaws.com/role-arn (IRSA).
-//   - The kube-system/aws-auth ConfigMap (mapRoles and mapUsers).
+//   - The kube-system/aws-auth ConfigMap (mapRoles and mapUsers), unless a
+//     loaded access-entries export says the cluster is in API authentication
+//     mode, in which case the apiserver ignores the ConfigMap and so do we.
+//   - EKS access entries from snapshot.Cloud.EKS (scan --eks-access-entries).
 //
 // When the same ARN appears in both sources, a single CloudIdentity is
 // returned with both axes populated (IRSA binding + MappedGroups). YAML parse
@@ -81,6 +84,9 @@ func CloudIdentitiesForSnapshot(snapshot models.Snapshot) []models.CloudIdentity
 	for _, cm := range snapshot.Resources.ConfigMaps {
 		if cm.Name != awsAuthConfigMapName || cm.Namespace != awsAuthNamespace {
 			continue
+		}
+		if snapshot.Cloud.EKS.AWSAuthIgnored() {
+			break
 		}
 		// mapRoles: each entry is an IAM role.
 		for _, entry := range parseAWSAuthEntries(cm.Data["mapRoles"]) {
@@ -123,6 +129,33 @@ func CloudIdentitiesForSnapshot(snapshot models.Snapshot) []models.CloudIdentity
 				DetectedFrom: "aws-auth-mapUsers",
 			})
 			ident.MappedGroups = mergeStrings(ident.MappedGroups, entry.Groups)
+		}
+	}
+
+	// 3) EKS access entries (control-plane side, loaded from an export).
+	if snapshot.Cloud.EKS != nil {
+		for i := range snapshot.Cloud.EKS.AccessEntries {
+			entry := snapshot.Cloud.EKS.AccessEntries[i]
+			if entry.PrincipalARN == "" {
+				continue
+			}
+			accountID, kind, name, parseOK := parseIAMARN(entry.PrincipalARN)
+			if !parseOK {
+				continue
+			}
+			identityKind := models.CloudIdentityKindAWSIAMRole
+			if kind == "user" {
+				identityKind = models.CloudIdentityKindAWSIAMUser
+			}
+			ident := getOrCreate(byARN, entry.PrincipalARN, models.CloudIdentity{
+				Provider:     "aws",
+				Kind:         identityKind,
+				ARN:          entry.PrincipalARN,
+				AccountID:    accountID,
+				RoleName:     name,
+				DetectedFrom: "eks-access-entry",
+			})
+			ident.AccessEntry = &entry
 		}
 	}
 

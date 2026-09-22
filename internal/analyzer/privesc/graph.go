@@ -1162,6 +1162,8 @@ var actionDifficulty = map[string]string{
 	"nodes_proxy":                  difficultyModerate,
 	"irsa_assume_role":             difficultyModerate,
 	"aws_auth_admin":               difficultyModerate,
+	"access_entry_admin":           difficultyModerate,
+	"access_entry_secrets_read":    difficultyModerate,
 	"control_plane_pki_theft":      difficultyModerate,
 	"static_pod_admission_bypass":  difficultyModerate,
 

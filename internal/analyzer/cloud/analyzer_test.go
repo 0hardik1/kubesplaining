@@ -14,6 +14,22 @@ func TestAnalyzerName(t *testing.T) {
 	}
 }
 
+// TestAnalyzerDispatchEKSReportsCoverageGap pins the one thing an empty EKS
+// snapshot must say: access entries were not evaluated. Without this, a cluster
+// migrated off aws-auth would come back clean from the whole IAM class.
+func TestAnalyzerDispatchEKSReportsCoverageGap(t *testing.T) {
+	t.Parallel()
+	snap := models.NewSnapshot()
+	snap.Metadata.CloudProvider = "eks"
+	findings, err := New().Analyze(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("Analyze(eks) returned error: %v", err)
+	}
+	if len(findings) != 1 || findings[0].RuleID != "KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001" {
+		t.Fatalf("Analyze(eks) on an empty snapshot = %+v, want only the NOT-EVALUATED coverage finding", findings)
+	}
+}
+
 func TestAnalyzerDispatchNoOpProviders(t *testing.T) {
 	t.Parallel()
 
@@ -26,7 +42,6 @@ func TestAnalyzerDispatchNoOpProviders(t *testing.T) {
 		{name: "gke is a no-op this slot", provider: "gke"},
 		{name: "aks is a no-op this slot", provider: "aks"},
 		{name: "unknown provider is silently ignored", provider: "digitalocean"},
-		{name: "eks runs EKS sub-package (currently a no-op skeleton)", provider: "eks"},
 	}
 
 	for _, tc := range cases {

@@ -112,6 +112,11 @@ var Glossary = map[string]GlossaryEntry{
 		Short: "Non-sensitive key/value config data injected into pods. Often misused for credentials.",
 		Long:  template.HTML(`<p>A <strong>ConfigMap</strong> stores plain-text configuration that pods read at startup. They are <em>not</em> meant to hold secrets, but in practice teams put database URLs (with passwords), API keys, and tokens in ConfigMaps. Kubesplaining flags credential-shaped keys for that reason.</p>`),
 	},
+	"AccessEntry": {
+		Title: "EKS access entry",
+		Short: "An EKS control-plane record that maps an AWS IAM principal to Kubernetes groups and access policies.",
+		Long:  template.HTML(`<p>An <strong>EKS access entry</strong> is how a modern EKS cluster decides which AWS IAM roles and users may talk to the Kubernetes API, and as whom. It replaces the older <code>aws-auth</code> ConfigMap. Each entry names one IAM principal, an optional list of Kubernetes groups, and zero or more AWS-managed <em>access policies</em> (for example <code>AmazonEKSClusterAdminPolicy</code>) applied at cluster or namespace scope.</p><p>Access entries are not Kubernetes objects. They live in the EKS API, so an in-cluster RBAC audit cannot see them; kubesplaining reads them from an export made with <code>scripts/eks-access-entries.sh</code>.</p>`),
+	},
 	"ClusterRole": {
 		Title:  "ClusterRole",
 		Short:  "A cluster-wide bag of (verbs × resources) permissions, granted via a binding.",
@@ -509,6 +514,27 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Read every Secret cluster-wide", Cmd: "kubectl get secrets -A"},
 		},
 	},
+	"access_entry_admin": {
+		Title: "AWS IAM principal granted cluster-admin via an EKS access entry",
+		Plain: template.HTML(`<p>EKS access entries are the successor to the <code>aws-auth</code> ConfigMap: each one lives in the EKS control plane and ties an IAM principal to Kubernetes groups and to AWS-managed access policies. <code>AmazonEKSClusterAdminPolicy</code> at cluster scope is the <code>cluster-admin</code> ClusterRole by another name, and a group in the entry that a ClusterRoleBinding ties to <code>cluster-admin</code> has the same effect.</p><p>Nothing in the cluster records this grant. <code>kubectl get clusterrolebindings</code> does not list it and the ConfigMap does not contain it; only <code>aws eks list-access-entries</code> does, which is why kubesplaining needs the export produced by <code>scripts/eks-access-entries.sh</code> to see it.</p>`),
+		Mitre: "T1078 — Valid Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the AWS identity you control", Cmd: "aws sts get-caller-identity"},
+			{Note: "Refresh the EKS kubeconfig context for the target cluster", Cmd: "aws eks update-kubeconfig --name <cluster> --region <region>"},
+			{Note: "Prove cluster-admin reach", Cmd: "kubectl auth can-i '*' '*' --all-namespaces"},
+			{Note: "Read every Secret cluster-wide", Cmd: "kubectl get secrets -A"},
+		},
+	},
+	"access_entry_secrets_read": {
+		Title: "AWS IAM principal can read every namespace's Secrets via an EKS access entry",
+		Plain: template.HTML(`<p><code>AmazonEKSAdminPolicy</code> and <code>AmazonEKSAdminViewPolicy</code> associated at cluster scope do not reach cluster-scoped resources, but they do read Secrets in every namespace. That includes the token Secrets and mountable credentials of every controller in <code>kube-system</code>, so the principal can take on any of those identities and continue from there.</p>`),
+		Mitre: "T1552.007 — Unsecured Credentials: Container API",
+		AttackerSteps: []AttackerStep{
+			{Note: "Authenticate through the access entry", Cmd: "aws eks update-kubeconfig --name <cluster> --region <region>"},
+			{Note: "Enumerate Secrets in the control-plane namespace", Cmd: "kubectl -n kube-system get secrets"},
+			{Note: "Use a stolen controller token", Cmd: "kubectl --token=$(kubectl -n kube-system get secret <name> -o jsonpath='{.data.token}' | base64 -d) auth can-i --list"},
+		},
+	},
 	"colocated_sa_token_theft": {
 		Title: "Co-located ServiceAccount token theft",
 		Plain: template.HTML(`<p>Administrative control over a namespace implies control over every identity inside it. Someone who can create RoleBindings in a namespace can create a pod that mounts any ServiceAccount there, exec into a pod already running as it, or read its token Secret directly.</p><p>This matters when a namespace hosts an identity more powerful than the namespace itself, for example a controller whose ClusterRoleBinding grants cluster-wide permissions. Namespace-admin then becomes a stepping stone rather than a boundary.</p>`),
@@ -662,6 +688,9 @@ func TechniqueKeyForFinding(f models.Finding) string {
 	case f.RuleID == "KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001",
 		f.RuleID == "KUBE-CLOUD-AWSAUTH-OVERBROAD-001":
 		return "aws_auth_admin"
+	case f.RuleID == "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001",
+		f.RuleID == "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001":
+		return "access_entry_admin"
 	case f.RuleID == "KUBE-CLOUD-IRSA-ADMIN-ROLE-001":
 		return "irsa_assume_role"
 	case f.RuleID == "KUBE-CLOUD-IMDS-PIVOT-001":

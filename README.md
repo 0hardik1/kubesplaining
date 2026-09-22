@@ -436,6 +436,7 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--audit-source` | `native` | Audit-log format: `native` (kube-apiserver JSON-lines) or `eks` (CloudWatch `filter-log-events` export). |
 | `--audit-window-days` | `30` | How many days of audit history to consider. Widen for monthly cron jobs. |
 | `--max-privesc-depth` | `5` | BFS depth cap for the escalation graph. |
+| `--eks-access-entries` | (none) | Path to an EKS access-entries export from `scripts/eks-access-entries.sh <cluster>`. Access entries live in the EKS API, not the cluster, so without it an EKS scan reports `KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001` rather than silently skipping the IAM-to-RBAC class. See [docs/findings.md](docs/findings.md#cloud-provider-integration-eks-internalanalyzercloudeks). |
 | `--ci-mode` | off | Exit non-zero when over thresholds. |
 | `--ci-max-critical` / `--ci-max-high` | `0` / `0` | Max findings allowed at each severity in CI mode. |
 | `--exclusions-preset` | `standard` | `standard` / `minimal` / `none`. |

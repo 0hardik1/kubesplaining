@@ -30,6 +30,9 @@ import (
 //   - KUBE-CLOUD-AWSAUTH-OVERBROAD-001: same surface, plus a hint to either
 //     remove the mapping outright or rebind the group to a least-privileged
 //     ClusterRole instead of cluster-admin.
+//   - KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001 / -OVERBROAD-001: the mapping
+//     lives in the EKS API, so the hint is an `aws eks disassociate-access-policy`
+//     / `update-access-entry` command rather than a kubectl patch.
 //   - KUBE-CLOUD-IRSA-ADMIN-ROLE-001: the IAM role attached to the SA carries
 //     admin-flavored policies; the kubectl side does not change (the SA stays
 //     annotated), the fix is in AWS IAM. We emit a sample replacement trust
@@ -54,6 +57,10 @@ func ForCloud(ruleID string, finding models.Finding) *models.RemediationHint {
 		return cloudAWSAuthSystemMastersHint(finding)
 	case "KUBE-CLOUD-AWSAUTH-OVERBROAD-001":
 		return cloudAWSAuthOverbroadHint(finding)
+	case "KUBE-CLOUD-ACCESSENTRY-CLUSTER-ADMIN-001":
+		return cloudAccessEntryClusterAdminHint(finding)
+	case "KUBE-CLOUD-ACCESSENTRY-OVERBROAD-001":
+		return cloudAccessEntryOverbroadHint(finding)
 	case "KUBE-CLOUD-IRSA-ADMIN-ROLE-001":
 		return cloudIRSAAdminRoleHint(finding)
 	case "KUBE-CLOUD-IRSA-MISSING-001":
@@ -109,6 +116,93 @@ kubectl -n kube-system edit configmap aws-auth
 # If you take option 2, audit the binding above and replace its roleRef:
 #   kubectl edit clusterrolebinding <name>`, arnDisplay(arn), viaLine)
 	return commandOnlyHint(target, command)
+}
+
+// accessEntryPatchTarget names the access entry itself. There is no kubectl
+// surface for it: the fix is an `aws eks` call, so the hint carries the
+// command and the target is informational.
+func accessEntryPatchTarget(arn string) models.PatchTarget {
+	return models.PatchTarget{Kind: "AccessEntry", APIVersion: "eks.amazonaws.com", Name: arn}
+}
+
+func accessEntryClusterName(finding models.Finding) string {
+	if name := stringFromEvidence(finding.Evidence, "clusterName"); name != "" {
+		return name
+	}
+	return "<cluster>"
+}
+
+// cloudAccessEntryClusterAdminHint emits the disassociate-access-policy call
+// that removes AmazonEKSClusterAdminPolicy from the entry, plus the
+// least-privilege re-association the operator picks a scope for.
+func cloudAccessEntryClusterAdminHint(finding models.Finding) *models.RemediationHint {
+	arn := awsAuthARNFromFinding(finding)
+	cluster := accessEntryClusterName(finding)
+	policy := stringFromEvidence(finding.Evidence, "policyArn")
+	if policy == "" {
+		policy = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+	}
+	command := fmt.Sprintf(`# The EKS access entry for:
+#   %s
+# holds AmazonEKSClusterAdminPolicy at cluster scope, which is cluster-admin.
+# Access entries live in the EKS API, not in the cluster: this is an aws call,
+# not a kubectl edit. Applies live, so confirm the principal is not the one you
+# are running as before you disassociate.
+aws eks list-associated-access-policies --cluster-name %s --principal-arn %s
+aws eks disassociate-access-policy --cluster-name %s --principal-arn %s \
+  --policy-arn %s
+# Re-grant the least privilege the principal needs, for example edit in one namespace:
+#   aws eks associate-access-policy --cluster-name %s --principal-arn %s \
+#     --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy \
+#     --access-scope type=namespace,namespaces=<ns>
+# Or remove the entry entirely if the principal does not need cluster access:
+#   aws eks delete-access-entry --cluster-name %s --principal-arn %s`,
+		arnDisplay(arn), cluster, arnDisplay(arn), cluster, arnDisplay(arn), policy, cluster, arnDisplay(arn), cluster, arnDisplay(arn))
+	return commandOnlyHint(accessEntryPatchTarget(arn), command)
+}
+
+// cloudAccessEntryOverbroadHint branches on the evidence "reason": a
+// cluster-scoped secrets-reading policy gets the disassociate / re-scope
+// flow, a group bound to an admin ClusterRole gets update-access-entry plus
+// the binding to audit.
+func cloudAccessEntryOverbroadHint(finding models.Finding) *models.RemediationHint {
+	arn := awsAuthARNFromFinding(finding)
+	cluster := accessEntryClusterName(finding)
+	var command string
+	if policy := stringFromEvidence(finding.Evidence, "policyArn"); policy != "" {
+		command = fmt.Sprintf(`# The EKS access entry for:
+#   %s
+# associates %s
+# at cluster scope. That policy reads Secrets in every namespace, including every
+# kube-system controller token, so its reach is cluster-admin in practice.
+aws eks disassociate-access-policy --cluster-name %s --principal-arn %s \
+  --policy-arn %s
+# Re-associate at namespace scope (or pick AmazonEKSEditPolicy / AmazonEKSViewPolicy):
+#   aws eks associate-access-policy --cluster-name %s --principal-arn %s \
+#     --policy-arn %s \
+#     --access-scope type=namespace,namespaces=<ns>`,
+			arnDisplay(arn), policy, cluster, arnDisplay(arn), policy, cluster, arnDisplay(arn), policy)
+	} else {
+		group := stringFromEvidence(finding.Evidence, "viaBinding")
+		viaLine := ""
+		if group != "" {
+			viaLine = fmt.Sprintf("\n# The cluster-admin reach comes from ClusterRoleBinding %q.", group)
+		}
+		command = fmt.Sprintf(`# The EKS access entry for:
+#   %s
+# maps the principal into a Kubernetes group that is bound to an admin-equivalent ClusterRole.%s
+# Two fixes, pick one:
+#   1) Drop the group from the entry (update-access-entry replaces the whole list,
+#      so pass every group the principal should keep):
+aws eks describe-access-entry --cluster-name %s --principal-arn %s
+aws eks update-access-entry --cluster-name %s --principal-arn %s \
+  --kubernetes-groups <groups-without-the-admin-group>
+#   2) Rebind the group to a narrower ClusterRole so the principal keeps API
+#      access but loses cluster-admin:
+#   kubectl edit clusterrolebinding <name>`,
+			arnDisplay(arn), viaLine, cluster, arnDisplay(arn), cluster, arnDisplay(arn))
+	}
+	return commandOnlyHint(accessEntryPatchTarget(arn), command)
 }
 
 // cloudIRSAAdminRoleHint emits guidance for tightening the IAM role's
