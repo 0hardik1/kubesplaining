@@ -79,35 +79,48 @@
     body[data-active-tab="overview"] main [data-tab="attack"],
     body[data-active-tab="overview"] main [data-tab="findings"],
     body[data-active-tab="overview"] main [data-tab="privesc"],
+    body[data-active-tab="overview"] main [data-tab="graph"],
     body[data-active-tab="overview"] main [data-tab="leastprivilege"],
     body[data-active-tab="overview"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="attack"] main [data-tab="overview"],
     body[data-active-tab="attack"] main [data-tab="findings"],
     body[data-active-tab="attack"] main [data-tab="privesc"],
+    body[data-active-tab="attack"] main [data-tab="graph"],
     body[data-active-tab="attack"] main [data-tab="leastprivilege"],
     body[data-active-tab="attack"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="findings"] main [data-tab="overview"],
     body[data-active-tab="findings"] main [data-tab="attack"],
     body[data-active-tab="findings"] main [data-tab="privesc"],
+    body[data-active-tab="findings"] main [data-tab="graph"],
     body[data-active-tab="findings"] main [data-tab="leastprivilege"],
     body[data-active-tab="findings"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="privesc"] main [data-tab="overview"],
     body[data-active-tab="privesc"] main [data-tab="attack"],
     body[data-active-tab="privesc"] main [data-tab="findings"],
+    body[data-active-tab="privesc"] main [data-tab="graph"],
     body[data-active-tab="privesc"] main [data-tab="leastprivilege"],
     body[data-active-tab="privesc"] main [data-tab="compliance"] { display: none; }
+    body[data-active-tab="graph"] main [data-tab="overview"],
+    body[data-active-tab="graph"] main [data-tab="attack"],
+    body[data-active-tab="graph"] main [data-tab="findings"],
+    body[data-active-tab="graph"] main [data-tab="privesc"],
+    body[data-active-tab="graph"] main [data-tab="leastprivilege"],
+    body[data-active-tab="graph"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="leastprivilege"] main [data-tab="overview"],
     body[data-active-tab="leastprivilege"] main [data-tab="attack"],
     body[data-active-tab="leastprivilege"] main [data-tab="findings"],
     body[data-active-tab="leastprivilege"] main [data-tab="privesc"],
+    body[data-active-tab="leastprivilege"] main [data-tab="graph"],
     body[data-active-tab="leastprivilege"] main [data-tab="compliance"] { display: none; }
     body[data-active-tab="compliance"] main [data-tab="overview"],
     body[data-active-tab="compliance"] main [data-tab="attack"],
     body[data-active-tab="compliance"] main [data-tab="findings"],
     body[data-active-tab="compliance"] main [data-tab="privesc"],
+    body[data-active-tab="compliance"] main [data-tab="graph"],
     body[data-active-tab="compliance"] main [data-tab="leastprivilege"] { display: none; }
     body[data-active-tab="leastprivilege"] details.recon-card,
     body[data-active-tab="privesc"] details.recon-card,
+    body[data-active-tab="graph"] details.recon-card,
     body[data-active-tab="compliance"] details.recon-card { display: none; }
     .tabs-empty { color: var(--text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
 
@@ -1591,6 +1604,9 @@
       {{ if and (not .LeastPrivilegeOnly) (gt (len .PrivescPaths.Groups) 0) }}
       <button type="button" class="tab" role="tab" id="tabbtn-privesc" aria-controls="tab-privesc" aria-selected="false" data-tab="privesc">Escalation paths <span class="tab-count">{{ .PrivescPaths.Total }}</span></button>
       {{ end }}
+      {{ if and (not .LeastPrivilegeOnly) (gt (len .EscalationGraph.Nodes) 0) }}
+      <button type="button" class="tab" role="tab" id="tabbtn-graph" aria-controls="tab-graph" aria-selected="false" data-tab="graph">Escalation graph <span class="tab-count">{{ .EscalationGraph.EdgeCount }}</span></button>
+      {{ end }}
       <button type="button" class="tab" role="tab" id="tabbtn-leastprivilege" aria-controls="tab-leastprivilege" aria-selected="false" data-tab="leastprivilege">Least Privilege <span class="tab-count">{{ .LeastPrivilege.Total }}</span></button>
       {{ if and (not .LeastPrivilegeOnly) (gt (len .Compliance.Frameworks) 0) }}
       <button type="button" class="tab" role="tab" id="tabbtn-compliance" aria-controls="tab-compliance" aria-selected="false" data-tab="compliance">Compliance <span class="tab-count">{{ .Compliance.Total }}</span></button>
@@ -2735,6 +2751,167 @@
         </div>
       </section>
       {{ end }}
+    </section>
+    {{ end }}
+
+    {{ if gt (len .EscalationGraph.Nodes) 0 }}
+    <section data-tab="graph" id="tab-graph" aria-labelledby="tabbtn-graph">
+      <style>
+        .eg-hero { max-width: 1280px; margin: 0 auto 14px; padding: 24px 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
+        .eg-hero h2 { margin: 0 0 8px; font-size: 20px; font-weight: 650; color: var(--text); }
+        .eg-hero p { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text-mut); max-width: 90ch; }
+        .eg-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; margin-top: 16px; font-size: 12px; color: var(--text-mut); }
+        .eg-leg { display: inline-flex; align-items: center; gap: 7px; }
+        .eg-swatch { width: 22px; height: 3px; border-radius: 2px; display: inline-block; }
+        .eg-swatch.easy { background: var(--low); }
+        .eg-swatch.moderate { background: var(--high); }
+        .eg-swatch.hard { background: var(--critical); }
+        .eg-dot { width: 12px; height: 12px; border-radius: 4px; display: inline-block; border: 1.5px solid; }
+        .eg-dot.source { border-color: var(--accent); background: rgba(106,183,255,0.16); }
+        .eg-dot.sink { border-color: var(--critical); background: var(--critical-soft); border-radius: 999px; }
+        .eg-reset { margin-left: auto; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-mut); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+        .eg-reset:hover { color: var(--text); border-color: var(--border-strong); }
+        .eg-note { max-width: 1280px; margin: 0 auto; padding: 16px 28px; color: var(--text-mut); font-size: 13px; }
+        .eg-canvas { max-width: 1280px; margin: 0 auto; overflow: auto; border: 1px solid var(--border); border-radius: 16px; background:
+            radial-gradient(circle at 1px 1px, rgba(255,255,255,0.035) 1px, transparent 0) 0 0 / 26px 26px, var(--bg-1); }
+        .eg-svg { display: block; }
+        .eg-edge { fill: none; stroke-width: 1.6; opacity: 0.55; transition: opacity 0.12s ease, stroke-width 0.12s ease; }
+        .eg-edge.easy { stroke: var(--low); }
+        .eg-edge.moderate { stroke: var(--high); }
+        .eg-edge.hard { stroke: var(--critical); stroke-dasharray: 5 4; }
+        .eg-arrow-easy path { fill: var(--low); }
+        .eg-arrow-moderate path { fill: var(--high); }
+        .eg-arrow-hard path { fill: var(--critical); }
+        .eg-nodebox { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1.2; rx: 9; transition: opacity 0.12s ease; }
+        .eg-node.eg-source .eg-nodebox { stroke: var(--accent); fill: rgba(106,183,255,0.08); }
+        .eg-node.eg-sink .eg-nodebox { fill: var(--critical-soft); stroke: var(--critical-edge); }
+        .eg-node.eg-sink.eg-sev-high .eg-nodebox { fill: var(--high-soft); stroke: var(--high-edge); }
+        .eg-node.eg-sink.eg-sev-med .eg-nodebox { fill: var(--medium-soft); stroke: var(--medium-edge); }
+        .eg-title { fill: var(--text); font-size: 12.5px; font-weight: 600; }
+        .eg-sub { fill: var(--text-dim); font-size: 10.5px; }
+        .eg-node.eg-sink .eg-title { fill: var(--text); font-weight: 650; }
+        .eg-node { cursor: pointer; }
+        .eg-node:focus-visible { outline: none; }
+        .eg-node:focus-visible .eg-nodebox { stroke: var(--accent); stroke-width: 2; }
+        /* focus/highlight state: dim everything, then re-light the traced set. */
+        .eg-svg.eg-focus .eg-edge { opacity: 0.06; }
+        .eg-svg.eg-focus .eg-node .eg-nodebox { opacity: 0.16; }
+        .eg-svg.eg-focus .eg-node .eg-title, .eg-svg.eg-focus .eg-node .eg-sub { opacity: 0.2; }
+        .eg-svg.eg-focus .eg-edge.eg-lit { opacity: 0.95; stroke-width: 2.4; }
+        .eg-svg.eg-focus .eg-node.eg-lit .eg-nodebox { opacity: 1; }
+        .eg-svg.eg-focus .eg-node.eg-lit .eg-title, .eg-svg.eg-focus .eg-node.eg-lit .eg-sub { opacity: 1; }
+        .eg-svg.eg-focus .eg-node.eg-pinned .eg-nodebox { stroke: var(--accent); stroke-width: 2.4; }
+      </style>
+      {{ with .EscalationGraph }}
+      <div class="eg-hero">
+        <h2>Escalation graph</h2>
+        <p>Every privilege-escalation route this scan found, drawn as one picture: <strong>{{ .SubjectCount }}</strong> subject{{ if ne .SubjectCount 1 }}s{{ end }} and <strong>{{ .SinkCount }}</strong> sink{{ if ne .SinkCount 1 }}s{{ end }} joined by <strong>{{ .EdgeCount }}</strong> attacker move{{ if ne .EdgeCount 1 }}s{{ end }}. Sources sit on the left and the high-value sinks they reach on the right; each hop is coloured by how hard it is to pull off. This is the whole graph the multi-hop <em>Escalation paths</em> tab lists one route at a time — a shared node is one identity several chains pass through. Click or focus a node to trace everything it reaches and everything that reaches it; click a sink to light up every route into it. Click empty space or <em>Reset</em> to clear.</p>
+        <div class="eg-legend">
+          <span class="eg-leg"><i class="eg-swatch easy"></i>easy hop</span>
+          <span class="eg-leg"><i class="eg-swatch moderate"></i>moderate hop</span>
+          <span class="eg-leg"><i class="eg-swatch hard"></i>hard hop</span>
+          <span class="eg-leg"><i class="eg-dot source"></i>source subject</span>
+          <span class="eg-leg"><i class="eg-dot sink"></i>sink</span>
+          <button type="button" class="eg-reset" data-eg-reset>Reset</button>
+        </div>
+      </div>
+      {{ if .Truncated }}
+      <p class="eg-note">This cluster's escalation graph has <strong>{{ .TotalNodes }}</strong> nodes — too many to draw legibly here. The <strong>Escalation paths</strong> tab lists every route in full.</p>
+      {{ else }}
+      <div class="eg-canvas">
+        <svg class="eg-svg" width="{{ .Width }}" height="{{ .Height }}" viewBox="0 0 {{ .Width }} {{ .Height }}" role="img" aria-label="Escalation graph: {{ .SubjectCount }} subjects and {{ .SinkCount }} sinks joined by {{ .EdgeCount }} attacker moves">
+          <defs>
+            <marker id="eg-arrow-easy" class="eg-arrow eg-arrow-easy" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z"/></marker>
+            <marker id="eg-arrow-moderate" class="eg-arrow eg-arrow-moderate" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z"/></marker>
+            <marker id="eg-arrow-hard" class="eg-arrow eg-arrow-hard" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z"/></marker>
+          </defs>
+          <g class="eg-edges">
+            {{ range .Edges }}<path class="eg-edge {{ .Difficulty }}" data-eg-edge data-from="{{ .From }}" data-to="{{ .To }}" d="{{ .D }}" marker-end="url(#eg-arrow-{{ .Difficulty }})"><title>{{ .Label }}</title></path>
+            {{ end }}
+          </g>
+          <g class="eg-nodes">
+            {{ range .Nodes }}<g class="eg-node eg-{{ .Kind }}{{ if .SevClass }} eg-sev-{{ .SevClass }}{{ end }}" data-eg-node data-id="{{ .ID }}" transform="translate({{ .X }},{{ .Y }})" tabindex="0" role="button" aria-label="{{ .AriaLabel }}"><rect class="eg-nodebox" width="{{ .W }}" height="{{ .H }}" rx="9"/><text class="eg-title" x="13" y="{{ if .Sub }}20{{ else }}28{{ end }}">{{ .Title }}</text>{{ if .Sub }}<text class="eg-sub" x="13" y="35">{{ .Sub }}</text>{{ end }}</g>
+            {{ end }}
+          </g>
+        </svg>
+      </div>
+      {{ end }}
+      {{ end }}
+      <script>
+        (function () {
+          var section = document.getElementById('tab-graph');
+          if (!section) return;
+          var svg = section.querySelector('.eg-svg');
+          if (!svg) return;
+          var nodes = Array.prototype.slice.call(svg.querySelectorAll('[data-eg-node]'));
+          var edges = Array.prototype.slice.call(svg.querySelectorAll('[data-eg-edge]'));
+          var nodeById = {};
+          nodes.forEach(function (n) { nodeById[n.getAttribute('data-id')] = n; });
+          // Forward/reverse adjacency over edge elements, so a BFS can collect both
+          // the edges traversed and the nodes reached.
+          var fwd = {}, rev = {};
+          edges.forEach(function (e) {
+            var f = e.getAttribute('data-from'), t = e.getAttribute('data-to');
+            (fwd[f] = fwd[f] || []).push({ e: e, n: t });
+            (rev[t] = rev[t] || []).push({ e: e, n: f });
+          });
+          var pinned = null;
+
+          // litNodes is a plain object keyed by node id (a string); litEdges is a Set
+          // of edge ELEMENTS, because a DOM element used as an object key stringifies
+          // to "[object SVGPathElement]" and would collide across every edge.
+          function walk(start, adj, litNodes, litEdges) {
+            var stack = [start], seen = {};
+            seen[start] = true;
+            while (stack.length) {
+              var cur = stack.pop();
+              litNodes[cur] = true;
+              (adj[cur] || []).forEach(function (step) {
+                litEdges.add(step.e);
+                if (!seen[step.n]) { seen[step.n] = true; stack.push(step.n); }
+              });
+            }
+          }
+
+          function clear() {
+            svg.classList.remove('eg-focus');
+            nodes.forEach(function (n) { n.classList.remove('eg-lit', 'eg-pinned'); });
+            edges.forEach(function (e) { e.classList.remove('eg-lit'); });
+          }
+
+          function light(id, isPin) {
+            var litNodes = {}, litEdges = new Set();
+            walk(id, fwd, litNodes, litEdges); // everything this node reaches
+            walk(id, rev, litNodes, litEdges); // everything that reaches it
+            svg.classList.add('eg-focus');
+            nodes.forEach(function (n) {
+              var nid = n.getAttribute('data-id');
+              n.classList.toggle('eg-lit', !!litNodes[nid]);
+              n.classList.toggle('eg-pinned', isPin && nid === id);
+            });
+            edges.forEach(function (e) { e.classList.toggle('eg-lit', litEdges.has(e)); });
+          }
+
+          nodes.forEach(function (n) {
+            var id = n.getAttribute('data-id');
+            n.addEventListener('click', function (ev) {
+              ev.stopPropagation();
+              if (pinned === id) { pinned = null; clear(); }
+              else { pinned = id; light(id, true); }
+            });
+            n.addEventListener('mouseenter', function () { if (!pinned) light(id, false); });
+            n.addEventListener('mouseleave', function () { if (!pinned) clear(); });
+            n.addEventListener('focus', function () { if (!pinned) light(id, false); });
+            n.addEventListener('blur', function () { if (!pinned) clear(); });
+            n.addEventListener('keydown', function (ev) {
+              if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); n.click(); }
+            });
+          });
+          svg.addEventListener('click', function () { pinned = null; clear(); });
+          var resetBtn = section.querySelector('[data-eg-reset]');
+          if (resetBtn) resetBtn.addEventListener('click', function () { pinned = null; clear(); });
+        })();
+      </script>
     </section>
     {{ end }}
 

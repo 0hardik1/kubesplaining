@@ -158,6 +158,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		TopFixes:        buildTopFixes(findings),
 		SubjectCapCards: buildPerSubjectCapabilities(snapshot, findings),
 		PrivescPaths:    buildPrivescPaths(findings),
+		EscalationGraph: buildEscalationGraphView(findings),
 	}
 	if len(findings) > 5 {
 		data.TopFindings = append([]models.Finding(nil), findings[:5]...)

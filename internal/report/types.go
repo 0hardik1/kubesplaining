@@ -561,4 +561,10 @@ type htmlReportData struct {
 	// the snapshot has no privesc paths; both the tab button and the section
 	// gate on len(.PrivescPaths.Groups) > 0.
 	PrivescPaths PrivescPathsSection
+
+	// EscalationGraph feeds the "Escalation graph" tab — the whole escalation
+	// graph (union of every KUBE-PRIVESC-PATH-* hop chain) as one interactive
+	// node-link diagram. Zero-value (empty Nodes) when the snapshot has no privesc
+	// paths; both the tab button and the section gate on len(.EscalationGraph.Nodes) > 0.
+	EscalationGraph EscalationGraphView
 }
