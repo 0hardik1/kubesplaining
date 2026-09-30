@@ -564,6 +564,16 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Steal the ServiceAccount token signing key", Cmd: "cat /etc/kubernetes/pki/sa.key"},
 		},
 	},
+	"statefulset_cross_namespace_pod": {
+		Title: "StatefulSet confused deputy → cross-namespace pod (CVE-2026-2270)",
+		Plain: template.HTML(`<p>A <code>ControllerRevision</code>'s <code>data</code> field is a strategic-merge patch of a StatefulSet. On affected server versions (fixed in v1.34.12 / v1.35.9 / v1.36.5 / v1.37.1), the StatefulSet controller applied that patch to the <em>whole</em> object, not just its <code>.spec</code>, so an attacker-authored revision could change fields it should never touch — including the namespace the reconciled pods land in.</p><p>kube-controller-manager holds cluster-wide pod-create, so it becomes a <strong>confused deputy</strong>: a subject with write access to both <code>statefulsets</code> and <code>controllerrevisions</code> in one namespace makes the controller create a pod in a <em>different</em> namespace, running as any ServiceAccount there, with an attacker-chosen spec. That reaches tokens and node access the subject's own namespace never granted. The pod is garbage-collected unless the attacker forges a valid StatefulSet OwnerReference, which is why this is a high-complexity, conditional route rather than a one-step escalation.</p>`),
+		Mitre: "T1548 — Abuse Elevation Control Mechanism",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm both write halves in the source namespace", Cmd: "kubectl auth can-i create statefulsets.apps -n <ns> && kubectl auth can-i create controllerrevisions.apps -n <ns>"},
+			{Note: "Confirm the server version is affected (fixed in 1.34.12 / 1.35.9 / 1.36.5 / 1.37.1)", Cmd: "kubectl version -o json | jq .serverVersion"},
+			{Note: "Author a ControllerRevision whose data patch retargets metadata.namespace and the pod template's ServiceAccount, then let the controller reconcile it"},
+		},
+	},
 	"workload_create_token_theft": {
 		Title: "Workload creation → ServiceAccount token theft",
 		Plain: template.HTML(`<p>A Deployment, DaemonSet, StatefulSet, Job, or CronJob carries a pod template, and its controller creates pods from that template. Whoever writes the template chooses the ServiceAccount the pods run as, and Kubernetes checks only that the ServiceAccount exists, not that the writer may use it.</p><p>So <code>create</code> on any of these kinds reaches exactly what <code>create pods</code> reaches: every ServiceAccount in the namespace (or in every namespace, for a cluster-wide grant). Removing <code>create pods</code> from a role while leaving <code>create deployments</code> changes nothing.</p>`),
@@ -720,6 +730,8 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "wildcard_permission"
 	case f.RuleID == "KUBE-PRIVESC-019":
 		return "mutating_policy_inject"
+	case f.RuleID == "KUBE-VERSION-CVE-2026-2270":
+		return "statefulset_cross_namespace_pod"
 	case f.RuleID == "KUBE-RBAC-OVERBROAD-001":
 		return "bound_to_cluster_admin"
 	case f.RuleID == "KUBE-CLOUD-AWSAUTH-SYSTEM-MASTERS-001",

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/0hardik1/kubesplaining/internal/kubeversion"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/permissions"
 	corev1 "k8s.io/api/core/v1"
@@ -49,6 +50,10 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	admitsPrivileged := namespacesAdmittingPrivileged(snapshot)
 	impersonableUsers := boundUsers(snapshot)
 	workloads := updatableWorkloads(snapshot)
+	// CVE-2026-2270 is version-gated: only build the StatefulSet confused-deputy
+	// edges when the server version falls in the affected band, so patched clusters
+	// (and manifests scanned with no server version) stay quiet.
+	statefulSetDeputyVuln := kubeversion.StatefulSetControllerRevisionDeputy(snapshot.Metadata.ClusterVersion)
 
 	effective := permissions.Aggregate(snapshot)
 	for _, perms := range effective {
@@ -78,6 +83,12 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 		// the same ServiceAccounts as pod creation, and a pod edge inserted first
 		// stays the reported route when a subject holds both grants.
 		addWorkloadEdges(graph, perms.Subject, perms.Rules, subjectsByNs, workloads, privilegedNamespaces, admitsPrivileged)
+		// Last of the per-subject builders, and only on an affected server version.
+		// Its edges are `hard` cross-namespace routes, so keeping them last lets any
+		// cheaper direct route a subject also holds win BFS ties.
+		if statefulSetDeputyVuln {
+			addStatefulSetDeputyEdges(graph, perms.Subject, perms.Rules, subjectsByNs, privilegedNamespaces)
+		}
 	}
 
 	// Runs after the per-subject loop so every namespace-admin sink that any
@@ -1368,6 +1379,11 @@ var actionDifficulty = map[string]string{
 	"node_drain_migrate":   difficultyHard,
 	"imds_node_role_pivot": difficultyHard,
 	"csr_sign":             difficultyHard,
+	// CVE-2026-2270: beyond both write grants, the attacker must craft a
+	// ControllerRevision patch reproducing the target namespace/spec and forge a
+	// valid StatefulSet OwnerReference so garbage collection does not immediately
+	// delete the cross-namespace pod (the advisory's own caveat).
+	"statefulset_cross_namespace_pod": difficultyHard,
 }
 
 // difficultyForAction returns the rating for an action, defaulting to moderate.

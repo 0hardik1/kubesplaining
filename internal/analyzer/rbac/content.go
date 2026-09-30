@@ -1041,6 +1041,77 @@ func contentPrivesc019(subject models.SubjectRef, policyBinding, policyRole, bin
 	}
 }
 
+// contentVersionCVE20262270 is the StatefulSet + ControllerRevision confused-deputy
+// finding (KUBE-VERSION-CVE-2026-2270).
+//
+// CVE-2026-2270 (CVSS 3.1 base 5.9, Medium; announced 2026-09-23) is a confused
+// deputy in the StatefulSet controller: its `ApplyRevision` restored the entire
+// StatefulSet — metadata, namespace and all — from a ControllerRevision's
+// strategic-merge patch, when it should have restored only `.Spec`. A subject with
+// namespace-scoped write on both `statefulsets` and `controllerrevisions` can
+// therefore author a revision that makes kube-controller-manager (which holds
+// cluster-wide pod-create) stamp out a pod in a namespace the subject has no access
+// to, with an attacker-chosen ServiceAccount and spec. Fixed in v1.34.12, v1.35.9,
+// v1.36.5, and v1.37.1.
+//
+// The copy states the honest caveats: the finding is emitted only on an affected
+// server version, and the cross-namespace pod is garbage-collected unless the
+// attacker also forges a valid StatefulSet OwnerReference — which is why the privesc
+// graph rates the edge `hard`. serverVersion is the value the finding was gated on,
+// echoed so the operator can confirm it against their actual build (a vendor
+// backport under the same upstream patch number is the one case this can over-report).
+func contentVersionCVE20262270(subject models.SubjectRef, serverVersion, stsBinding, stsRole, crBinding, crRole string) ruleContent {
+	scope := models.Scope{
+		Level:  models.ScopeCluster,
+		Detail: "Cross-namespace: a namespaced write reaches other namespaces through kube-controller-manager, which runs cluster-wide",
+	}
+	versionNote := "the cluster's reported server version"
+	if v := strings.TrimSpace(serverVersion); v != "" {
+		versionNote = fmt.Sprintf("the cluster's reported server version `%s`", v)
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("StatefulSet confused deputy (CVE-2026-2270): `%s` can create pods cross-namespace", subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can write `statefulsets` (via %s : %s) and `controllerrevisions` (via %s : %s), and %s falls in the band affected by CVE-2026-2270 (fixed in v1.34.12 / v1.35.9 / v1.36.5 / v1.37.1).\n\n"+
+			"A `ControllerRevision`'s `data` is a strategic-merge patch of a StatefulSet. Before the fix, the controller's `ApplyRevision` applied that patch to the *whole* StatefulSet object and used the result, so an attacker-authored revision could change fields outside `.spec` — including which namespace the reconciled object, and the pods it creates, belong to. kube-controller-manager holds cluster-wide pod-create, so it becomes a confused deputy: it creates a pod in a namespace the writer cannot touch, running as any ServiceAccount there, with an attacker-chosen spec. The fix restores only `.Spec` from the revision.\n\n"+
+			"Both halves are load-bearing: writing a StatefulSet with no ControllerRevision write cannot inject the out-of-spec metadata the bug restores, and writing ControllerRevisions with no StatefulSet to attach them to reconciles nothing. This finding requires them together, and is emitted only on an affected server version — a patched cluster stays quiet.\n\n"+
+			"The upstream severity is Medium (CVSS 3.1 base 5.9): the attack has high complexity and needs two write grants, and the created cross-namespace pod is deleted by the garbage collector unless the attacker constructs a valid StatefulSet OwnerReference for it. The window is still enough to mount and read a privileged ServiceAccount's token or to escape a privileged pod to the node, which is why the escalation graph draws the edge but rates it `hard`.",
+			subjectKey(subject), stsBinding, stsRole, crBinding, crRole, versionNote),
+		Impact: "Cross-namespace pod creation via kube-controller-manager: the subject reaches ServiceAccount tokens and (where Pod Security Admission permits privileged pods) node-level access in namespaces it has no direct permissions in, defeating namespace isolation for pod creation.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms both grants with `%s` and `%s`.", kubectlAuthCanI("create", "statefulsets.apps", stsNamespaceArg(subject), subject), kubectlAuthCanI("create", "controllerrevisions.apps", stsNamespaceArg(subject), subject)),
+			"They create a StatefulSet they control, then write a ControllerRevision whose `data` strategic-merge patch sets `metadata.namespace` to a target namespace (e.g. `kube-system`) and points the pod template at a privileged ServiceAccount there — or makes the pod privileged.",
+			"kube-controller-manager reconciles the StatefulSet, applies the attacker's revision to the whole object, and creates the pod in the target namespace as the chosen ServiceAccount.",
+			"Before the garbage collector reaps the pod (they forge a valid StatefulSet OwnerReference to extend its life), they read the mounted token from the pod, or `chroot` out of a privileged pod onto the node and lift its kubelet / PKI material.",
+			"With the stolen token or node identity they act with permissions their own namespace never granted.",
+		},
+		Remediation: "Upgrade the control plane to a fixed release (v1.34.12 / v1.35.9 / v1.36.5 / v1.37.1 or later), and separate `statefulsets` and `controllerrevisions` write so no non-admin identity holds both.",
+		RemediationSteps: []string{
+			"Upgrade kube-controller-manager to v1.34.12, v1.35.9, v1.36.5, v1.37.1, or a later release; the fix restores only `.spec` from a ControllerRevision.",
+			fmt.Sprintf("Until upgraded, drop write access to either `statefulsets` or `controllerrevisions` from %s — most workloads that manage StatefulSets do not need to write ControllerRevisions directly, since the controller owns them.", subjectKey(subject)),
+			"Audit who else holds both: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select([.rules[]?|select((.apiGroups[]?|.==\"apps\" or .==\"*\") and (.resources[]?|.==\"controllerrevisions\" or .==\"*\") and (.verbs[]?|.==\"create\" or .==\"update\" or .==\"patch\" or .==\"*\"))]|length>0) | \"\\(.kind)/\\(.metadata.namespace)/\\(.metadata.name)\"'` and cross-reference with StatefulSet write.",
+			"Confirm the running version really carries the fix (a vendor build may report an affected upstream patch number while already backporting it): `kubectl version -o json | jq .serverVersion`.",
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes issue #142097 — CVE-2026-2270", URL: "https://github.com/kubernetes/kubernetes/issues/142097"},
+			{Title: "Security Advisory: CVE-2026-2270 (kubernetes-announce)", URL: "https://groups.google.com/g/kubernetes-security-announce"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1078_004},
+	}
+}
+
+// stsNamespaceArg returns the namespace flag value for the CVE-2026-2270 verification
+// commands: a ServiceAccount's own namespace (where its writes are typically
+// namespaced), or "" for a User/Group so the command spans namespaces.
+func stsNamespaceArg(subject models.SubjectRef) string {
+	if subject.Kind == "ServiceAccount" {
+		return subject.Namespace
+	}
+	return ""
+}
+
 // lastField returns the last whitespace-separated token of s (e.g. "delete
 // nodes" -> "nodes", "update nodes/status" -> "nodes/status"). Used to render
 // the verb/resource pair in the KUBE-PRIVESC-016 verification command.

@@ -258,6 +258,14 @@ the RBAC grant.
   `system:masters` to aggregated APIs.
 - **Version-gated node CVEs.** `KUBE-VERSION-CVE-2025-4563` (NodeRestriction DRA bypass on
   apiserver 1.32.0–1.32.5 / 1.33.0–1.33.1, Low/informational).
+- **`KUBE-VERSION-CVE-2026-2270` (shipped).** StatefulSet + ControllerRevision confused deputy:
+  the pre-fix `ApplyRevision` restored the whole StatefulSet (namespace included) from a
+  ControllerRevision, so write on both objects steers kube-controller-manager into cross-namespace
+  pod creation. Version-gated (≤1.34.11 / ≤1.35.8 / ≤1.36.4 / 1.37.0) via
+  `internal/kubeversion.StatefulSetControllerRevisionDeputy`, shared by the rbac finding and the
+  `statefulset_cross_namespace_pod` graph edge. This is the first analyzer to gate on
+  `Snapshot.Metadata.ClusterVersion`, establishing the pattern for the other version-banded CVEs
+  in §I/§O4.
 
 ## G. Storage / volume escapes
 
