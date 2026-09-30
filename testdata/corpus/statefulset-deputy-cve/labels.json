@@ -1,0 +1,19 @@
+{
+  "name": "statefulset-deputy-cve",
+  "description": "CVE-2026-2270: on an affected server version (v1.36.4), the ServiceAccount app/writer holds namespace-scoped write on statefulsets AND controllerrevisions. That pair steers kube-controller-manager into creating a pod in another namespace, so writer reaches victim/victim-sa — an identity it has no direct access to — and rides victim-sa's kube-system secret read to the kube_system_secrets sink. Both app and victim enforce restricted PSA, so writer has no local privileged-pod route; the KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS path for writer exists ONLY because of the version-gated CVE edge. The deny list pins that a patched cluster (see the kubeversion unit tests) and victim-sa's own lack of the write pair must never manufacture the finding, and that writer must not reach cluster-admin.",
+  "snapshot": "testdata/snapshots/statefulset-deputy-cve.json",
+  "expected": [
+    "KUBE-NETPOL-COVERAGE-001:Namespace:app",
+    "KUBE-NETPOL-COVERAGE-001:Namespace:victim",
+    "KUBE-PRIVESC-003:ServiceAccount/app/writer:app:statefulsets,controllerrevisions",
+    "KUBE-PRIVESC-005:ServiceAccount/victim/victim-sa:kube-system:secrets",
+    "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/app/writer:kube_system_secrets",
+    "KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/victim/victim-sa:kube_system_secrets",
+    "KUBE-VERSION-CVE-2026-2270:ServiceAccount/app/writer:app:statefulsets,controllerrevisions"
+  ],
+  "deny": [
+    "KUBE-VERSION-CVE-2026-2270:ServiceAccount/victim/victim-sa",
+    "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
+    "KUBE-PRIVESC-PATH-SYSTEM-MASTERS"
+  ]
+}

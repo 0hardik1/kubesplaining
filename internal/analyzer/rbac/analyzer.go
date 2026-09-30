@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/0hardik1/kubesplaining/internal/kubeversion"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/permissions"
 	"github.com/0hardik1/kubesplaining/internal/remediation"
@@ -53,6 +54,10 @@ var (
 	// requires rule.Namespace == "" (a RoleBinding granting these is dead RBAC).
 	targetMutatingPolicies       = []permissions.ResourceTarget{permissions.InGroup(groupAdmission, "mutatingadmissionpolicies")}
 	targetMutatingPolicyBindings = []permissions.ResourceTarget{permissions.InGroup(groupAdmission, "mutatingadmissionpolicybindings")}
+	// The two halves of the CVE-2026-2270 StatefulSet confused-deputy primitive,
+	// pinned to the apps group so a CRD reusing either name cannot match.
+	targetStatefulSets        = []permissions.ResourceTarget{permissions.InGroup(groupApps, "statefulsets")}
+	targetControllerRevisions = []permissions.ResourceTarget{permissions.InGroup(groupApps, "controllerrevisions")}
 )
 
 // grants reports whether this rule authorizes any of verbs on any of targets,
@@ -180,6 +185,9 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 
 	usedServiceAccounts := usedServiceAccounts(snapshot)
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
+	// CVE-2026-2270 is gated on the server version so patched clusters stay quiet;
+	// computed once and consulted in the per-subject correlation below.
+	statefulSetDeputyVuln := kubeversion.StatefulSetControllerRevisionDeputy(snapshot.Metadata.ClusterVersion)
 	seen := map[string]struct{}{}
 	findings := make([]models.Finding, 0)
 
@@ -513,6 +521,52 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				"KUBE-PRIVESC-019", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 				scoring.Clamp(9.0*exploitability),
 				contentPrivesc019(perms.Subject, mapPolicyRule.formattedBinding(), mapPolicyRule.formattedRole(), mapBindingRule.formattedBinding(), mapBindingRule.formattedRole())), snapshot))
+		}
+
+		// KUBE-VERSION-CVE-2026-2270 — StatefulSet + ControllerRevision confused
+		// deputy. On an affected server version, write access to BOTH `statefulsets`
+		// and `controllerrevisions` (apps) lets a subject steer kube-controller-manager
+		// into creating a pod in a namespace it cannot access: the StatefulSet
+		// controller restored the whole set (namespace included) from an
+		// attacker-authored ControllerRevision, not just its `.Spec`. Both halves are
+		// required, and the finding is version-gated — the graph edge behind it is
+		// gated on the same band via internal/kubeversion. Namespaced grants count:
+		// the whole point is that a bounded namespace write reaches other namespaces
+		// through the cluster-wide controller.
+		if statefulSetDeputyVuln {
+			var stsWriteRule, crWriteRule *effectiveRule
+			for i := range perms.Rules {
+				r := &perms.Rules[i]
+				if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcard(r.APIGroups) {
+					continue // already cluster-admin via KUBE-PRIVESC-017
+				}
+				if stsWriteRule == nil && r.grants(targetStatefulSets, "create", "update", "patch") {
+					stsWriteRule = r
+				}
+				if crWriteRule == nil && r.grants(targetControllerRevisions, "create", "update", "patch") {
+					crWriteRule = r
+				}
+			}
+			if stsWriteRule != nil && crWriteRule != nil {
+				blastRadius := 1.0
+				if stsWriteRule.Namespace == "" || crWriteRule.Namespace == "" {
+					blastRadius = 1.2
+				}
+				exploitability := 1.0
+				if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+					exploitability = 1.2
+				}
+				// Base 5.9 mirrors the upstream CVSS 3.1 score. It is MEDIUM as a flat
+				// finding; when it is actually the first hop of an escalation chain the
+				// engine's correlation pass amplifies it, and the KUBE-PRIVESC-PATH-*
+				// finding carries the chain's own (difficulty-attenuated) severity.
+				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, *stsWriteRule,
+					"KUBE-VERSION-CVE-2026-2270", models.SeverityMedium, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(5.9*exploitability*blastRadius),
+					contentVersionCVE20262270(perms.Subject, snapshot.Metadata.ClusterVersion,
+						stsWriteRule.formattedBinding(), stsWriteRule.formattedRole(),
+						crWriteRule.formattedBinding(), crWriteRule.formattedRole())))
+			}
 		}
 	}
 

@@ -1,0 +1,58 @@
+{
+  "metadata": {
+    "kubesplaining_version": "dev",
+    "snapshot_timestamp": "2026-09-30T00:00:00Z",
+    "cluster_name": "cve-2026-2270-fixture",
+    "cluster_version": "v1.36.4",
+    "api_server_url": "https://fixture.local"
+  },
+  "resources": {
+    "namespaces": [
+      { "metadata": { "name": "app", "labels": { "pod-security.kubernetes.io/enforce": "restricted" } } },
+      { "metadata": { "name": "victim", "labels": { "pod-security.kubernetes.io/enforce": "restricted" } } },
+      { "metadata": { "name": "kube-system" } }
+    ],
+    "service_accounts": [
+      { "metadata": { "name": "writer", "namespace": "app" } },
+      { "metadata": { "name": "victim-sa", "namespace": "victim" } }
+    ],
+    "roles": [
+      {
+        "metadata": { "name": "sts-writer", "namespace": "app" },
+        "rules": [
+          {
+            "apiGroups": ["apps"],
+            "resources": ["statefulsets", "controllerrevisions"],
+            "verbs": ["create", "update", "patch"]
+          }
+        ]
+      },
+      {
+        "metadata": { "name": "secret-reader", "namespace": "kube-system" },
+        "rules": [
+          {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "verbs": ["get", "list"]
+          }
+        ]
+      }
+    ],
+    "role_bindings": [
+      {
+        "metadata": { "name": "sts-writer-binding", "namespace": "app" },
+        "roleRef": { "apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "sts-writer" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "writer", "namespace": "app" }
+        ]
+      },
+      {
+        "metadata": { "name": "kube-system-secret-reader", "namespace": "kube-system" },
+        "roleRef": { "apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "secret-reader" },
+        "subjects": [
+          { "kind": "ServiceAccount", "name": "victim-sa", "namespace": "victim" }
+        ]
+      }
+    ]
+  }
+}
