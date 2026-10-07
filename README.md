@@ -131,18 +131,20 @@ docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:late
 
 ## What it checks
 
-73 stable rule IDs across 11 modules today, plus the privilege-escalation graph that chains them. Full per-rule severity, detection logic, and remediation: [docs/findings.md](docs/findings.md).
+92 stable rule IDs across 11 modules today, plus the privilege-escalation graph that chains them. Full per-rule severity, detection logic, and remediation: [docs/findings.md](docs/findings.md).
 
 | Module | Rules | Focus |
 | --- | --- | --- |
-| **rbac** | 10 | wildcard / impersonate / bind-escalate / secret-read / pod-create / nodes-proxy / token-create |
-| **podsec** | 13 | privileged, host namespaces, hostPath, container sockets, runAsRoot, mutable tags |
-| **network** | 5 | namespaces missing NetworkPolicy, broad-internet egress, unselected workloads |
-| **admission** | 3 | failurePolicy: Ignore, objectSelector bypass, sensitive-namespace exemptions |
-| **secrets** | 4 | legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering |
+| **rbac** | 23 | wildcard / impersonate / bind-escalate / secret-read / pod-create / nodes-proxy / token-create, the two-verb pairs the API server actually enforces (CSR create + approve, signer control, mutating-policy write + bind), and a version-gated CVE rule: write on both `statefulsets` and `controllerrevisions` steers kube-controller-manager into cross-namespace pod creation (CVE-2026-2270), reported only when the server version is unpatched |
+| **podsec** | 19 | privileged, host namespaces, hostPath, container sockets, runAsRoot, dangerous capabilities, seccomp / procMount, PSA namespace labels, mutable tags |
+| **containersec** | 4 | missing limits, missing probes, lifecycle exec hooks, images not digest-pinned |
+| **network** | 7 | namespaces missing NetworkPolicy, broad-internet and IMDS egress, cross-namespace bridges, unselected workloads |
+| **admission** | 4 | failurePolicy: Ignore, objectSelector bypass, sensitive-namespace exemptions, no policy engine at all |
+| **secrets** | 8 | legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering, cross-namespace Secret reach, TLS expiry, stale Secrets |
 | **serviceaccount** | 4 | privileged SAs, default-SA RBAC, DaemonSet token blast-radius |
 | **certificates** | 2 | CertificateSigningRequest objects: a workload ServiceAccount asking for a client cert, or a request against the `legacy-unknown` signer |
-| **privesc** | 4 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets |
+| **privesc** | 7 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets / namespace-admin / token-mint / aws-iam-role. Hops are not only direct grants: workload controllers, catalogued operators steered as confused deputies (Flux, Argo CD, cert-manager, ...), and the CVE-2026-2270 StatefulSet-controller edge all appear as controller-mediated hops, and every path says whether its own recommended cut actually closes the route |
+| **cloud** (EKS) | 10 | aws-auth and EKS Access Entry mappings to system:masters or admin-equivalent roles, IRSA admin roles, IMDS node-role pivot |
 | **leastprivilege** | 4 | granted-but-unused RBAC verbs from audit-log diff; opt-in via `--audit-log`. See [docs/audit-logs.md](docs/audit-logs.md) for setup and the [Least-Privilege analyzer section](#least-privilege-analyzer-audit-log-driven) for the behavior matrix |
 
 Every finding is tagged with a `RiskCategory` (`privilege_escalation`, `data_exfiltration`, `lateral_movement`, `infrastructure_modification`, `defense_evasion`) so the HTML report can group by impact lane.
@@ -156,7 +158,7 @@ Four-stage pipeline:
 ```
 ┌───────────────┐    ┌───────────────┐    ┌───────────────┐    ┌───────────────┐
 │  Connection   │ →  │  Collection   │ →  │   Analysis    │ →  │    Report     │
-│  kubeconfig   │    │ snapshot.json │    │  7 modules ∥  │    │  html/json/   │
+│  kubeconfig   │    │ snapshot.json │    │ 11 modules ∥  │    │  html/json/   │
 │ / in-cluster  │    │ RBAC+workload │    │  findings[]   │    │   csv/sarif   │
 └───────────────┘    └───────────────┘    └───────────────┘    └───────────────┘
 ```

@@ -560,12 +560,15 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				// finding; when it is actually the first hop of an escalation chain the
 				// engine's correlation pass amplifies it, and the KUBE-PRIVESC-PATH-*
 				// finding carries the chain's own (difficulty-attenuated) severity.
-				findings = appendFinding(findings, seen, findingFromContent(perms.Subject, *stsWriteRule,
+				// Anchored on the controllerrevisions half: the structured hint removes
+				// the anchoring rule, and that is the grant to cut, since the controller
+				// owns ControllerRevisions and workloads rarely need to write them.
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *crWriteRule,
 					"KUBE-VERSION-CVE-2026-2270", models.SeverityMedium, models.CategoryPrivilegeEscalation,
 					scoring.Clamp(5.9*exploitability*blastRadius),
 					contentVersionCVE20262270(perms.Subject, snapshot.Metadata.ClusterVersion,
 						stsWriteRule.formattedBinding(), stsWriteRule.formattedRole(),
-						crWriteRule.formattedBinding(), crWriteRule.formattedRole())))
+						crWriteRule.formattedBinding(), crWriteRule.formattedRole())), snapshot))
 			}
 		}
 	}
@@ -827,7 +830,7 @@ func appendFinding(findings []models.Finding, seen map[string]struct{}, finding 
 }
 
 // attachDangerousRemediation populates the structured RemediationHint for the
-// dangerous-verb (KUBE-PRIVESC-001 … -017) findings. Wired at each switch
+// dangerous-verb (KUBE-PRIVESC-001 … -019, KUBE-VERSION-CVE-2026-2270) findings. Wired at each switch
 // branch above as a one-line wrapper around findingFromContent so the per-rule
 // remediation generator runs with the finding's evidence already populated.
 //

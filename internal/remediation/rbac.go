@@ -149,8 +149,12 @@ func buildOverbroadAfter(roleKind, roleName, namespace string) string {
 // RBAC findings emitted by the rbac analyzer (KUBE-PRIVESC-001 through -019,
 // excluding the graph-only -PATH-* findings). Each finding identifies a single
 // effective rule from a (Cluster)Role; the fix is to remove that one rule. For
-// the correlation findings (-002/-007/-016) the finding is anchored to one half
-// of the pair (-002/-007/-016/-019), so removing that rule breaks the chain.
+// the correlation findings (-002/-007/-016/-019, and the version-gated
+// KUBE-VERSION-CVE-2026-2270) the finding is anchored to one half of the pair,
+// so removing that rule breaks the chain. The CVE finding is anchored on its
+// `controllerrevisions` half, the grant the controller owns and workloads rarely
+// need, and its command leads with the control-plane upgrade: the RBAC cut
+// closes one subject's route, it does not repair kube-controller-manager.
 //
 // The patch we emit is a JSON-patch operation that surgically removes the
 // matching rule by re-writing the entire rules array with the offending rule
@@ -182,6 +186,9 @@ func ForRBACDangerous(ruleID string, finding models.Finding, _ models.Snapshot) 
 		Namespace:  namespace,
 	}
 	body, command := removeRulePatch(target, apiGroups, resources, verbs)
+	if ruleID == "KUBE-VERSION-CVE-2026-2270" {
+		command = statefulSetDeputyUpgradeNote + command
+	}
 	diff := removeRuleDiff(roleKind, roleName, namespace, apiGroups, resources, verbs)
 	return &models.RemediationHint{
 		Patch: &models.KubectlPatch{
@@ -193,6 +200,13 @@ func ForRBACDangerous(ruleID string, finding models.Finding, _ models.Snapshot) 
 		RBACDiff: diff,
 	}
 }
+
+// statefulSetDeputyUpgradeNote prefixes the KUBE-VERSION-CVE-2026-2270 command.
+// The RBAC cut below closes the route for this one subject, but the bug is in
+// kube-controller-manager: every other holder of the pair keeps the route until
+// the control plane runs a fixed release, so the note leads with the upgrade.
+const statefulSetDeputyUpgradeNote = "# CVE-2026-2270: removing this grant closes the route for this subject only. It does not repair\n" +
+	"# kube-controller-manager. Upgrade the control plane to v1.34.12 / v1.35.9 / v1.36.5 / v1.37.1 or later.\n"
 
 // isDangerousRBACRule reports whether the given RuleID is one of the
 // dangerous-verb findings the rbac analyzer produces. Each of these maps to a
@@ -222,7 +236,8 @@ func isDangerousRBACRule(ruleID string) bool {
 		"KUBE-PRIVESC-015",
 		"KUBE-PRIVESC-016",
 		"KUBE-PRIVESC-017",
-		"KUBE-PRIVESC-019":
+		"KUBE-PRIVESC-019",
+		"KUBE-VERSION-CVE-2026-2270":
 		return true
 	}
 	return false

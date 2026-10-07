@@ -582,3 +582,48 @@ func mustMarshal(v any) json.RawMessage {
 	}
 	return b
 }
+
+// TestForRBACDangerousStatefulSetDeputyLeadsWithUpgrade covers
+// KUBE-VERSION-CVE-2026-2270: the hint cuts the controllerrevisions write the
+// finding is anchored on, and its command says first that the cut does not repair
+// kube-controller-manager, because the bug is in the controller and every other
+// holder of the pair keeps the route until the control plane is upgraded.
+func TestForRBACDangerousStatefulSetDeputyLeadsWithUpgrade(t *testing.T) {
+	t.Parallel()
+
+	finding := models.Finding{
+		RuleID: "KUBE-VERSION-CVE-2026-2270",
+		Resource: &models.ResourceRef{
+			Kind:      "RBACRule",
+			Name:      "revision-writer",
+			Namespace: "app",
+		},
+		Evidence: mustMarshal(map[string]any{
+			"source_role":      "revision-writer",
+			"source_role_kind": "Role",
+			"namespace":        "app",
+			"api_groups":       []string{"apps"},
+			"resources":        []string{"controllerrevisions"},
+			"verbs":            []string{"create", "update", "patch"},
+		}),
+	}
+
+	hint := ForRBACDangerous("KUBE-VERSION-CVE-2026-2270", finding, models.Snapshot{})
+	if hint == nil || hint.Patch == nil {
+		t.Fatal("ForRBACDangerous returned no patch for KUBE-VERSION-CVE-2026-2270")
+	}
+	if hint.Patch.Target.Kind != "Role" || hint.Patch.Target.Name != "revision-writer" || hint.Patch.Target.Namespace != "app" {
+		t.Errorf("Patch.Target = %+v, want Role app/revision-writer", hint.Patch.Target)
+	}
+	if !strings.HasPrefix(hint.Patch.Command, "# CVE-2026-2270") {
+		t.Errorf("Patch.Command should lead with the CVE upgrade note, got:\n%s", hint.Patch.Command)
+	}
+	for _, want := range []string{"does not repair", "v1.34.12 / v1.35.9 / v1.36.5 / v1.37.1", "kubectl edit role revision-writer"} {
+		if !strings.Contains(hint.Patch.Command, want) {
+			t.Errorf("Patch.Command missing %q, got:\n%s", want, hint.Patch.Command)
+		}
+	}
+	if !strings.Contains(hint.RBACDiff, "-  resources: [\"controllerrevisions\"]") {
+		t.Errorf("RBACDiff should remove the controllerrevisions write, got:\n%s", hint.RBACDiff)
+	}
+}

@@ -56,10 +56,11 @@ cmd/kubesplaining/main.go            # entrypoint, ldflags-injected version
     └── internal/connection/          # client-go credentials resolution
     └── internal/collector/           # parallel API listing → models.Snapshot (single ~657-line collector.go)
     └── internal/manifest/            # offline alternative to collector: reads a YAML/JSON manifest into a Snapshot for `scan-resource`
-    └── internal/analyzer/            # the engine + 7 modules; see below
+    └── internal/analyzer/            # the engine + 12 modules; see below
     └── internal/exclusions/          # YAML-driven post-analysis muting; matched findings are dropped from output (see docs/exclusions.md for schema)
     └── internal/report/              # html/json/csv/sarif writers; HTML rendering is split across summary.go, evidence_render.go, attack_graph.go, glossary.go (each 400-850 lines because all CSS/JS is embedded)
     └── internal/scoring/             # composite formula + clamp + threshold helper, shared by analyzers and engine
+    └── internal/kubeversion/         # server-version predicates, one tested band per CVE, shared by a version-gated rule and the privesc edge behind it
     └── internal/permissions/         # aggregate.go: collapses (Cluster)RoleBindings × (Cluster)Roles into per-subject EffectiveRules
     └── internal/models/              # Snapshot, Finding, Severity, EscalationGraph/Path/Hop — the cross-package vocabulary
 ```
