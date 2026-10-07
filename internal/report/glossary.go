@@ -270,7 +270,7 @@ var Glossary = map[string]GlossaryEntry{
 var Techniques = map[string]TechniqueExplainer{
 	"impersonate_system_masters": {
 		Title: "Impersonation of system:masters",
-		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>groups: ["*"]</code> (or explicitly on <code>system:masters</code>) lets the holder send requests as the hard-coded <code>system:masters</code> group. The kube-apiserver short-circuits authorization for that group, so every API call succeeds regardless of RBAC.</p><p>This is the worst-case impersonation grant: it bypasses the cluster's entire RBAC layer rather than borrowing another principal's permissions.</p>`),
+		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>groups</code> with no <code>resourceNames</code> (or with <code>resourceNames</code> that list <code>system:masters</code>) lets the holder send requests as the hard-coded <code>system:masters</code> group. The kube-apiserver short-circuits authorization for that group, so every API call succeeds regardless of RBAC.</p><p>This is the worst-case impersonation grant: it bypasses the cluster's entire RBAC layer rather than borrowing another principal's permissions.</p>`),
 		Mitre: "T1078.004 — Cloud Accounts",
 		AttackerSteps: []AttackerStep{
 			{Note: "Confirm the bypass works by querying as system:masters", Cmd: "kubectl auth can-i --list --as=system:masters --as-group=system:masters"},
@@ -288,7 +288,7 @@ var Techniques = map[string]TechniqueExplainer{
 	},
 	"impersonate": {
 		Title: "RBAC impersonation",
-		Plain: template.HTML(`<p>Kubernetes has a built-in "act as another user" feature: the <code>impersonate</code> verb on <code>users</code>, <code>groups</code>, or <code>serviceaccounts</code>. Anyone with that verb can submit requests as <em>any</em> identity, bypassing whatever permissions they don't have themselves.</p><p>Granting <code>impersonate</code> on <code>groups</code> = <code>["*"]</code> is equivalent to cluster-admin: the holder can impersonate <code>system:masters</code>.</p>`),
+		Plain: template.HTML(`<p>Kubernetes has a built-in "act as another user" feature: the <code>impersonate</code> verb on <code>users</code>, <code>groups</code>, or <code>serviceaccounts</code>. Anyone with that verb can submit requests as <em>any</em> identity, bypassing whatever permissions they don't have themselves.</p><p>Granting <code>impersonate</code> on <code>groups</code> with no <code>resourceNames</code> is equivalent to cluster-admin: the holder can impersonate <code>system:masters</code>. A <code>resourceNames</code> list limits the grant to the names it lists, compared exactly: <code>resourceNames: ["*"]</code> names a group literally called <code>*</code>, not every group.</p>`),
 		Mitre: "T1078.004 — Cloud Accounts",
 		AttackerSteps: []AttackerStep{
 			{Note: "Confirm impersonation works", Cmd: "kubectl auth can-i --list --as=system:masters"},
@@ -297,13 +297,23 @@ var Techniques = map[string]TechniqueExplainer{
 		},
 	},
 	"impersonate_serviceaccount": {
-		Title: "Namespace-scoped ServiceAccount impersonation",
-		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>serviceaccounts</code>, granted by a namespace-scoped <strong>RoleBinding</strong>, lets the holder act as any ServiceAccount that lives <em>in the binding's namespace</em>. The reach is bounded — they can't impersonate SAs in other namespaces, and they can't impersonate users or groups — but it's still a token-free credential-borrow that inherits whatever cluster-wide permissions the impersonated SA happens to have.</p><p>Real exposure depends on what the SAs in the namespace can do: an in-namespace controller SA bound to a powerful ClusterRole becomes a stepping stone out of the namespace.</p>`),
+		Title: "Scoped ServiceAccount impersonation",
+		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>serviceaccounts</code>, when it is bounded, lets the holder act as a specific set of ServiceAccounts. Two bounds produce this edge. A namespace-scoped <strong>RoleBinding</strong> reaches only the ServiceAccounts in the binding's namespace. A <code>resourceNames</code> list reaches only the ServiceAccounts with those names; on a ClusterRoleBinding the names apply in every namespace, because the apiserver checks <code>Impersonate-User: system:serviceaccount:&lt;ns&gt;:&lt;name&gt;</code> as <code>impersonate serviceaccounts</code> on <code>&lt;name&gt;</code> in <code>&lt;ns&gt;</code>. Either way it is a token-free credential-borrow that inherits whatever permissions the impersonated SA happens to have.</p><p>Real exposure depends on what the reachable SAs can do: one bound to a powerful ClusterRole becomes a stepping stone out of the namespace.</p>`),
 		Mitre: "T1078.004 — Cloud Accounts",
 		AttackerSteps: []AttackerStep{
 			{Note: "List the SAs you can impersonate (every SA in the binding's namespace)", Cmd: "kubectl get sa -n <ns>"},
 			{Note: "Borrow a target SA's identity and probe its reach", Cmd: "kubectl auth can-i --list --as=system:serviceaccount:<ns>:<target-sa>"},
 			{Note: "Read whatever the impersonated SA can read (Secrets, ConfigMaps, etc.)", Cmd: "kubectl --as=system:serviceaccount:<ns>:<target-sa> get secrets -A"},
+		},
+	},
+	"impersonate_group": {
+		Title: "Group impersonation (scoped)",
+		Plain: template.HTML(`<p>The <code>impersonate</code> verb on <code>groups</code>, scoped with <code>resourceNames</code> to groups other than <code>system:masters</code>. The apiserver checks every <code>Impersonate-Group</code> value on its own, as <code>impersonate groups</code> on that group name, so this grant reaches only the groups it lists. It is not a cluster-admin grant: the holder gains exactly what the bindings that name the group grant.</p><p>That is why this edge points at a specific Group, and only at a group that some binding names. The chain continues only if that group's bindings lead somewhere. The apiserver also refuses <code>Impersonate-Group</code> without an <code>Impersonate-User</code> on the same request, and authorizes that user separately.</p>`),
+		Mitre: "T1078.004: Cloud Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "List the groups the grant names (the resourceNames on its groups rule)", Cmd: "kubectl get clusterrole <role> -o yaml"},
+			{Note: "Check what the named group can do", Cmd: "kubectl auth can-i --list --as=<user> --as-group=<group>"},
+			{Note: "Act with the group's grants", Cmd: "kubectl --as=<user> --as-group=<group> get secrets -A"},
 		},
 	},
 	"impersonate_user": {
@@ -454,11 +464,11 @@ var Techniques = map[string]TechniqueExplainer{
 	},
 	"node_drain_migrate": {
 		Title: "Migrate pods onto an attacker node",
-		Plain: template.HTML(`<p><code>delete pods</code> combined with cluster-scoped node control (<code>update</code>/<code>patch</code> on <code>nodes/status</code>, or <code>delete nodes</code>) lets an attacker cordon or remove every node except one they control, then evict a sensitive pod. The scheduler relocates the pod onto the attacker's node, where its ServiceAccount token and traffic are exposed.</p>`),
+		Plain: template.HTML(`<p>A way to remove pods (<code>delete pods</code>, <code>deletecollection pods</code>, or <code>create pods/eviction</code>) combined with cluster-scoped node control (<code>update</code>/<code>patch</code> on <code>nodes</code>, which is what <code>kubectl cordon</code> and <code>kubectl taint</code> use; <code>update</code>/<code>patch</code> on <code>nodes/status</code>; or <code>delete nodes</code>) lets an attacker cordon, taint, or remove every node except one they control, then evict a sensitive pod. The scheduler relocates the pod onto the attacker's node, where its ServiceAccount token and traffic are exposed.</p>`),
 		Mitre: "T1610 — Deploy Container",
 		AttackerSteps: []AttackerStep{
 			{Note: "Cordon every node except the attacker-controlled one", Cmd: "kubectl cordon <other-node>"},
-			{Note: "Evict the target pod so it reschedules onto the remaining node", Cmd: "kubectl delete pod <target> -n <ns>"},
+			{Note: "Remove the target pod so it reschedules onto the remaining node (delete, or evict through the Eviction API)", Cmd: "kubectl delete pod <target> -n <ns>"},
 		},
 	},
 	"pod_create_privileged_escape": {

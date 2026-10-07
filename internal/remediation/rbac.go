@@ -690,7 +690,7 @@ func privescPathAdvisoryDiff(subject models.SubjectRef, firstHop models.Escalati
 		note = fmt.Sprintf("# NOTE: hop 1 is granted by the `%s` binding (%s), which is not in this\n# snapshot: either the collection was partial (see collection warnings) or the\n# object changed between collection and analysis. The fix is unchanged: remove\n# this subject from that binding. Re-run against a complete snapshot to get the\n# exact diff.\n",
 			firstHop.SourceBinding, scope)
 	case correlationRootedActions[firstHop.Action]:
-		// Permission names both halves ("delete pods + node scheduling control").
+		// Permission names both halves (for example "delete pods + patch nodes").
 		// Every correlation builder sets it, but the copy still has to read as a
 		// sentence if one ever does not.
 		halves := "see the first hop's permission"

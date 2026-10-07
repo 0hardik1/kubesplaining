@@ -171,6 +171,10 @@ func TestWorkloadUpdateNeedsAWorkloadInScope(t *testing.T) {
 
 	named := appsRule("deployments", "patch")
 	named.ResourceNames = []string{"web"}
+	// ResourceNameMatches compares names exactly: ["*"] names a Deployment literally
+	// called "*" and reaches no real workload.
+	star := appsRule("deployments", "patch")
+	star.ResourceNames = []string{"*"}
 	jobs := rbacv1.PolicyRule{APIGroups: []string{"batch"}, Resources: []string{"jobs"}, Verbs: []string{"update", "patch"}}
 
 	cases := []struct {
@@ -185,6 +189,7 @@ func TestWorkloadUpdateNeedsAWorkloadInScope(t *testing.T) {
 		{name: "workload in scope", rule: appsRule("deployments", "patch"), deployments: []appsv1.Deployment{deployment("web", "team-a", "")}, want: true},
 		{name: "resourceNames names it", rule: named, deployments: []appsv1.Deployment{deployment("web", "team-a", "")}, want: true},
 		{name: "resourceNames names another", rule: named, deployments: []appsv1.Deployment{deployment("api", "team-a", "")}},
+		{name: "resourceNames star is a literal name", rule: star, deployments: []appsv1.Deployment{deployment("web", "team-a", "")}},
 		{name: "job template is immutable", rule: jobs, jobs: []batchv1.Job{{ObjectMeta: objectMeta("batch", "team-a")}}},
 	}
 	for _, tc := range cases {

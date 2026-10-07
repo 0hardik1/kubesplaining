@@ -49,6 +49,7 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
 	admitsPrivileged := namespacesAdmittingPrivileged(snapshot)
 	impersonableUsers := boundUsers(snapshot)
+	impersonableGroups := boundGroups(snapshot)
 	workloads := updatableWorkloads(snapshot)
 	// CVE-2026-2270 is version-gated: only build the StatefulSet confused-deputy
 	// edges when the server version falls in the affected band, so patched clusters
@@ -59,14 +60,14 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	for _, perms := range effective {
 		ensureSubjectNode(graph, perms.Subject)
 		for _, rule := range perms.Rules {
-			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, podSAsByName, tokenMounted, impersonableUsers)
+			addEdgesForRule(graph, perms.Subject, rule, subjectsByNs, podSAsByNs, podSAsByName, tokenMounted, impersonableUsers, impersonableGroups)
 		}
 		// Correlation edges that need the subject's full rule set at once
 		// (two RBAC verbs held together), rather than one rule at a time.
 		// addRBACWriteEdges stays first: its two edges used to be emitted from
 		// addEdgesForRule, ahead of every correlation edge, and BFS breaks ties on
 		// the order edges leaving a node were inserted.
-		addRBACWriteEdges(graph, perms.Subject, perms.Rules)
+		addRBACWriteEdges(graph, perms.Subject, perms.Rules, snapshot.Resources.ClusterRoles)
 		addSecretMintEdge(graph, perms.Subject, perms.Rules)
 		addNodeMigrateEdge(graph, perms.Subject, perms.Rules)
 		addPrivilegedPodCreateEdges(graph, perms.Subject, perms.Rules, privilegedNamespaces)
@@ -155,6 +156,7 @@ func addEdgesForRule(
 	podSAsByName map[string]map[string]models.SubjectRef,
 	tokenMounted map[string]bool,
 	impersonableUsers []models.SubjectRef,
+	impersonableGroups []models.SubjectRef,
 ) {
 	from := nodeID(subject)
 	clusterScope := rule.Namespace == ""
@@ -190,15 +192,33 @@ func addEdgesForRule(
 	// granting these verbs is dead RBAC (the authorizer never lets it succeed). Only emit
 	// edges for cluster-scoped grants.
 	//
-	// `groups` reaches cluster-admin from the grant alone, and soundly: the apiserver
-	// hard-codes system:masters as authorized for every operation, and that group is
-	// impersonable whether or not any binding in the snapshot mentions it.
-	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
+	// The apiserver authorizes every impersonated name on its own: Impersonate-Group: X
+	// is checked as `impersonate groups` with name X (WithImpersonation in
+	// k8s.io/apiserver/pkg/endpoints/filters/impersonation), so resourceNames decides
+	// which groups a grant reaches. `groups` reaches cluster-admin from the grant alone
+	// when it can name system:masters, and soundly: the apiserver hard-codes that group
+	// as authorized for every operation, and it is impersonable whether or not any
+	// binding in the snapshot mentions it. An unscoped grant can name it, and so can a
+	// grant whose resourceNames list it. A grant scoped to other groups cannot, and
+	// gets one impersonate_group edge per named group instead (below).
+	//
+	// Known gap: the apiserver refuses Impersonate-Group (and Impersonate-Uid and
+	// Impersonate-Extra-*) on a request that does not also carry Impersonate-User
+	// (buildImpersonationRequests in the same package), and that user is authorized
+	// separately. These group edges therefore also assume the subject can impersonate
+	// some user or ServiceAccount. That conjunction is not modeled yet.
+	impersonateGroups := clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"})
+	reachesMasters := impersonateGroups && (!rule.NameScoped() || slices.Contains(rule.ResourceNames, groupSystemMasters))
+	if reachesMasters {
+		description := "can impersonate any group, including system:masters"
+		if rule.NameScoped() {
+			description = "can impersonate the system:masters group"
+		}
 		add(sinkClusterAdmin, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate",
 			Permission:  verbResource(rule, "groups"),
-			Description: "can impersonate any group, including system:masters",
+			Description: description,
 		})
 	}
 
@@ -231,7 +251,7 @@ func addEdgesForRule(
 		}
 	}
 
-	if clusterScope && matchesResourceVerb(rule, []string{"groups"}, []string{"impersonate"}) {
+	if reachesMasters {
 		add(sinkSystemMasters, &models.EscalationEdge{
 			Technique:   "KUBE-PRIVESC-008",
 			Action:      "impersonate_system_masters",
@@ -240,12 +260,40 @@ func addEdgesForRule(
 		})
 	}
 
-	// impersonate serviceaccounts: cluster-scoped grants reach any SA cluster-wide (including
-	// kube-system controllers), so we treat that as cluster-admin. Namespace-scoped grants only
-	// reach SAs in the binding's namespace — model those as per-target edges so multi-hop chains
-	// can still surface a real path if one of those SAs reaches a sink.
+	// A name-scoped `impersonate groups` grant reaches the groups it names and no
+	// others. Like `users`, a group other than system:masters is worth what some
+	// binding gave it, so each named group a binding mentions gets its own edge
+	// (boundGroups) and BFS decides whether it leads anywhere. These edges are emitted
+	// after the system:masters pair so a grant that names system:masters as well keeps
+	// the direct route as its reported one.
+	if impersonateGroups && rule.NameScoped() {
+		for _, target := range impersonationTargets(rule, impersonableGroups) {
+			if target.Key() == subject.Key() {
+				continue
+			}
+			ensureSubjectNode(graph, target)
+			add(nodeID(target), &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-008",
+				Action:      "impersonate_group",
+				Permission:  verbResource(rule, "groups"),
+				Description: fmt.Sprintf("can impersonate Group %s", target.Name),
+			})
+		}
+	}
+
+	// impersonate serviceaccounts: an unscoped cluster-scoped grant reaches any SA
+	// cluster-wide (including kube-system controllers), so we treat that as
+	// cluster-admin. Every other shape gets per-target edges so multi-hop chains can
+	// still surface a real path if one of the reachable SAs reaches a sink:
+	//
+	//   - Namespace-scoped grants only reach SAs in the binding's namespace.
+	//   - Name-scoped grants only reach SAs whose name is listed. The apiserver checks
+	//     Impersonate-User: system:serviceaccount:ns:name as `impersonate
+	//     serviceaccounts` with name `name` in namespace ns, so a ClusterRole's
+	//     resourceNames apply in every namespace: a cluster-scoped grant naming "ci"
+	//     reaches every ServiceAccount called "ci", in any namespace, and nothing else.
 	if matchesResourceVerb(rule, []string{"serviceaccounts"}, []string{"impersonate"}) {
-		if clusterScope {
+		if clusterScope && !rule.NameScoped() {
 			add(sinkClusterAdmin, &models.EscalationEdge{
 				Technique:   "KUBE-PRIVESC-008",
 				Action:      "impersonate",
@@ -253,7 +301,7 @@ func addEdgesForRule(
 				Description: "can impersonate any ServiceAccount cluster-wide",
 			})
 		} else {
-			for _, target := range podCreateTargets(false, rule.Namespace, subjectsByNs) {
+			for _, target := range impersonationTargets(rule, podCreateTargets(clusterScope, rule.Namespace, subjectsByNs)) {
 				if target.Key() == subject.Key() {
 					continue
 				}
@@ -447,11 +495,34 @@ func addNamespaceAdminTokenTheftEdges(graph *models.EscalationGraph, subjectsByN
 // privileges to other subjects. That is lateral spread and persistence, and the rbac
 // module still reports it as a flat KUBE-PRIVESC-010 finding. Only the graph's claim
 // of a path to a higher sink is gated here.
-func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
+//
+// `bind` is authorized per role name: BindingAuthorized
+// (kubernetes/kubernetes pkg/registry/rbac/escalation_check.go) checks `bind` on
+// `clusterroles` (or `roles`) with the binding's roleRef.name as the object name. A
+// `bind` grant scoped with resourceNames therefore carries exactly the roles it names,
+// and the two arms below each count it only when it can name a role that reaches
+// their sink (bindReaches). A scoped `bind` that qualifies for neither arm produces no
+// edge at all; the flat KUBE-PRIVESC-009 finding still reports it, tagged
+// scope:resource-names. clusterRoles is the snapshot's ClusterRoles, needed to
+// recognise a custom role with the triple wildcard as admin-equivalent.
+func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule, clusterRoles []rbacv1.ClusterRole) {
+	// A ClusterRoleBinding to cluster-admin, or to a custom ClusterRole with the
+	// triple wildcard, is the cluster_admin route.
+	adminEquivalent := func(name string) bool {
+		return permissions.IsAdminEquivalentClusterRole(name, clusterRoles)
+	}
+	// A RoleBinding to any of these gives full control of the namespace it lives in.
+	// `admin` is the built-in namespace-admin ClusterRole; the cluster-admin
+	// equivalents grant at least as much when bound into one namespace.
+	namespaceAdminEquivalent := func(name string) bool {
+		return name == "admin" || adminEquivalent(name)
+	}
+
 	// Cluster-scoped halves. clusterrolebindings and clusterroles are cluster-scoped
 	// resources, so a RoleBinding granting a verb on them is dead RBAC and only this
-	// arm consults them.
-	bindingWrite, bind := map[cutKey]bool{}, map[cutKey]bool{}
+	// arm consults them. bind and bindNs are the same verb qualified for the two sinks:
+	// bind feeds the cluster_admin arm, bindNs the namespace_admin arm.
+	bindingWrite, bind, bindNs := map[cutKey]bool{}, map[cutKey]bool{}, map[cutKey]bool{}
 	roleWrite, escalate := map[cutKey]bool{}, map[cutKey]bool{}
 	// Namespace-scoped halves, keyed by the binding's namespace.
 	bindingWriteNs := map[string]map[cutKey]bool{}
@@ -471,8 +542,11 @@ func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef,
 			if matchesResourceVerb(rule, []string{"rolebindings", "clusterrolebindings"}, writeVerbs) {
 				bindingWrite[key] = true
 			}
-			if matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind"}) {
+			if bindReaches(rule, adminEquivalent) {
 				bind[key] = true
+			}
+			if bindReaches(rule, namespaceAdminEquivalent) {
+				bindNs[key] = true
 			}
 			if matchesResourceVerb(rule, []string{"roles", "clusterroles"}, writeVerbs) {
 				roleWrite[key] = true
@@ -520,7 +594,7 @@ func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef,
 	// cluster-scoped, so the bind half of this arm is only ever the cluster-scoped
 	// one. Namespaces are walked in sorted order because BFS breaks ties on edge
 	// insertion order and map iteration is not deterministic.
-	if len(bind) > 0 {
+	if len(bindNs) > 0 {
 		for _, namespace := range slices.Sorted(maps.Keys(bindingWriteNs)) {
 			ensureSubjectNode(graph, subject)
 			addEdge(graph, nodeID(subject), ensureNamespaceAdminSink(graph, namespace), &models.EscalationEdge{
@@ -529,7 +603,7 @@ func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef,
 				Permission:       "create/update rolebindings + bind (cluster)roles",
 				Description:      fmt.Sprintf("can RoleBind itself to any ClusterRole within namespace %s, holding the `bind` verb that satisfies RBAC escalation prevention", namespace),
 				BindingNamespace: namespace,
-				CutBreakers:      cutBreakers(bindingWriteNs[namespace], bind),
+				CutBreakers:      cutBreakers(bindingWriteNs[namespace], bindNs),
 			})
 		}
 	}
@@ -548,6 +622,23 @@ func addRBACWriteEdges(graph *models.EscalationGraph, subject models.SubjectRef,
 			CutBreakers:      cutBreakers(roleWriteNs[namespace], escalateNs[namespace]),
 		})
 	}
+}
+
+// bindReaches reports whether a cluster-scoped rule grants `bind` that can name a role
+// admits accepts. An unscoped grant can name any role, so it qualifies whenever it
+// grants `bind` on roles or clusterroles, as it always has. A name-scoped grant
+// qualifies only if one of its resourceNames is a ClusterRole admits accepts, and only
+// if the grant covers `clusterroles`: BindingAuthorized checks a ClusterRole roleRef
+// against the `clusterroles` resource, so a name on a `roles`-only grant names a Role
+// and can never bind cluster-admin. Names are compared exactly (ResourceNameMatches).
+func bindReaches(rule permissions.EffectiveRule, admits func(string) bool) bool {
+	if !rule.NameScoped() {
+		return matchesResourceVerb(rule, []string{"roles", "clusterroles"}, []string{"bind"})
+	}
+	if !matchesResourceVerb(rule, []string{"clusterroles"}, []string{"bind"}) {
+		return false
+	}
+	return slices.ContainsFunc(rule.ResourceNames, admits)
 }
 
 // boundUsers lists the distinct User subjects some binding in the snapshot names.
@@ -578,15 +669,65 @@ func boundUsers(snapshot models.Snapshot) []models.SubjectRef {
 	return users
 }
 
+// boundGroups lists the distinct Group subjects some binding in the snapshot names:
+// the groups a name-scoped `impersonate groups` grant can usefully reach. A group no
+// binding mentions carries no RBAC permissions, so an edge to it would assert reach
+// the cluster does not grant (its members may still matter to a webhook authorizer,
+// which the snapshot cannot see).
+//
+// system: groups are left out for the reason boundUsers leaves out system: users: the
+// graph never traverses a control-plane identity, so an edge to one could never be
+// walked. system:masters in particular is not listed here, because the caller routes
+// it to the system_masters and cluster_admin sinks directly. The implicit groups
+// (system:authenticated, system:serviceaccounts[:<ns>]) are the exception: they are
+// ordinary traversable nodes (see isImplicitGroup), and impersonating
+// system:serviceaccounts:<ns> does hand a User that namespace's group grants.
+func boundGroups(snapshot models.Snapshot) []models.SubjectRef {
+	seen := map[string]bool{}
+	var groups []models.SubjectRef
+	collect := func(subjects []rbacv1.Subject) {
+		for _, subject := range subjects {
+			if subject.Kind != "Group" || subject.Name == "" || seen[subject.Name] {
+				continue
+			}
+			ref := models.SubjectRef{Kind: "Group", Name: subject.Name}
+			if strings.HasPrefix(subject.Name, "system:") && !isImplicitGroup(ref) {
+				continue
+			}
+			seen[subject.Name] = true
+			groups = append(groups, ref)
+		}
+	}
+	for _, binding := range snapshot.Resources.RoleBindings {
+		collect(binding.Subjects)
+	}
+	for _, binding := range snapshot.Resources.ClusterRoleBindings {
+		collect(binding.Subjects)
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
+	return groups
+}
+
 // impersonationTargets narrows impersonable candidates to the ones a rule reaches.
 // `impersonate` acts on a named object, so a resourceNames-scoped rule authorizes it
 // only for the names it lists (permissions.Grants keeps the verb matched for exactly
 // that reason); an unscoped rule reaches every candidate.
+//
+// The apiserver authorizes each impersonated name separately: Impersonate-User: alice
+// is checked as `impersonate users` with name alice, Impersonate-Group: X as
+// `impersonate groups` with name X, and an Impersonate-User of
+// `system:serviceaccount:ns:name` as `impersonate serviceaccounts` with name `name` in
+// namespace ns (WithImpersonation in k8s.io/apiserver/pkg/endpoints/filters/impersonation).
+// So candidates match on their Name alone.
+//
+// The comparison is an exact string match, as in ResourceNameMatches
+// (kubernetes/kubernetes pkg/apis/rbac/v1/evaluation_helpers.go). A resourceNames
+// entry of "*" is a literal name and reaches only an identity literally named "*". Do
+// not special-case it. The `signers` resource is the one place "*" is a wildcard,
+// because it has its own signer-name grammar (permissions.SignersCovered); that
+// grammar does not apply to impersonation.
 func impersonationTargets(rule permissions.EffectiveRule, candidates []models.SubjectRef) []models.SubjectRef {
 	if !rule.NameScoped() {
-		return candidates
-	}
-	if slices.Contains(rule.ResourceNames, "*") {
 		return candidates
 	}
 	var targets []models.SubjectRef
@@ -642,12 +783,21 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 	})
 }
 
-// addNodeMigrateEdge emits the KUBE-PRIVESC-016 edge: a subject that can
-// `delete pods` AND manipulate node scheduling cluster-wide (`update`/`patch`
-// on nodes/status, or `delete nodes`) can evict sensitive pods and steer their
-// reschedule onto an attacker-controlled node, then steal their tokens.
+// addNodeMigrateEdge emits the KUBE-PRIVESC-016 edge: a subject that can remove
+// pods AND manipulate node scheduling cluster-wide can evict sensitive pods and steer
+// their reschedule onto an attacker-controlled node, then steal their tokens.
 //
-// This edge deliberately carries no SourceBinding: the two halves (delete pods,
+// Each half has several grants that do the job (nodeMigratePodRemoval and
+// nodeMigrateNodeControl list them). Removing a pod is `delete pods`, `deletecollection
+// pods` (every pod in scope at once), or `create pods/eviction` (the Eviction API,
+// which deletes the pod once its PodDisruptionBudget allows). Node control is
+// `update`/`patch` on `nodes/status`, `update`/`patch` on `nodes` (`kubectl cordon`
+// patches spec.unschedulable and `kubectl taint` patches spec.taints, both on the
+// main resource), or `delete nodes`. The pod half counts namespaced grants because
+// pods are namespaced; the node half counts only cluster-scoped grants because nodes
+// are not.
+//
+// This edge deliberately carries no SourceBinding: the two halves (pod removal,
 // node manipulation) can come from two different bindings, so no single binding
 // name would be correct as "the" grantor of the whole edge. That is a different
 // question from what a cut would BREAK, though: whenever a half has exactly one
@@ -657,18 +807,28 @@ func addSecretMintEdge(graph *models.EscalationGraph, subject models.SubjectRef,
 // correctly ban this edge when the cut removes a capability it depends on. A half
 // held by two or more bindings contributes nothing, because cutting one of them
 // leaves the others granting it and the half survives.
+//
+// Permission names the grant that matched each half, taken from the first rule (in
+// the subject's rule order) that grants it, so the reader sees the verb they need to
+// revoke rather than a generic label.
 func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef, rules []permissions.EffectiveRule) {
 	deleteBy, manipBy := map[cutKey]bool{}, map[cutKey]bool{}
+	var podAction, nodeAction string
 	for _, r := range rules {
-		if matchesResourceVerb(r, []string{"pods"}, []string{"delete"}) {
+		if action := firstGrant(r, nodeMigratePodRemoval); action != "" {
 			deleteBy[cutKey{binding: r.SourceBinding, namespace: r.Namespace}] = true
+			if podAction == "" {
+				podAction = action
+			}
 		}
 		if r.Namespace != "" {
 			continue
 		}
-		if matchesResourceVerb(r, []string{"nodes/status"}, []string{"update", "patch"}) ||
-			matchesResourceVerb(r, []string{"nodes"}, []string{"delete"}) {
+		if action := firstGrant(r, nodeMigrateNodeControl); action != "" {
 			manipBy[cutKey{binding: r.SourceBinding, namespace: r.Namespace}] = true
+			if nodeAction == "" {
+				nodeAction = action
+			}
 		}
 	}
 	if len(deleteBy) == 0 || len(manipBy) == 0 {
@@ -678,10 +838,50 @@ func addNodeMigrateEdge(graph *models.EscalationGraph, subject models.SubjectRef
 	addEdge(graph, nodeID(subject), sinkNodeEscape, &models.EscalationEdge{
 		Technique:   "KUBE-PRIVESC-016",
 		Action:      "node_drain_migrate",
-		Permission:  "delete pods + node scheduling control",
+		Permission:  podAction + " + " + nodeAction,
 		Description: "can migrate sensitive pods onto an attacker-controlled node via eviction + node manipulation",
 		CutBreakers: cutBreakers(deleteBy, manipBy),
 	})
+}
+
+// verbOn is one (verb, resource) grant an edge builder looks for. The resource's API
+// group comes from resourceAPIGroup, as everywhere else in this file.
+type verbOn struct {
+	verb     string
+	resource string
+}
+
+// nodeMigratePodRemoval and nodeMigrateNodeControl are the two halves of
+// KUBE-PRIVESC-016, in the order firstGrant tries them. Most direct first, so a rule
+// granting several (the built-in `edit` role grants delete, deletecollection, and
+// pods/eviction create) is labelled by the plainest one. The rbac analyzer keeps the
+// same lists (podRemovalAction / nodeControlAction); change both together.
+var (
+	nodeMigratePodRemoval = []verbOn{
+		{"delete", "pods"},
+		{"deletecollection", "pods"},
+		{"create", "pods/eviction"},
+	}
+	nodeMigrateNodeControl = []verbOn{
+		{"update", "nodes/status"},
+		{"patch", "nodes/status"},
+		{"update", "nodes"},
+		{"patch", "nodes"},
+		{"delete", "nodes"},
+	}
+)
+
+// firstGrant returns "verb resource" for the first grant in grants that rule
+// authorizes, or "" when it authorizes none. It honors resourceNames through
+// matchesResourceVerb, so a name-scoped rule never matches `deletecollection` (a
+// collection verb carries no object name to scope).
+func firstGrant(rule permissions.EffectiveRule, grants []verbOn) string {
+	for _, g := range grants {
+		if matchesResourceVerb(rule, []string{g.resource}, []string{g.verb}) {
+			return g.verb + " " + g.resource
+		}
+	}
+	return ""
 }
 
 // addCSRApprovalEdge emits the KUBE-PRIVESC-011 edge: a subject that holds BOTH
@@ -1228,6 +1428,11 @@ const (
 	groupServiceAccountsPrefix = "system:serviceaccounts:"
 )
 
+// groupSystemMasters is the group the apiserver authorizes for every request before
+// RBAC runs. Impersonating it is cluster-admin, which is why the impersonation edges
+// route a grant that can name it straight to the system_masters sink.
+const groupSystemMasters = "system:masters"
+
 // isImplicitGroup reports whether ref is one of the groups the authenticator adds to
 // requests on its own. See models.EscalationNode.IsImplicitGroup.
 func isImplicitGroup(ref models.SubjectRef) bool {
@@ -1346,6 +1551,7 @@ var actionDifficulty = map[string]string{
 	"impersonate_system_masters": difficultyEasy,
 	"impersonate_serviceaccount": difficultyEasy,
 	"impersonate_user":           difficultyEasy,
+	"impersonate_group":          difficultyEasy,
 	"read_secrets":               difficultyEasy,
 	"token_request":              difficultyEasy,
 	"mint_arbitrary_token":       difficultyEasy,
@@ -1555,6 +1761,7 @@ var resourceAPIGroup = map[string]string{
 	"pods/attach":              "",
 	"pods/ephemeralcontainers": "",
 	"pods/portforward":         "",
+	"pods/eviction":            "",
 	"secrets":                  "",
 	"serviceaccounts":          "",
 	"serviceaccounts/token":    "",

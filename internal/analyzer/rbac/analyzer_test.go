@@ -966,3 +966,155 @@ func TestCSRSignerControl(t *testing.T) {
 		})
 	}
 }
+
+// findRule returns the first finding with ruleID, or nil.
+func findRule(findings []models.Finding, ruleID string) *models.Finding {
+	for i := range findings {
+		if findings[i].RuleID == ruleID {
+			return &findings[i]
+		}
+	}
+	return nil
+}
+
+// TestNodeMigrationHalves covers every grant each KUBE-PRIVESC-016 half accepts, and
+// that the description names the grants that matched. `kubectl cordon` and `kubectl
+// taint` patch the main `nodes` resource, not `nodes/status`; the Eviction API is
+// `create pods/eviction`; `deletecollection` removes every pod in scope. A namespaced
+// node grant is dead RBAC, and a name-scoped deletecollection authorizes nothing.
+func TestNodeMigrationHalves(t *testing.T) {
+	t.Parallel()
+
+	core := func(resource string, verbs ...string) rbacv1.PolicyRule {
+		return rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{resource}, Verbs: verbs}
+	}
+	scopedDeleteCollection := core("pods", "deletecollection")
+	scopedDeleteCollection.ResourceNames = []string{"victim"}
+
+	cases := []struct {
+		name     string
+		rules    []rbacv1.PolicyRule
+		wantPod  string // "" means the rule must not fire
+		wantNode string
+	}{
+		{name: "patch nodes is cordon/taint", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "patch")}, wantPod: "delete pods", wantNode: "patch nodes"},
+		{name: "update nodes", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "update", "patch")}, wantPod: "delete pods", wantNode: "update nodes"},
+		{name: "the first rule holding a node grant names the half", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "patch"), core("nodes/status", "update")}, wantPod: "delete pods", wantNode: "patch nodes"},
+		{name: "eviction is a delete-pod equivalent", rules: []rbacv1.PolicyRule{core("pods/eviction", "create"), core("nodes/status", "patch")}, wantPod: "create pods/eviction", wantNode: "patch nodes/status"},
+		{name: "deletecollection is a delete-pod equivalent", rules: []rbacv1.PolicyRule{core("pods", "deletecollection"), core("nodes", "delete")}, wantPod: "deletecollection pods", wantNode: "delete nodes"},
+		{name: "*/status covers nodes/status", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("*/status", "update")}, wantPod: "delete pods", wantNode: "update nodes/status"},
+		{name: "name-scoped deletecollection authorizes nothing", rules: []rbacv1.PolicyRule{scopedDeleteCollection, core("nodes", "patch")}},
+		{name: "reading nodes is not node control", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "get", "list", "watch")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("migrator", "migrator-sa", tc.rules...))
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			if tc.wantPod == "" {
+				assertRuleAbsent(t, findings, "KUBE-PRIVESC-016")
+				return
+			}
+			requireDescriptionContains(t, findings, "KUBE-PRIVESC-016", "can `"+tc.wantPod+"`")
+			requireDescriptionContains(t, findings, "KUBE-PRIVESC-016", "also `"+tc.wantNode+"`")
+		})
+	}
+
+	t.Run("namespaced node grant is dead RBAC", func(t *testing.T) {
+		t.Parallel()
+		snapshot := models.Snapshot{Resources: models.SnapshotResources{
+			Roles: []rbacv1.Role{{ObjectMeta: metav1ObjectMeta("migrator", "apps"), Rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "patch")}}},
+			RoleBindings: []rbacv1.RoleBinding{{
+				ObjectMeta: metav1ObjectMeta("migrator", "apps"),
+				RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "migrator"},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "migrator-sa", Namespace: "apps"}},
+			}},
+		}}
+		findings, err := New().Analyze(context.Background(), snapshot)
+		if err != nil {
+			t.Fatalf("Analyze() error = %v", err)
+		}
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-016")
+	})
+}
+
+// TestSubresourceWildcardFiresTechniques pins that the "*/sub" resource form reaches
+// the per-rule techniques: "*/exec" is `pods/exec` (KUBE-PRIVESC-004) and "*/token" is
+// `serviceaccounts/token` (KUBE-PRIVESC-014). "pods/*" is not a Kubernetes wildcard.
+func TestSubresourceWildcardFiresTechniques(t *testing.T) {
+	t.Parallel()
+
+	analyze := func(t *testing.T, rule rbacv1.PolicyRule) []models.Finding {
+		t.Helper()
+		findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "sa", rule))
+		if err != nil {
+			t.Fatalf("Analyze() error = %v", err)
+		}
+		return findings
+	}
+	assertRulePresent(t, analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"*/exec"}, Verbs: []string{"create"}}), "KUBE-PRIVESC-004")
+	assertRulePresent(t, analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"*/token"}, Verbs: []string{"create"}}), "KUBE-PRIVESC-014")
+	assertRuleAbsent(t, analyze(t, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/*"}, Verbs: []string{"create"}}), "KUBE-PRIVESC-004")
+}
+
+// TestImpersonationForms covers the three shapes of KUBE-PRIVESC-008. Legacy
+// `impersonate` on users/groups/serviceaccounts is CRITICAL. Legacy `impersonate` on
+// the identity attributes (`uids`, `userextras/<key>` in authentication.k8s.io) and the
+// KEP-5284 constrained verbs are HIGH, because each one's reach depends on something
+// the grant alone does not give. A bare `userextras` (no key) matches no request the
+// apiserver makes.
+func TestImpersonationForms(t *testing.T) {
+	t.Parallel()
+
+	auth := func(resources []string, verbs ...string) rbacv1.PolicyRule {
+		return rbacv1.PolicyRule{APIGroups: []string{"authentication.k8s.io"}, Resources: resources, Verbs: verbs}
+	}
+	cases := []struct {
+		name         string
+		rule         rbacv1.PolicyRule
+		wantSeverity models.Severity // "" means the rule must not fire
+		wantText     string
+	}{
+		{name: "legacy groups", rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"groups"}, Verbs: []string{"impersonate"}}, wantSeverity: models.SeverityCritical, wantText: "system:masters"},
+		{name: "uids", rule: auth([]string{"uids"}, "impersonate"), wantSeverity: models.SeverityHigh, wantText: "`uids`"},
+		{name: "a named user extra", rule: auth([]string{"userextras/scopes"}, "impersonate"), wantSeverity: models.SeverityHigh, wantText: "`userextras/scopes`"},
+		{name: "a literal userextras/*", rule: auth([]string{"userextras/*"}, "impersonate"), wantSeverity: models.SeverityHigh, wantText: "`userextras/*`"},
+		{name: "wildcard resource in the group", rule: auth([]string{"*"}, "impersonate"), wantSeverity: models.SeverityHigh, wantText: "`userextras/<any key>`"},
+		{name: "bare userextras matches nothing", rule: auth([]string{"userextras"}, "impersonate")},
+		{name: "uids in the core group is not the impersonation target", rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"uids"}, Verbs: []string{"impersonate"}}},
+		{name: "constrained user-info", rule: auth([]string{"users"}, "impersonate:user-info"), wantSeverity: models.SeverityHigh, wantText: "constrained form"},
+		{name: "constrained user-info on an extra", rule: auth([]string{"userextras/example.com/team"}, "impersonate:user-info"), wantSeverity: models.SeverityHigh, wantText: "`impersonate:user-info`"},
+		{name: "constrained serviceaccount", rule: auth([]string{"serviceaccounts"}, "impersonate:serviceaccount"), wantSeverity: models.SeverityHigh, wantText: "`impersonate:serviceaccount`"},
+		{name: "constrained arbitrary node", rule: auth([]string{"nodes"}, "impersonate:arbitrary-node"), wantSeverity: models.SeverityHigh, wantText: "`impersonate:arbitrary-node`"},
+		{name: "constrained associated node", rule: auth([]string{"nodes"}, "impersonate:associated-node"), wantSeverity: models.SeverityHigh, wantText: "`impersonate:associated-node`"},
+		{name: "constrained verb on the wrong resource", rule: auth([]string{"nodes"}, "impersonate:serviceaccount")},
+		{name: "constrained verb in the core group", rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"users"}, Verbs: []string{"impersonate:user-info"}}},
+		{name: "impersonate-on alone is the action half only", rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"impersonate-on:user-info:list"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("imp", "imp-sa", tc.rule))
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			if tc.wantSeverity == "" {
+				assertRuleAbsent(t, findings, "KUBE-PRIVESC-008")
+				return
+			}
+			f := findRule(findings, "KUBE-PRIVESC-008")
+			if f == nil {
+				t.Fatalf("want KUBE-PRIVESC-008, got none in %d findings", len(findings))
+			}
+			if f.Severity != tc.wantSeverity {
+				t.Errorf("severity = %s, want %s", f.Severity, tc.wantSeverity)
+			}
+			requireDescriptionContains(t, findings, "KUBE-PRIVESC-008", tc.wantText)
+			if f.RemediationHint == nil {
+				t.Error("want the structured remediation hint attached")
+			}
+		})
+	}
+}
