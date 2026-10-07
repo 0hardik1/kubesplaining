@@ -232,3 +232,146 @@ func TestSignersCoveredNameGrammar(t *testing.T) {
 		})
 	}
 }
+
+// TestGrantsSubresourceWildcard pins the resources-axis grammar of ResourceMatches in
+// kubernetes/kubernetes pkg/apis/rbac/v1/evaluation_helpers.go. "*/sub" matches that
+// subresource of every resource, and nothing else. "resource/*" is not a wildcard
+// upstream (it is compared as a literal string), so it must not match here either.
+func TestGrantsSubresourceWildcard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		apiGroups []string
+		resources []string
+		verbs     []string
+		target    ResourceTarget
+		want      string
+		expect    bool
+	}{
+		{
+			name:      "*/status grants update on nodes/status",
+			apiGroups: []string{""}, resources: []string{"*/status"}, verbs: []string{"update"},
+			target: Core("nodes/status"), want: "update", expect: true,
+		},
+		{
+			name:      "*/status grants update on certificatesigningrequests/status",
+			apiGroups: []string{"certificates.k8s.io"}, resources: []string{"*/status"}, verbs: []string{"update"},
+			target: InGroup("certificates.k8s.io", "certificatesigningrequests/status"), want: "update", expect: true,
+		},
+		{
+			name:      "*/exec grants create on pods/exec",
+			apiGroups: []string{""}, resources: []string{"*/exec"}, verbs: []string{"create"},
+			target: Core("pods/exec"), want: "create", expect: true,
+		},
+		{
+			name:      "*/token grants create on serviceaccounts/token",
+			apiGroups: []string{""}, resources: []string{"*/token"}, verbs: []string{"create"},
+			target: Core("serviceaccounts/token"), want: "create", expect: true,
+		},
+		{
+			name:      "*/exec does not grant the top-level pods resource",
+			apiGroups: []string{""}, resources: []string{"*/exec"}, verbs: []string{"create"},
+			target: Core("pods"), want: "create", expect: false,
+		},
+		{
+			name:      "*/exec does not grant a different subresource",
+			apiGroups: []string{""}, resources: []string{"*/exec"}, verbs: []string{"create"},
+			target: Core("pods/attach"), want: "create", expect: false,
+		},
+		{
+			name:      "pods/* is not a wildcard (Kubernetes has no resource/* form)",
+			apiGroups: []string{""}, resources: []string{"pods/*"}, verbs: []string{"create"},
+			target: Core("pods/exec"), want: "create", expect: false,
+		},
+		{
+			name:      "*/status still needs the API group to match",
+			apiGroups: []string{""}, resources: []string{"*/status"}, verbs: []string{"update"},
+			target: InGroup("certificates.k8s.io", "certificatesigningrequests/status"), want: "update", expect: false,
+		},
+		{
+			name:      "*/status still needs the verb to match",
+			apiGroups: []string{""}, resources: []string{"*/status"}, verbs: []string{"get"},
+			target: Core("nodes/status"), want: "update", expect: false,
+		},
+		{
+			name:      "*/sub matches a subresource that itself contains a slash",
+			apiGroups: []string{"authentication.k8s.io"}, resources: []string{"*/example.com/scopes"}, verbs: []string{"impersonate"},
+			target: InGroup("authentication.k8s.io", "userextras/example.com/scopes"), want: "impersonate", expect: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Grants(tt.apiGroups, tt.resources, tt.verbs, nil, []ResourceTarget{tt.target}, []string{tt.want})
+			if got != tt.expect {
+				t.Errorf("Grants(resources=%v, target=%v) = %v, want %v", tt.resources, tt.target, got, tt.expect)
+			}
+		})
+	}
+}
+
+// TestGrantsPrefixedVerbs documents the verbs axis for prefixed verbs. VerbMatches in
+// kubernetes/kubernetes pkg/apis/rbac/v1/evaluation_helpers.go accepts only "*" or an
+// exact string, so a verb like `associated-node:update` (DRA) or `impersonate:user-info`
+// (KEP-5284 constrained impersonation) is one more opaque verb. "*" covers it; the
+// unprefixed verb does not, and neither does any partial wildcard.
+func TestGrantsPrefixedVerbs(t *testing.T) {
+	t.Parallel()
+
+	target := []ResourceTarget{InGroup("resource.k8s.io", "resourceclaims/status")}
+	tests := []struct {
+		name   string
+		verbs  []string
+		want   string
+		expect bool
+	}{
+		{name: "* covers a prefixed verb", verbs: []string{"*"}, want: "associated-node:update", expect: true},
+		{name: "exact prefixed verb matches", verbs: []string{"associated-node:update"}, want: "associated-node:update", expect: true},
+		{name: "update does not cover associated-node:update", verbs: []string{"update"}, want: "associated-node:update", expect: false},
+		{name: "a prefixed verb does not cover the plain verb", verbs: []string{"associated-node:update"}, want: "update", expect: false},
+		{name: "no partial wildcard on verbs", verbs: []string{"impersonate-on:user-info:*"}, want: "impersonate-on:user-info:list", expect: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := Grants([]string{"resource.k8s.io"}, []string{"resourceclaims/status"}, tt.verbs, nil, target, []string{tt.want})
+			if got != tt.expect {
+				t.Errorf("Grants(verbs=%v, want %q) = %v, want %v", tt.verbs, tt.want, got, tt.expect)
+			}
+		})
+	}
+}
+
+// TestResourceNameIsLiteral pins ResourceNameMatches: a resourceNames entry is compared
+// as an exact string, so "*" names an object literally called "*" and is not a
+// wildcard. Grants itself does not compare names (the caller supplies none), so the
+// observable rule is that a "*"-scoped rule is still name-scoped: it drops the
+// collection verbs exactly as any other name-scoped rule does.
+func TestResourceNameIsLiteral(t *testing.T) {
+	t.Parallel()
+
+	star := EffectiveRule{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"list", "get"}, ResourceNames: []string{"*"}}
+	if !star.NameScoped() {
+		t.Fatal(`resourceNames ["*"] must count as name-scoped`)
+	}
+	if star.Grants([]ResourceTarget{Core("secrets")}, "list") {
+		t.Error(`resourceNames ["*"] must not resurrect list: "*" is a literal name, not a wildcard`)
+	}
+}
+
+func TestIsResourcePattern(t *testing.T) {
+	t.Parallel()
+
+	for resource, want := range map[string]bool{
+		"*":        true,
+		"*/status": true,
+		"pods":     false,
+		"pods/*":   false,
+		"pods/log": false,
+	} {
+		if got := IsResourcePattern(resource); got != want {
+			t.Errorf("IsResourcePattern(%q) = %v, want %v", resource, got, want)
+		}
+	}
+}

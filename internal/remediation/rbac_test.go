@@ -316,7 +316,7 @@ func TestForPrivescPathAdvisorySplitsCorrelationFromWorkload(t *testing.T) {
 	// Every correlation builder in privesc/graph.go that calls cutBreakers. Adding a
 	// fourth there without adding it to correlationRootedActions fails here.
 	for _, hop := range []models.EscalationHop{
-		{Step: 1, Action: "node_drain_migrate", Permission: "delete pods + node scheduling control"},
+		{Step: 1, Action: "node_drain_migrate", Permission: "create pods/eviction + patch nodes"},
 		{Step: 1, Action: "secret_mint_token", Permission: "create + get secrets (cluster-wide)"},
 		{Step: 1, Action: "csr_approve", Permission: "create certificatesigningrequests + update certificatesigningrequests/approval"},
 	} {

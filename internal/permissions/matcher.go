@@ -20,7 +20,15 @@
 //     scoped to the named objects.
 //
 //  3. wildcard handling on every axis: "*" in the rule's groups, resources, or verbs
-//     matches anything on that axis.
+//     matches anything on that axis. The resources axis has one more form: "*/sub"
+//     matches the subresource "sub" of every resource (see coversResource). The verbs
+//     axis has no partial wildcard: a prefixed verb such as `impersonate:user-info` or
+//     `associated-node:update` is one more opaque verb string, matched exactly or by
+//     "*".
+//
+// The three axes follow VerbMatches, APIGroupMatches, ResourceMatches, and
+// ResourceNameMatches in kubernetes/kubernetes pkg/apis/rbac/v1/evaluation_helpers.go,
+// which is the code the RBAC authorizer runs.
 package permissions
 
 import "strings"
@@ -62,7 +70,7 @@ func (r EffectiveRule) Grants(targets []ResourceTarget, verbs ...string) bool {
 func Grants(apiGroups, resources, verbs, resourceNames []string, targets []ResourceTarget, wantedVerbs []string) bool {
 	nameScoped := len(resourceNames) > 0
 	for _, target := range targets {
-		if !covers(apiGroups, target.Group) || !covers(resources, target.Resource) {
+		if !covers(apiGroups, target.Group) || !coversResource(resources, target.Resource) {
 			continue
 		}
 		for _, verb := range wantedVerbs {
@@ -79,9 +87,16 @@ func Grants(apiGroups, resources, verbs, resourceNames []string, targets []Resou
 	return false
 }
 
-// covers reports whether an RBAC axis (a rule's groups, resources, or verbs) includes
-// want, treating "*" as a match-all wildcard. Core-group membership works naturally:
-// the core group is the empty string, so covers([""], "") is true.
+// covers reports whether an RBAC axis (a rule's groups or verbs) includes want,
+// treating "*" as a match-all wildcard, as APIGroupMatches and VerbMatches do upstream.
+// Core-group membership works naturally: the core group is the empty string, so
+// covers([""], "") is true.
+//
+// Only an exact string or "*" matches. On the verbs axis that makes a prefixed verb
+// (`impersonate:user-info`, `impersonate-on:user-info:list`, `associated-node:update`)
+// an independent verb: `verbs: ["*"]` covers it, and `verbs: ["update"]` does not cover
+// `associated-node:update`. The resources axis has one extra form and goes through
+// coversResource instead.
 func covers(values []string, want string) bool {
 	for _, v := range values {
 		if v == "*" || v == want {
@@ -89,6 +104,45 @@ func covers(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// coversResource reports whether a rule's resources axis includes want, which is a
+// top-level resource ("pods") or a "resource/subresource" pair ("pods/exec"). It
+// follows ResourceMatches in kubernetes/kubernetes pkg/apis/rbac/v1/evaluation_helpers.go:
+//
+//   - "*" matches every resource and every subresource.
+//   - An exact string matches itself, so "pods" never matches "pods/exec" and
+//     "pods/exec" never matches "pods".
+//   - "*/sub" matches the subresource "sub" of every resource, so "*/status" covers
+//     "nodes/status" and "certificatesigningrequests/status", and "*/exec" covers
+//     "pods/exec". It never matches a top-level resource.
+//
+// There is no "resource/*" form. ResourceMatches compares "pods/*" as a literal string,
+// so it matches only a request for a subresource literally named "*", never "pods/exec".
+// Treating it as a wildcard would report access the API server refuses.
+//
+// want is split at its first "/", the same way the request carries its resource and
+// subresource. A subresource can itself contain "/" (an impersonated user-extra key
+// such as "userextras/example.com/scopes" has the subresource "example.com/scopes").
+func coversResource(values []string, want string) bool {
+	_, sub, hasSub := strings.Cut(want, "/")
+	for _, v := range values {
+		if v == "*" || v == want {
+			return true
+		}
+		if hasSub && v == "*/"+sub {
+			return true
+		}
+	}
+	return false
+}
+
+// IsResourcePattern reports whether a rule's resources entry is a pattern ("*" or
+// "*/sub") rather than one concrete resource. Callers that enumerate a rule's
+// resources as concrete (group, resource) coordinates, such as the least-privilege
+// usage diff, use it to skip entries they cannot look up literally.
+func IsResourcePattern(resource string) bool {
+	return resource == "*" || strings.HasPrefix(resource, "*/")
 }
 
 // Signer names the kube-apiserver trusts for client authentication. A certificate

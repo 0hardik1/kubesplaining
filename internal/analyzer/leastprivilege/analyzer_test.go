@@ -132,6 +132,33 @@ func TestUnusedVerb_PartialUsage(t *testing.T) {
 	}
 }
 
+// TestSubresourcePatternIsNotReportedUnused covers the "*/sub" resource form. A rule
+// granting `update` on "*/status" authorizes every resource's status subresource
+// (ResourceMatches upstream), so it cannot be looked up as one literal coordinate. The
+// SA here uses it on pods/status; reporting "*/status" as an unused grant would tell
+// the operator to remove a permission the workload exercises.
+func TestSubresourcePatternIsNotReportedUnused(t *testing.T) {
+	subj := models.SubjectRef{Kind: "ServiceAccount", Namespace: "default", Name: "status-writer"}
+	rules := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"*/status"}, Verbs: []string{"update"}},
+	}
+	snap := snapshotWithBinding("status-writer", "default", "status-writer", rules, true)
+
+	idx := makeIndexCombined(t, []observation{
+		{subj: subj, apiGroup: "", resource: "pods", verbs: []string{"get"}},
+		{subj: subj, apiGroup: "", resource: "pods/status", verbs: []string{"update"}},
+	})
+
+	got, err := New(idx).Analyze(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no findings (every concrete grant is used, */status is a pattern), got %+v", ruleIDs(got))
+	}
+}
+
 // TestUnusedRole_WholeRoleDead covers the strongest signal: zero observed events for a
 // mounted SA. Expect KUBE-RBAC-UNUSED-ROLE-001.
 func TestUnusedRole_WholeRoleDead(t *testing.T) {

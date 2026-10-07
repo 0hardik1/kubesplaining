@@ -15,6 +15,7 @@ func TestNewPrivescActionsHaveTechniqueCopy(t *testing.T) {
 		"static_pod_admission_bypass",
 		"operator_reconcile",
 		"implicit_group_membership",
+		"impersonate_group",
 		"workload_create_token_theft",
 		"workload_hijack",
 		"workload_privileged_escape",

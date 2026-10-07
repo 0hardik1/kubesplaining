@@ -27,6 +27,10 @@ const (
 	groupApps      = "apps"
 	groupBatch     = "batch"
 	groupAdmission = "admissionregistration.k8s.io"
+	// groupAuthentication holds the impersonation targets that are not core objects:
+	// `uids` and `userextras/<key>` for legacy impersonation, and every identity
+	// resource of constrained impersonation (KEP-5284).
+	groupAuthentication = "authentication.k8s.io"
 )
 
 // Target sets for the dangerous-permission checks below, each pinned to its API
@@ -42,6 +46,7 @@ var (
 	targetNodesProxy  = []permissions.ResourceTarget{permissions.Core("nodes/proxy")}
 	targetNodesStatus = []permissions.ResourceTarget{permissions.Core("nodes/status")}
 	targetNodes       = []permissions.ResourceTarget{permissions.Core("nodes")}
+	targetPodEviction = []permissions.ResourceTarget{permissions.Core("pods/eviction")}
 	targetImpersonate = []permissions.ResourceTarget{permissions.Core("users"), permissions.Core("groups"), permissions.Core("serviceaccounts")}
 	targetWorkloads   = []permissions.ResourceTarget{permissions.InGroup(groupApps, "deployments"), permissions.InGroup(groupApps, "daemonsets"), permissions.InGroup(groupApps, "statefulsets"), permissions.InGroup(groupBatch, "jobs"), permissions.InGroup(groupBatch, "cronjobs")}
 	targetRoles       = []permissions.ResourceTarget{permissions.InGroup(groupRBAC, "roles"), permissions.InGroup(groupRBAC, "clusterroles")}
@@ -58,7 +63,45 @@ var (
 	// pinned to the apps group so a CRD reusing either name cannot match.
 	targetStatefulSets        = []permissions.ResourceTarget{permissions.InGroup(groupApps, "statefulsets")}
 	targetControllerRevisions = []permissions.ResourceTarget{permissions.InGroup(groupApps, "controllerrevisions")}
+
+	// targetImpersonateUID is what an Impersonate-Uid header is authorized against:
+	// `impersonate` on `uids` in authentication.k8s.io (WithImpersonation in
+	// k8s.io/apiserver/pkg/endpoints/filters/impersonation). Impersonate-Extra-<key> is
+	// authorized against `userextras/<key>` in the same group; see
+	// impersonatedUserExtras, which matches any key.
+	targetImpersonateUID = []permissions.ResourceTarget{permissions.InGroup(groupAuthentication, "uids")}
 )
+
+// constrainedImpersonationModes are the KEP-5284 constrained-impersonation verbs and
+// the identity resources each one is checked against, all in authentication.k8s.io.
+// Taken from the kube-apiserver filter (mode.go in
+// k8s.io/apiserver/pkg/endpoints/filters/impersonation) and the KEP's design details:
+// `impersonate:user-info` authorizes users, groups, uids, and userextras/<key> for a
+// user that is neither a node nor a ServiceAccount; `impersonate:serviceaccount`
+// authorizes serviceaccounts (name and namespace of the SA); `impersonate:arbitrary-node`
+// authorizes nodes by node name; `impersonate:associated-node` authorizes nodes for the
+// node the requesting ServiceAccount's pod runs on. Each also needs a second grant,
+// `impersonate-on:<mode>:<verb>` on the resource the impersonated request touches,
+// which this table does not look for: the finding reports the identity half, and its
+// copy explains the action half.
+var constrainedImpersonationModes = []struct {
+	verb       string
+	targets    []permissions.ResourceTarget
+	userExtras bool
+}{
+	{
+		verb: "impersonate:user-info",
+		targets: []permissions.ResourceTarget{
+			permissions.InGroup(groupAuthentication, "users"),
+			permissions.InGroup(groupAuthentication, "groups"),
+			permissions.InGroup(groupAuthentication, "uids"),
+		},
+		userExtras: true,
+	},
+	{verb: "impersonate:serviceaccount", targets: []permissions.ResourceTarget{permissions.InGroup(groupAuthentication, "serviceaccounts")}},
+	{verb: "impersonate:arbitrary-node", targets: []permissions.ResourceTarget{permissions.InGroup(groupAuthentication, "nodes")}},
+	{verb: "impersonate:associated-node", targets: []permissions.ResourceTarget{permissions.InGroup(groupAuthentication, "nodes")}},
+}
 
 // grants reports whether this rule authorizes any of verbs on any of targets,
 // honoring the target API group and this rule's resourceNames (see permissions.Grants).
@@ -283,7 +326,20 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-008", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 					scaledScore(9.4),
-					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef, impersonationGrant{})), snapshot))
+			case hasConditionalImpersonation(rule):
+				// The other two shapes of KUBE-PRIVESC-008: legacy `impersonate` on the
+				// identity attributes (`uids`, `userextras/<key>`), and the KEP-5284
+				// constrained-impersonation verbs. Neither is a cluster-admin grant by
+				// itself (see impersonationGrant), so the finding is HIGH. The privesc
+				// graph draws no edge for either: what they reach depends on an
+				// authorizer or admission check keyed on uid/extras, or on the
+				// `impersonate-on:` half, none of which the snapshot models.
+				grant, _ := rule.conditionalImpersonation()
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-008", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scaledScore(7.0),
+					contentPrivesc008(rule.Namespace, perms.Subject, bindingRef, roleRef, grant)), snapshot))
 			case rule.grants(targetRoles, "bind", "escalate"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-009", models.SeverityCritical, models.CategoryPrivilegeEscalation,
@@ -459,23 +515,23 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				contentPrivesc007(secretCreateRule.Namespace, perms.Subject, secretCreateRule.formattedBinding(), secretCreateRule.formattedRole(), secretGetRule.formattedBinding(), secretGetRule.formattedRole())), snapshot))
 		}
 
-		// KUBE-PRIVESC-016 — node-status / delete-pod migration. `delete pods`
-		// plus cluster-scoped node manipulation (cordon via nodes/status, or
-		// delete nodes) can relocate sensitive pods onto an attacker node.
+		// KUBE-PRIVESC-016: node manipulation + pod removal migration. A way to
+		// remove pods (delete, deletecollection, or the Eviction API) plus
+		// cluster-scoped node manipulation (cordon/taint via `nodes`, a `nodes/status`
+		// write, or delete nodes) can relocate sensitive pods onto an attacker node.
+		// See podRemovalAction / nodeControlAction for the grants each half accepts.
 		var deletePodsRule, nodeManipRule *effectiveRule
-		nodeAction := ""
+		podAction, nodeAction := "", ""
 		for i := range perms.Rules {
 			r := &perms.Rules[i]
-			if matchesPodDelete(*r) && deletePodsRule == nil {
-				deletePodsRule = r
+			if deletePodsRule == nil {
+				if action := podRemovalAction(*r); action != "" {
+					deletePodsRule, podAction = r, action
+				}
 			}
 			if nodeManipRule == nil && r.Namespace == "" {
-				if matchesNodeStatusWrite(*r) {
-					nodeManipRule = r
-					nodeAction = "update nodes/status"
-				} else if matchesNodeDelete(*r) {
-					nodeManipRule = r
-					nodeAction = "delete nodes"
+				if action := nodeControlAction(*r); action != "" {
+					nodeManipRule, nodeAction = r, action
 				}
 			}
 		}
@@ -487,7 +543,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 			findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *nodeManipRule,
 				"KUBE-PRIVESC-016", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 				scoring.Clamp(7.5*exploitability*1.2), // node manipulation is cluster-scoped
-				contentPrivesc016(perms.Subject, deletePodsRule.formattedBinding(), deletePodsRule.formattedRole(), nodeManipRule.formattedBinding(), nodeManipRule.formattedRole(), nodeAction)), snapshot))
+				contentPrivesc016(perms.Subject, deletePodsRule.formattedBinding(), deletePodsRule.formattedRole(), podAction, nodeManipRule.formattedBinding(), nodeManipRule.formattedRole(), nodeAction)), snapshot))
 		}
 
 		// KUBE-PRIVESC-019, mutating admission policy injection. `create`/`update`/
@@ -999,19 +1055,149 @@ func matchesSecretGet(rule effectiveRule) bool {
 	return rule.grants(targetSecrets, "get")
 }
 
-// matchesPodDelete, matchesNodeStatusWrite, and matchesNodeDelete are the
-// halves of the KUBE-PRIVESC-016 node-migration primitive. The node halves are
-// cluster-scoped resources, so the caller also requires rule.Namespace == "".
+// The KUBE-PRIVESC-016 node-migration primitive has two halves, and each has several
+// grants that do the job.
+//
+// Pod removal: `delete pods`; `deletecollection pods`, which deletes every pod in scope
+// at once (the matcher already drops it for a name-scoped rule, which cannot authorize
+// a collection request); or `create pods/eviction`, the Eviction API, which deletes the
+// pod once its PodDisruptionBudget allows. Pods are namespaced, so a namespaced grant
+// counts.
+//
+// Node control, cluster-scoped only (nodes are cluster-scoped, so the caller requires
+// rule.Namespace == ""): `update`/`patch` on `nodes/status`; `update`/`patch` on
+// `nodes`, which is what `kubectl cordon` (spec.unschedulable) and `kubectl taint`
+// (spec.taints) send, since both fields live on the main resource and not on the
+// status subresource; or `delete nodes`.
+//
+// podRemovalAction and nodeControlAction return the matched grant as "verb resource",
+// trying the most direct grant first, so the finding names the verb to revoke. The
+// privesc graph keeps the same two lists (nodeMigratePodRemoval /
+// nodeMigrateNodeControl in graph.go); change both together.
 func matchesPodDelete(rule effectiveRule) bool {
 	return rule.grants(targetPods, "delete")
+}
+
+func matchesPodDeleteCollection(rule effectiveRule) bool {
+	return rule.grants(targetPods, "deletecollection")
+}
+
+func matchesPodEviction(rule effectiveRule) bool {
+	return rule.grants(targetPodEviction, "create")
 }
 
 func matchesNodeStatusWrite(rule effectiveRule) bool {
 	return rule.grants(targetNodesStatus, "update", "patch")
 }
 
+func matchesNodeWrite(rule effectiveRule) bool {
+	return rule.grants(targetNodes, "update", "patch")
+}
+
 func matchesNodeDelete(rule effectiveRule) bool {
 	return rule.grants(targetNodes, "delete")
+}
+
+func podRemovalAction(rule effectiveRule) string {
+	switch {
+	case matchesPodDelete(rule):
+		return "delete pods"
+	case matchesPodDeleteCollection(rule):
+		return "deletecollection pods"
+	case matchesPodEviction(rule):
+		return "create pods/eviction"
+	}
+	return ""
+}
+
+func nodeControlAction(rule effectiveRule) string {
+	switch {
+	case matchesNodeStatusWrite(rule):
+		return writeVerb(rule, targetNodesStatus) + " nodes/status"
+	case matchesNodeWrite(rule):
+		return writeVerb(rule, targetNodes) + " nodes"
+	case matchesNodeDelete(rule):
+		return "delete nodes"
+	}
+	return ""
+}
+
+// writeVerb names which of update/patch rule grants on targets, preferring update. The
+// caller has already established that it grants at least one.
+func writeVerb(rule effectiveRule, targets []permissions.ResourceTarget) string {
+	if rule.grants(targets, "update") {
+		return "update"
+	}
+	return "patch"
+}
+
+// hasConditionalImpersonation is the switch-case form of conditionalImpersonation.
+func hasConditionalImpersonation(rule effectiveRule) bool {
+	_, ok := rule.conditionalImpersonation()
+	return ok
+}
+
+// impersonationGrant describes a KUBE-PRIVESC-008 match that is not the classic
+// `impersonate` on users, groups, or serviceaccounts. The zero value is the classic
+// form. Both other forms have a conditional impact, which is why the finding is HIGH
+// rather than CRITICAL for them.
+type impersonationGrant struct {
+	// Constrained lists the KEP-5284 constrained-impersonation verbs the rule grants on
+	// their identity resources, for example "impersonate:user-info".
+	Constrained []string
+	// Attributes lists the identity-attribute resources the rule grants legacy
+	// `impersonate` on: "uids" and "userextras/<key>".
+	Attributes []string
+}
+
+// conditionalImpersonation reports the identity-attribute and constrained
+// impersonation grants this rule holds (see impersonationGrant), and false when it
+// holds neither.
+func (r effectiveRule) conditionalImpersonation() (impersonationGrant, bool) {
+	var grant impersonationGrant
+	if r.grants(targetImpersonateUID, "impersonate") {
+		grant.Attributes = append(grant.Attributes, "uids")
+	}
+	grant.Attributes = append(grant.Attributes, r.impersonatedUserExtras("impersonate")...)
+	for _, mode := range constrainedImpersonationModes {
+		if r.grants(mode.targets, mode.verb) || (mode.userExtras && len(r.impersonatedUserExtras(mode.verb)) > 0) {
+			grant.Constrained = append(grant.Constrained, mode.verb)
+		}
+	}
+	return grant, len(grant.Attributes) > 0 || len(grant.Constrained) > 0
+}
+
+// impersonatedUserExtras returns the `userextras/<key>` resources in
+// authentication.k8s.io that this rule grants verb on, as display strings.
+// Impersonate-Extra-<key> is authorized as resource `userextras` with subresource
+// <key>, so a rule matches through "userextras/<key>" (any key, including the literal
+// "userextras/*") or through "*". A bare "userextras" with no key matches no request
+// the apiserver makes and is not counted.
+//
+// "*/<key>" is left out on purpose even though ResourceMatches would accept it for an
+// extra literally keyed <key>: rules of that shape are written for subresources such as
+// "*/status" or "*/scale", and counting them would flag a controller role that holds
+// `verbs: ["*"]` on "*/scale" as an impersonator of an extra no authenticator issues.
+func (r effectiveRule) impersonatedUserExtras(verb string) []string {
+	var keys []string
+	for _, resource := range r.Resources {
+		label, probe := "", ""
+		switch {
+		case resource == "*":
+			label, probe = "userextras/<any key>", "userextras/any-key"
+		case strings.HasPrefix(resource, "userextras/") && len(resource) > len("userextras/"):
+			label, probe = resource, resource
+		default:
+			continue
+		}
+		if slices.Contains(keys, label) {
+			continue
+		}
+		if r.grants([]permissions.ResourceTarget{permissions.InGroup(groupAuthentication, probe)}, verb) {
+			keys = append(keys, label)
+		}
+	}
+	return keys
 }
 
 // matchesMutatingPolicyWrite / matchesMutatingPolicyBindingWrite are the two

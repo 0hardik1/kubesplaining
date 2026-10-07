@@ -338,8 +338,17 @@ func contentPrivesc003(ruleNamespace string, subject models.SubjectRef, sourceBi
 	}
 }
 
-// contentPrivesc008 — Impersonate (KUBE-PRIVESC-008).
-func contentPrivesc008(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+// contentPrivesc008 is Impersonate (KUBE-PRIVESC-008). grant is the zero value for the
+// classic form (`impersonate` on users/groups/serviceaccounts). Otherwise it names the
+// identity-attribute or constrained-impersonation grants that matched, and the copy
+// explains why their impact is conditional.
+func contentPrivesc008(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string, grant impersonationGrant) ruleContent {
+	switch {
+	case len(grant.Constrained) > 0:
+		return contentPrivesc008Constrained(ruleNamespace, subject, sourceBinding, sourceRole, grant)
+	case len(grant.Attributes) > 0:
+		return contentPrivesc008Attributes(ruleNamespace, subject, sourceBinding, sourceRole, grant)
+	}
 	scope := scopeForRule(ruleNamespace)
 	phrase := scopePhrase(scope)
 	return ruleContent{
@@ -373,6 +382,102 @@ func contentPrivesc008(ruleNamespace string, subject models.SubjectRef, sourceBi
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1078, mitreT1078_004, mitreT1550, mitreT1134},
 	}
+}
+
+// contentPrivesc008Attributes is KUBE-PRIVESC-008 for legacy `impersonate` on the
+// identity attributes alone: `uids` and `userextras/<key>` in authentication.k8s.io.
+// The apiserver authorizes Impersonate-Uid against `uids` and each
+// Impersonate-Extra-<key> value against `userextras/<key>`, and refuses either header
+// without Impersonate-User. RBAC never reads a uid or an extra, so what a forged one
+// unlocks depends on a consumer the snapshot cannot see.
+func contentPrivesc008Attributes(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string, grant impersonationGrant) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	attributes := "`" + strings.Join(grant.Attributes, "`, `") + "`"
+	return ruleContent{
+		Title: fmt.Sprintf("%s `impersonate` on identity attributes (uid / extras) for `%s`", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s has the `impersonate` verb on %s in `authentication.k8s.io` via %s → %s. %s.\n\n"+
+			"These grants authorize the two impersonation headers that ride along with an impersonated user. The apiserver checks `Impersonate-Uid: <uid>` as `impersonate uids` on that uid, and each `Impersonate-Extra-<key>: <value>` as `impersonate userextras/<key>` on that value. Neither header works alone: the apiserver rejects a request that sets one without `Impersonate-User`, and authorizes that user separately, through `impersonate users` or `impersonate serviceaccounts`.\n\n"+
+			"The impact is conditional. Kubernetes RBAC never reads a uid or an extra, so these grants change nothing RBAC decides. They matter where something else keys on them: a webhook authorizer, an admission webhook or ValidatingAdmissionPolicy that reads `request.userInfo.uid` or `request.userInfo.extra`, or an extension API server that trusts the extras the apiserver forwards. Where such a check exists, a forged uid or extra can pass it. A snapshot does not show those consumers, so the escalation graph draws no edge for this grant.",
+			subjectKey(subject), attributes, sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("Forge the uid or extra attributes of an impersonated identity in %s. RBAC ignores them, so the reach depends on an authorizer, admission check, or extension API server that keys on them, and on a separate grant to impersonate the user they attach to.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker lists the grant with `kubectl auth can-i --list --as=%s` and looks for `uids` / `userextras` in `authentication.k8s.io`.", subject.Name),
+			"They find a user or ServiceAccount they can also impersonate, because the apiserver refuses `Impersonate-Uid` and `Impersonate-Extra-*` without `Impersonate-User`.",
+			"They find a consumer that trusts uid or extras: a webhook authorizer, an admission webhook or policy that reads `request.userInfo`, or an aggregated API server.",
+			"They send `kubectl --as=<user> --as-uid=<uid> ...` (or set the raw `Impersonate-Extra-<key>` header), so that consumer sees the forged attribute and allows what it would otherwise deny.",
+		},
+		Remediation: "Remove `impersonate` on `uids` and `userextras`; ordinary workloads never need to forge them.",
+		RemediationSteps: []string{
+			"Remove `uids`, every `userextras/<key>`, and any `*` resource from `impersonate` rules in `authentication.k8s.io`.",
+			"If an authenticating proxy really must forward extras, name only the extra keys it forwards, and scope the values with `resourceNames`.",
+			"Review webhook authorizers, admission webhooks, and admission policies that read `uid` or `extra`, and confirm none of them grants access on an attribute an impersonator can set.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("impersonate", "uids.authentication.k8s.io", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: User Impersonation", URL: "https://kubernetes.io/docs/reference/access-authn-authz/authentication/#user-impersonation"},
+			{Title: "Kubernetes RBAC Good Practices: Privilege escalation risks", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/#privilege-escalation-risks"},
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1134},
+	}
+}
+
+// contentPrivesc008Constrained is KUBE-PRIVESC-008 for the KEP-5284 constrained
+// impersonation verbs (`impersonate:user-info`, `impersonate:serviceaccount`,
+// `impersonate:arbitrary-node`, `impersonate:associated-node`). Each impersonated
+// request also needs `impersonate-on:<mode>:<verb>` on the resource it touches, and
+// succeeds only for actions both that grant and the impersonated identity allow, so
+// this is the narrower, constrained form of impersonation.
+func contentPrivesc008Constrained(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string, grant impersonationGrant) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	verbs := "`" + strings.Join(grant.Constrained, "`, `") + "`"
+	also := ""
+	if len(grant.Attributes) > 0 {
+		also = fmt.Sprintf(" The rule also grants legacy `impersonate` on `%s`, which only works together with a legacy `impersonate users` or `impersonate serviceaccounts` grant.", strings.Join(grant.Attributes, "`, `"))
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("%s constrained impersonation (%s) on `%s`", phrase, verbs, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s holds the constrained-impersonation verb %s via %s → %s. %s.%s\n\n"+
+			"Constrained impersonation (KEP-5284; alpha in Kubernetes 1.35, beta and on by default from 1.36 behind the `ConstrainedImpersonation` feature gate) replaces the all-or-nothing `impersonate` verb with two grants per request. The first is `impersonate:<mode>` on the identity, in `authentication.k8s.io`: `impersonate:user-info` on `users`, `groups`, `uids`, and `userextras/<key>` for an ordinary user; `impersonate:serviceaccount` on `serviceaccounts`; `impersonate:arbitrary-node` on `nodes` for any node; and `impersonate:associated-node` on `nodes` for the node that the requesting ServiceAccount's own pod runs on. The second is `impersonate-on:<mode>:<verb>` on the resource the impersonated request touches, for example `impersonate-on:user-info:list` on `pods`. This finding reports the first grant.\n\n"+
+			"This is the constrained form, and it is narrower than legacy `impersonate`. An impersonated request succeeds only for an action that the `impersonate-on:` grant delegates AND that the impersonated identity is itself allowed, and the apiserver refuses to impersonate `system:masters` in every constrained mode. It is still an escalation when the identities it names are privileged and the delegated actions are broad: `verbs: [\"*\"]` covers every `impersonate-on:` verb. The escalation graph draws no edge for it, because its reach depends on that second grant.",
+			subjectKey(subject), verbs, sourceBinding, sourceRole, scope.Detail, also),
+		Impact: fmt.Sprintf("Act as the identities the grant names in %s, but only for the actions an `impersonate-on:<mode>:<verb>` grant also delegates. `system:masters` cannot be impersonated this way.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms both halves with `kubectl auth can-i --list --as=%s`, looking for `impersonate:<mode>` on identities and `impersonate-on:<mode>:<verb>` on resources.", subject.Name),
+			"They pick the most privileged identity the first grant names: a group bound to an admin role, a controller ServiceAccount, or a node.",
+			"They send the request with the usual impersonation headers, for example `kubectl --as=system:serviceaccount:<ns>:<sa> get secrets -n <ns>`. The apiserver selects the constrained mode from the impersonated username and checks both grants.",
+			"Each action the `impersonate-on:` grant delegates runs with the impersonated identity's permissions. Audit events record the mode in `authenticationMetadata.impersonationConstraint`.",
+		},
+		Remediation: "Scope `impersonate:<mode>` with `resourceNames` to the identities the workflow needs, and grant `impersonate-on:<mode>:<verb>` only for the verbs and resources it uses.",
+		RemediationSteps: []string{
+			"List the identities each `impersonate:<mode>` rule reaches, and add `resourceNames` so it names only the users, groups, ServiceAccounts, or nodes the workflow needs.",
+			"Keep each `impersonate-on:<mode>:<verb>` grant to exact verbs and resources, namespaced where possible. Do not grant them through `verbs: [\"*\"]`.",
+			"For a node agent, use `impersonate:associated-node` instead of `impersonate:arbitrary-node`, so a compromised agent can act only as its own node.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI(grant.Constrained[0], constrainedImpersonationResource(grant.Constrained[0]), ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "KEP-5284: Constrained Impersonation", URL: "https://github.com/kubernetes/enhancements/tree/master/keps/sig-auth/5284-constrained-impersonation"},
+			{Title: "Kubernetes: User Impersonation", URL: "https://kubernetes.io/docs/reference/access-authn-authz/authentication/#user-impersonation"},
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078, mitreT1078_004, mitreT1134},
+	}
+}
+
+// constrainedImpersonationResource names a representative identity resource for a
+// constrained-impersonation verb, for the `kubectl auth can-i` verification step.
+func constrainedImpersonationResource(verb string) string {
+	switch verb {
+	case "impersonate:serviceaccount":
+		return "serviceaccounts.authentication.k8s.io"
+	case "impersonate:arbitrary-node", "impersonate:associated-node":
+		return "nodes.authentication.k8s.io"
+	}
+	return "users.authentication.k8s.io"
 }
 
 // contentPrivesc009 — Bind/escalate (KUBE-PRIVESC-009).
@@ -945,39 +1050,41 @@ func contentPrivesc007(ruleNamespace string, subject models.SubjectRef, createBi
 	}
 }
 
-// contentPrivesc016 — Node-status / delete-pod migration (KUBE-PRIVESC-016).
-// Detection correlates `delete pods` with cluster-scoped node manipulation
-// (`update`/`patch nodes/status` or `delete nodes`); nodeAction names which
-// node primitive was found.
-func contentPrivesc016(subject models.SubjectRef, podsBinding, podsRole, nodeBinding, nodeRole, nodeAction string) ruleContent {
+// contentPrivesc016 is Node manipulation + pod removal migration (KUBE-PRIVESC-016).
+// Detection correlates a pod-removal grant (`delete pods`, `deletecollection pods`, or
+// `create pods/eviction`) with cluster-scoped node manipulation (`update`/`patch` on
+// `nodes/status` or `nodes`, or `delete nodes`). podAction and nodeAction name the
+// grant found for each half, as "verb resource".
+func contentPrivesc016(subject models.SubjectRef, podsBinding, podsRole, podAction, nodeBinding, nodeRole, nodeAction string) ruleContent {
 	scope := models.Scope{
 		Level:  models.ScopeCluster,
 		Detail: "Cluster-wide: nodes and their scheduling are cluster-scoped resources",
 	}
 	return ruleContent{
-		Title: fmt.Sprintf("Delete-pods + node manipulation can migrate workloads onto an attacker node (`%s`)", subjectKey(subject)),
+		Title: fmt.Sprintf("Pod removal + node manipulation can migrate workloads onto an attacker node (`%s`)", subjectKey(subject)),
 		Scope: scope,
-		Description: fmt.Sprintf("Subject %s can `delete` pods (via %s → %s) and also `%s` (via %s → %s). %s.\n\n"+
-			"Combined, these let an attacker steer where high-value pods run. By cordoning or tainting nodes (through `nodes/status` updates) or deleting nodes outright, then deleting the target pods, the attacker forces the scheduler to relocate those pods. If the attacker controls (or can compromise) the remaining schedulable node, a sensitive pod (a controller, a pod with a privileged ServiceAccount, a pod that mounts secrets) lands where they can exec into it, read its mounted token, or sniff its traffic.\n\n"+
+		Description: fmt.Sprintf("Subject %s can `%s` (via %s → %s) and also `%s` (via %s → %s). %s.\n\n"+
+			"Combined, these let an attacker steer where high-value pods run. On the node side, `update`/`patch` on `nodes` is what `kubectl cordon` (spec.unschedulable) and `kubectl taint` (spec.taints) send; a write to `nodes/status` can report a node `NotReady`, which makes the node lifecycle controller taint it until the kubelet reports again; and `delete nodes` removes a node outright. On the pod side, `delete` removes a pod, `deletecollection` removes every pod in scope at once, and `create` on `pods/eviction` evicts one through the Eviction API, which waits until the pod's PodDisruptionBudget allows it. Once the other nodes refuse new pods, the removed pods are rescheduled onto what is left. If the attacker controls (or can compromise) the remaining schedulable node, a sensitive pod (a controller, a pod with a privileged ServiceAccount, a pod that mounts secrets) lands where they can exec into it, read its mounted token, or sniff its traffic.\n\n"+
 			"This is an indirect, scheduling-level escalation: neither verb reads a Secret or binds a role directly, but together they break the assumption that a workload stays on a trusted node. It is most dangerous in clusters with a mix of trusted and lower-trust nodes (spot/burst pools, tenant-dedicated nodes).",
-			subjectKey(subject), podsBinding, podsRole, nodeAction, nodeBinding, nodeRole, scope.Detail),
-		Impact: "Relocate sensitive pods onto a node the attacker controls by manipulating node scheduling and evicting pods, then steal those pods' tokens or traffic from the node.",
+			subjectKey(subject), podAction, podsBinding, podsRole, nodeAction, nodeBinding, nodeRole, scope.Detail),
+		Impact: "Relocate sensitive pods onto a node the attacker controls by manipulating node scheduling and removing pods, then steal those pods' tokens or traffic from the node.",
 		AttackScenario: []string{
-			fmt.Sprintf("Attacker confirms both halves with `%s` and `%s`.", kubectlAuthCanI("delete", "pods", "", subject), kubectlAuthCanI(strings.Fields(nodeAction)[0], lastField(nodeAction), "", subject)),
-			"They cordon or taint every node except one they control (`kubectl patch node <n> --subresource=status ...`), or delete the nodes outright.",
-			"They `kubectl delete pod <target>` for a sensitive pod, forcing the controller to reschedule it.",
+			fmt.Sprintf("Attacker confirms both halves with `%s` and `%s`.", kubectlAuthCanI(strings.Fields(podAction)[0], lastField(podAction), "", subject), kubectlAuthCanI(strings.Fields(nodeAction)[0], lastField(nodeAction), "", subject)),
+			"They make every node except one they control refuse new pods: `kubectl cordon <n>` or `kubectl taint node <n> ...` with a `nodes` write, a `NotReady` condition written through `nodes/status`, or `kubectl delete node <n>`, depending on which node grant they hold.",
+			"They remove a sensitive pod (`kubectl delete pod <target>`, or an eviction through `pods/eviction`), forcing its controller to recreate it.",
 			"The scheduler places the replacement pod on the attacker-controlled node.",
 			"They exec into / inspect the relocated pod from the node, harvesting its ServiceAccount token and any mounted secrets.",
 		},
-		Remediation: "Split `delete pods` from node-scheduling verbs across identities; reserve `nodes/status` writes and `delete nodes` for the control plane and cluster-autoscaler.",
+		Remediation: "Split pod removal from node-scheduling verbs across identities; reserve writes to `nodes` and `nodes/status`, and `delete nodes`, for the control plane, the kubelet, and the cluster-autoscaler.",
 		RemediationSteps: []string{
-			"Remove `update`/`patch` on `nodes/status` and `delete` on `nodes` from application/operator identities. These belong to the kube-controller-manager and the autoscaler.",
-			"Restrict `delete pods` to controllers and platform automation; application identities should manage workloads through their owning controller, not by deleting pods.",
+			"Remove `update`/`patch` on `nodes` and `nodes/status`, and `delete` on `nodes`, from application/operator identities. These belong to the kube-controller-manager, the kubelet, and the autoscaler.",
+			"Restrict `delete`/`deletecollection` on `pods` and `create` on `pods/eviction` to controllers and platform automation; application identities should manage workloads through their owning controller, not by removing pods.",
 			"Pin sensitive workloads to trusted nodes with `nodeSelector`/`nodeAffinity` + taints, so eviction cannot relocate them onto untrusted nodes.",
-			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("delete", "nodes", "", subject)),
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI(strings.Fields(nodeAction)[0], lastField(nodeAction), "", subject)),
 		},
 		LearnMore: []models.Reference{
 			{Title: "Kubernetes — Safely Drain a Node", URL: "https://kubernetes.io/docs/tasks/administer-cluster/safely-drain-node/"},
+			{Title: "Kubernetes: API-initiated Eviction", URL: "https://kubernetes.io/docs/concepts/scheduling-eviction/api-eviction/"},
 			{Title: "Kubernetes — Taints and Tolerations", URL: "https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/"},
 			{Title: "Kubernetes — RBAC Good Practices", URL: "https://kubernetes.io/docs/concepts/security/rbac-good-practices/"},
 			refNSAHardening,

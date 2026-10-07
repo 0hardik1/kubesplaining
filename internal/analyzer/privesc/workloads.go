@@ -134,6 +134,13 @@ func grantedWorkloadKinds(rule permissions.EffectiveRule, kinds []workloadKind, 
 
 // ruleReachesWorkload reports whether rule authorizes update or patch on w: the kind
 // and namespace have to match, and a resourceNames-scoped rule has to name w.
+//
+// The name check is an exact string match, as in ResourceNameMatches
+// (kubernetes/kubernetes pkg/apis/rbac/v1/evaluation_helpers.go). A resourceNames entry
+// of "*" is a literal name, not a wildcard: it reaches only a workload literally named
+// "*", which the API server's name validation does not allow. Do not special-case it.
+// The `signers` resource is the one place "*" is a wildcard, because it has its own
+// signer-name grammar (permissions.SignersCovered); that grammar does not apply here.
 func ruleReachesWorkload(rule permissions.EffectiveRule, w workload) bool {
 	if rule.Namespace != "" && rule.Namespace != w.namespace {
 		return false
@@ -141,7 +148,7 @@ func ruleReachesWorkload(rule permissions.EffectiveRule, w workload) bool {
 	if !rule.Grants([]permissions.ResourceTarget{{Group: w.kind.group, Resource: w.kind.resource}}, "update", "patch") {
 		return false
 	}
-	if rule.NameScoped() && !slices.Contains(rule.ResourceNames, "*") && !slices.Contains(rule.ResourceNames, w.name) {
+	if rule.NameScoped() && !slices.Contains(rule.ResourceNames, w.name) {
 		return false
 	}
 	return true

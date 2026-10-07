@@ -117,10 +117,13 @@ func hopNarrative(hop models.EscalationHop) string {
 		if hasTo {
 			return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as %s. In practice, the kube-apiserver honours the `Impersonate-User/Impersonate-Group` headers and authorizes the request against the impersonated identity's permissions instead of the attacker's.", from, perm, to)
 		}
-		return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as any identity in the cluster, including `system:masters`, which the apiserver hard-codes as cluster-admin. Granting `impersonate` on `groups: [\"*\"]` is functionally a cluster-admin grant.", from, perm)
+		return fmt.Sprintf("Acting as %s, the attacker uses RBAC impersonation (the `impersonate` verb on %s) to send API requests as any identity in the cluster, including `system:masters`, which the apiserver hard-codes as cluster-admin. Granting `impersonate` on `groups` with no `resourceNames` is functionally a cluster-admin grant.", from, perm)
 
 	case "impersonate_user":
 		return fmt.Sprintf("Acting as %s, the attacker impersonates the User %s (%s). Unlike group impersonation this is not a shortcut to cluster-admin: no username is privileged by construction, so the attacker gains exactly what that user's own bindings grant, and the chain continues from there. The apiserver honours the `Impersonate-User` header and authorizes the request against the impersonated user's permissions instead of the attacker's.", from, to, perm)
+
+	case "impersonate_group":
+		return fmt.Sprintf("Acting as %s, the attacker impersonates the Group %s (%s). The grant is scoped with `resourceNames`, and the apiserver authorizes every `Impersonate-Group` value separately, so this is not a route to `system:masters`: the attacker gains exactly what the bindings that name this group grant, and the chain continues from there. The apiserver also requires an `Impersonate-User` header on the same request, which it authorizes on its own.", from, to, perm)
 
 	case "impersonate_system_masters":
 		return fmt.Sprintf("Acting as %s, the attacker impersonates the `system:masters` group (%s). The kube-apiserver hard-codes that group as authorized for every operation regardless of RBAC. A single such grant collapses the entire authorization layer.", from, perm)

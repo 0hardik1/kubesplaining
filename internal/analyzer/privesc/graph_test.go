@@ -1504,6 +1504,24 @@ func TestImpersonateUsersNeedsABoundUser(t *testing.T) {
 			t.Fatal("a rule naming only bob must not reach a path that runs through alice")
 		}
 	})
+
+	t.Run("a star in resourceNames is a literal username", func(t *testing.T) {
+		t.Parallel()
+		star := impersonateUsers
+		star.ResourceNames = []string{"*"}
+		snapshot := rbacWriteSnapshot(star)
+		snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+			ObjectMeta: objectMeta("alice-admin", ""),
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+			Subjects:   []rbacv1.Subject{{Kind: "User", Name: "alice"}},
+		})
+
+		// ResourceNameMatches compares names exactly, so ["*"] reaches only a user
+		// literally named "*", never alice.
+		if reachesClusterAdmin(snapshot, "attacker") {
+			t.Fatal(`resourceNames ["*"] must not reach alice`)
+		}
+	})
 }
 
 // TestImpersonateGroupsStaysUnconditional guards the other side of the users/groups
@@ -1577,5 +1595,341 @@ func TestExecResourceNamesScopesToNamedPods(t *testing.T) {
 	unrestricted := execTo(build(nil))
 	if !unrestricted["subject:ServiceAccount/apps/sa-named"] || !unrestricted["subject:ServiceAccount/apps/sa-other"] {
 		t.Errorf("unrestricted exec should reach both ServiceAccounts, got %v", unrestricted)
+	}
+}
+
+// edgesFrom returns the edges leaving the given node, for assertions that care about
+// which edges a builder emitted rather than which path BFS reports.
+func edgesFrom(graph *models.EscalationGraph, from string) []*models.EscalationEdge {
+	var out []*models.EscalationEdge
+	for _, edge := range graph.Edges {
+		if edge.From == from {
+			out = append(out, edge)
+		}
+	}
+	return out
+}
+
+const attackerID = "subject:ServiceAccount/team-a/attacker"
+
+// groupAdminBinding binds a Group to cluster-admin through its own ClusterRoleBinding.
+func groupAdminBinding(group string) rbacv1.ClusterRoleBinding {
+	return rbacv1.ClusterRoleBinding{
+		ObjectMeta: objectMeta(group+"-admin", ""),
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},
+		Subjects:   []rbacv1.Subject{{Kind: "Group", Name: group}},
+	}
+}
+
+// TestImpersonateGroupsHonorsResourceNames pins that `impersonate groups` is
+// authorized per group name: the apiserver checks Impersonate-Group: X as
+// `impersonate groups` on name X. A grant scoped to other groups cannot reach
+// system:masters, and reaches only the named groups that some binding names. A grant
+// whose resourceNames list system:masters keeps both sink edges.
+func TestImpersonateGroupsHonorsResourceNames(t *testing.T) {
+	t.Parallel()
+
+	impersonateGroups := func(names ...string) rbacv1.PolicyRule {
+		return rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"groups"}, Verbs: []string{"impersonate"}, ResourceNames: names}
+	}
+	build := func(rule rbacv1.PolicyRule) models.Snapshot {
+		snapshot := rbacWriteSnapshot(rule)
+		snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings,
+			groupAdminBinding("team-admins"), groupAdminBinding("other-admins"))
+		return snapshot
+	}
+
+	t.Run("scoped to another group reaches only that group", func(t *testing.T) {
+		t.Parallel()
+		snapshot := build(impersonateGroups("team-admins"))
+		graph := BuildGraph(snapshot)
+		var groupEdges []string
+		for _, edge := range edgesFrom(graph, attackerID) {
+			if edge.To == sinkClusterAdmin || edge.To == sinkSystemMasters {
+				t.Fatalf("a grant scoped to team-admins must not reach a sink directly: %+v", *edge)
+			}
+			if edge.Action == "impersonate_group" {
+				groupEdges = append(groupEdges, edge.To)
+			}
+		}
+		if !slices.Equal(groupEdges, []string{"subject:Group/team-admins"}) {
+			t.Fatalf("want one impersonate_group edge to Group/team-admins, got %v", groupEdges)
+		}
+		actions, ok := pathActions(FindPaths(graph, 5), "ServiceAccount/team-a/attacker", models.TargetClusterAdmin)
+		if !ok || !slices.Equal(actions, []string{"impersonate_group", "bound_to_cluster_admin"}) {
+			t.Fatalf("want [impersonate_group bound_to_cluster_admin], got %v (found=%v)", actions, ok)
+		}
+		if _, ok := pathActions(FindPaths(graph, 5), "ServiceAccount/team-a/attacker", models.TargetSystemMasters); ok {
+			t.Fatal("a grant scoped to team-admins must not reach system:masters")
+		}
+	})
+
+	t.Run("scoped to a group no binding names reaches nothing", func(t *testing.T) {
+		t.Parallel()
+		if reachesClusterAdmin(build(impersonateGroups("nobody-binds-this")), "attacker") {
+			t.Fatal("impersonating a group with no bindings grants nothing")
+		}
+	})
+
+	t.Run("star in resourceNames is a literal group name", func(t *testing.T) {
+		t.Parallel()
+		if reachesClusterAdmin(build(impersonateGroups("*")), "attacker") {
+			t.Fatal(`resourceNames ["*"] names a group literally called "*", not every group`)
+		}
+	})
+
+	t.Run("scoped to system:masters keeps both sink edges", func(t *testing.T) {
+		t.Parallel()
+		graph := BuildGraph(build(impersonateGroups("system:masters")))
+		got := map[string]string{}
+		for _, edge := range edgesFrom(graph, attackerID) {
+			got[edge.Action] = edge.To
+		}
+		if got["impersonate"] != sinkClusterAdmin || got["impersonate_system_masters"] != sinkSystemMasters {
+			t.Fatalf("want impersonate -> cluster_admin and impersonate_system_masters -> system_masters, got %v", got)
+		}
+		if _, ok := got["impersonate_group"]; ok {
+			t.Fatalf("no bound group was named besides system:masters, got %v", got)
+		}
+	})
+}
+
+// TestImpersonateServiceAccountsHonorsResourceNames pins that `impersonate
+// serviceaccounts` is authorized per ServiceAccount name: Impersonate-User:
+// system:serviceaccount:ns:name is checked as `impersonate serviceaccounts` on name in
+// namespace ns. A ClusterRole's resourceNames apply in every namespace, so a
+// cluster-scoped grant naming "ci" reaches every SA called ci and nothing else, and no
+// longer counts as cluster-admin. A namespaced grant is narrowed the same way.
+func TestImpersonateServiceAccountsHonorsResourceNames(t *testing.T) {
+	t.Parallel()
+
+	rule := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"serviceaccounts"}, Verbs: []string{"impersonate"}, ResourceNames: []string{"ci"}}
+	base := func() models.Snapshot {
+		snapshot := models.Snapshot{}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: objectMeta("team-a", "")},
+			{ObjectMeta: objectMeta("team-b", "")},
+		}
+		snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+			{ObjectMeta: objectMeta("attacker", "team-a")},
+			{ObjectMeta: objectMeta("ci", "team-a")},
+			{ObjectMeta: objectMeta("ci", "team-b")},
+			{ObjectMeta: objectMeta("deployer", "team-b")},
+		}
+		return snapshot
+	}
+	impersonated := func(t *testing.T, graph *models.EscalationGraph) []string {
+		t.Helper()
+		var to []string
+		for _, edge := range edgesFrom(graph, attackerID) {
+			if edge.To == sinkClusterAdmin {
+				t.Fatalf("a name-scoped grant must not claim every ServiceAccount: %+v", *edge)
+			}
+			if edge.Action == "impersonate_serviceaccount" {
+				to = append(to, edge.To)
+			}
+		}
+		sort.Strings(to)
+		return to
+	}
+
+	t.Run("cluster-scoped grant reaches the named SA in every namespace", func(t *testing.T) {
+		t.Parallel()
+		snapshot := base()
+		snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{{ObjectMeta: objectMeta("imp-ci", ""), Rules: []rbacv1.PolicyRule{rule}}}
+		snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+			ObjectMeta: objectMeta("imp-ci", ""),
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "imp-ci"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "team-a"}},
+		}}
+		got := impersonated(t, BuildGraph(snapshot))
+		want := []string{"subject:ServiceAccount/team-a/ci", "subject:ServiceAccount/team-b/ci"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("impersonate_serviceaccount targets = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("namespaced grant reaches the named SA in its namespace only", func(t *testing.T) {
+		t.Parallel()
+		snapshot := base()
+		snapshot.Resources.Roles = []rbacv1.Role{{ObjectMeta: objectMeta("imp-ci", "team-a"), Rules: []rbacv1.PolicyRule{rule}}}
+		snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+			ObjectMeta: objectMeta("imp-ci", "team-a"),
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "imp-ci"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "team-a"}},
+		}}
+		got := impersonated(t, BuildGraph(snapshot))
+		if !slices.Equal(got, []string{"subject:ServiceAccount/team-a/ci"}) {
+			t.Fatalf("impersonate_serviceaccount targets = %v, want only team-a/ci", got)
+		}
+	})
+}
+
+// TestBindHonorsResourceNames pins that `bind` is authorized per role name
+// (BindingAuthorized checks `bind` on the roleRef's name), so a name-scoped `bind`
+// reaches only the roles it names. Paired with a binding write, a `bind` scoped to
+// `view` cannot bind cluster-admin and must not produce a cluster-admin path; one
+// scoped to `cluster-admin`, or to a custom triple-wildcard ClusterRole, still does.
+func TestBindHonorsResourceNames(t *testing.T) {
+	t.Parallel()
+
+	scopedBind := func(resources []string, names ...string) rbacv1.PolicyRule {
+		r := rbacRule(resources, "bind")
+		r.ResourceNames = names
+		return r
+	}
+	write := rbacRule([]string{"clusterrolebindings"}, "create")
+	superRole := rbacv1.ClusterRole{
+		ObjectMeta: objectMeta("super", ""),
+		Rules:      []rbacv1.PolicyRule{{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"*"}}},
+	}
+
+	cases := []struct {
+		name string
+		bind rbacv1.PolicyRule
+		want bool
+	}{
+		{name: "unscoped bind", bind: rbacRule([]string{"clusterroles"}, "bind"), want: true},
+		{name: "bind scoped to view", bind: scopedBind([]string{"clusterroles"}, "view"), want: false},
+		{name: "bind scoped to admin is not cluster-admin", bind: scopedBind([]string{"clusterroles"}, "admin"), want: false},
+		{name: "bind scoped to cluster-admin", bind: scopedBind([]string{"clusterroles"}, "view", "cluster-admin"), want: true},
+		{name: "bind scoped to a triple-wildcard ClusterRole", bind: scopedBind([]string{"clusterroles"}, "super"), want: true},
+		{name: "bind scoped to a Role named cluster-admin", bind: scopedBind([]string{"roles"}, "cluster-admin"), want: false},
+		{name: "bind scoped to a literal star", bind: scopedBind([]string{"clusterroles"}, "*"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			snapshot := rbacWriteSnapshot(write, tc.bind)
+			snapshot.Resources.ClusterRoles = append(snapshot.Resources.ClusterRoles, superRole)
+			if got := reachesClusterAdmin(snapshot, "attacker"); got != tc.want {
+				t.Fatalf("cluster-admin reachable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBindResourceNamesGateNamespaceAdmin covers the namespaced arm: a RoleBinding
+// write in team-a plus cluster-scoped `bind`. Binding `admin`, or a cluster-admin
+// equivalent, into the namespace is namespace-admin; binding `view` is not.
+func TestBindResourceNamesGateNamespaceAdmin(t *testing.T) {
+	t.Parallel()
+
+	reachesNamespaceAdmin := func(names ...string) bool {
+		bind := rbacRule([]string{"clusterroles"}, "bind")
+		bind.ResourceNames = names
+		snapshot := rbacWriteSnapshot(bind)
+		snapshot.Resources.Roles = []rbacv1.Role{{
+			ObjectMeta: objectMeta("rb-writer", "team-a"),
+			Rules:      []rbacv1.PolicyRule{rbacRule([]string{"rolebindings"}, "create")},
+		}}
+		snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+			ObjectMeta: objectMeta("rb-writer", "team-a"),
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "rb-writer"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "team-a"}},
+		}}
+		for _, edge := range edgesFrom(BuildGraph(snapshot), attackerID) {
+			if edge.Action == "modify_role_binding" && edge.To == sinkNamespaceAdminPrefix+"team-a" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !reachesNamespaceAdmin() {
+		t.Error("unscoped bind plus a RoleBinding write must reach namespace-admin")
+	}
+	if !reachesNamespaceAdmin("admin") {
+		t.Error("bind scoped to admin plus a RoleBinding write must reach namespace-admin")
+	}
+	if !reachesNamespaceAdmin("cluster-admin") {
+		t.Error("bind scoped to cluster-admin plus a RoleBinding write must reach namespace-admin")
+	}
+	if reachesNamespaceAdmin("view") {
+		t.Error("bind scoped to view must not reach namespace-admin")
+	}
+}
+
+// TestBindCutBreakersCountOnlyQualifyingGrants pins that the bind half of the
+// CutBreakers is collected with the same qualification as emission. Binding
+// attacker-crb grants the binding write and a `bind` scoped to view; binding
+// binder-crb grants an unscoped `bind`. Only binder-crb's bind can name cluster-admin,
+// so it is the sole grantor of that half, and cutting it breaks the edge.
+func TestBindCutBreakersCountOnlyQualifyingGrants(t *testing.T) {
+	t.Parallel()
+
+	viewBind := rbacRule([]string{"clusterroles"}, "bind")
+	viewBind.ResourceNames = []string{"view"}
+	snapshot := rbacWriteSnapshot(rbacRule([]string{"clusterrolebindings"}, "create"), viewBind)
+	snapshot.Resources.ClusterRoles = append(snapshot.Resources.ClusterRoles, rbacv1.ClusterRole{
+		ObjectMeta: objectMeta("binder-cr", ""),
+		Rules:      []rbacv1.PolicyRule{rbacRule([]string{"clusterroles"}, "bind")},
+	})
+	snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+		ObjectMeta: objectMeta("binder-crb", ""),
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "binder-cr"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "attacker", Namespace: "team-a"}},
+	})
+
+	var found bool
+	for _, edge := range edgesFrom(BuildGraph(snapshot), attackerID) {
+		if edge.Action != "modify_role_binding" || edge.To != sinkClusterAdmin {
+			continue
+		}
+		found = true
+		got := map[string]bool{}
+		for _, b := range edge.CutBreakers {
+			got[b.Name] = true
+		}
+		if len(edge.CutBreakers) != 2 || !got["attacker-crb"] || !got["binder-crb"] {
+			t.Fatalf("want CutBreakers = [attacker-crb binder-crb], got %+v", edge.CutBreakers)
+		}
+	}
+	if !found {
+		t.Fatal("no modify_role_binding edge to cluster_admin; fixture is wrong")
+	}
+}
+
+// TestNodeMigrateHalves pins every grant each half of KUBE-PRIVESC-016 accepts, and
+// that the edge's Permission names the grants that matched. `kubectl cordon` and
+// `kubectl taint` patch the main `nodes` resource, the Eviction API is `create` on
+// `pods/eviction`, and `deletecollection` removes every pod in scope. A name-scoped
+// deletecollection authorizes nothing, so it does not count.
+func TestNodeMigrateHalves(t *testing.T) {
+	t.Parallel()
+
+	core := func(resource string, verbs ...string) rbacv1.PolicyRule {
+		return rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{resource}, Verbs: verbs}
+	}
+	scopedDeleteCollection := core("pods", "deletecollection")
+	scopedDeleteCollection.ResourceNames = []string{"victim"}
+
+	cases := []struct {
+		name  string
+		rules []rbacv1.PolicyRule
+		want  string // Permission of the edge, or "" for no edge
+	}{
+		{name: "delete pods + patch nodes (cordon/taint)", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "patch")}, want: "delete pods + patch nodes"},
+		{name: "delete pods + update nodes", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "update")}, want: "delete pods + update nodes"},
+		{name: "eviction + nodes/status", rules: []rbacv1.PolicyRule{core("pods/eviction", "create"), core("nodes/status", "patch")}, want: "create pods/eviction + patch nodes/status"},
+		{name: "deletecollection pods + delete nodes", rules: []rbacv1.PolicyRule{core("pods", "deletecollection"), core("nodes", "delete")}, want: "deletecollection pods + delete nodes"},
+		{name: "*/status covers nodes/status", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("*/status", "update")}, want: "delete pods + update nodes/status"},
+		{name: "name-scoped deletecollection authorizes nothing", rules: []rbacv1.PolicyRule{scopedDeleteCollection, core("nodes", "patch")}},
+		{name: "reading nodes is not node control", rules: []rbacv1.PolicyRule{core("pods", "delete"), core("nodes", "get", "list")}},
+		{name: "eviction alone has no node half", rules: []rbacv1.PolicyRule{core("pods/eviction", "create")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got string
+			for _, edge := range edgesFrom(BuildGraph(rbacWriteSnapshot(tc.rules...)), attackerID) {
+				if edge.Action == "node_drain_migrate" {
+					got = edge.Permission
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("node_drain_migrate Permission = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

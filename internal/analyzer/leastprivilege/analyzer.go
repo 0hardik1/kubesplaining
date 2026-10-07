@@ -152,7 +152,11 @@ func (a *Analyzer) analyzeRoleForSubject(subj models.SubjectRef, rules []permiss
 		// in every apiGroup in APIGroups." Empty slices contribute nothing.
 		for _, group := range r.APIGroups {
 			for _, resource := range r.Resources {
-				if resource == "*" {
+				// "*" and "*/sub" (every resource's "sub" subresource, see
+				// permissions.coversResource) are patterns, not coordinates: a literal
+				// lookup of "*/status" in the usage index finds nothing, so treating it
+				// as concrete would report an in-use grant as unused.
+				if permissions.IsResourcePattern(resource) {
 					continue // can't enumerate against snapshot - handled by wildcard path below
 				}
 				for _, verb := range r.Verbs {
@@ -198,7 +202,7 @@ func (a *Analyzer) analyzeRoleForSubject(subj models.SubjectRef, rules []permiss
 			for _, group := range r.APIGroups {
 				ng := normalizeGroup(group)
 				for _, resource := range r.Resources {
-					if resource == "*" {
+					if permissions.IsResourcePattern(resource) {
 						continue
 					}
 					key := triple{APIGroup: ng, Resource: resource}
