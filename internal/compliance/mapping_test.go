@@ -1,6 +1,7 @@
 package compliance
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -133,5 +134,26 @@ func TestFrameworks_DeclaresExpectedSlugs(t *testing.T) {
 		if !present {
 			t.Errorf("missing framework slug: %q", slug)
 		}
+	}
+}
+
+// TestApply_VersionGatedRuleCarriesPatchingControl pins KUBE-VERSION-CVE-2026-2270
+// to both the pod-create control (the pair is pod creation by another route) and
+// the NSA/CISA patching control, since the durable fix is the control-plane
+// upgrade rather than the RBAC cut.
+func TestApply_VersionGatedRuleCarriesPatchingControl(t *testing.T) {
+	out := Apply([]models.Finding{{RuleID: "KUBE-VERSION-CVE-2026-2270"}})
+
+	var sawPodCreate, sawPatching bool
+	for _, ref := range out[0].Frameworks {
+		switch {
+		case ref.Framework == FrameworkCIS19 && ref.Control == "5.1.4":
+			sawPodCreate = true
+		case ref.Framework == FrameworkNSA && strings.Contains(ref.Control+" "+ref.Title, "patches"):
+			sawPatching = true
+		}
+	}
+	if !sawPodCreate || !sawPatching {
+		t.Errorf("expected CIS 5.1.4 and the NSA patching control; got %+v", out[0].Frameworks)
 	}
 }

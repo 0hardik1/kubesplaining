@@ -112,3 +112,53 @@ func TestStatefulSetDeputyFindingSkipsFullWildcard(t *testing.T) {
 	}
 	assertRuleAbsent(t, findings, "KUBE-VERSION-CVE-2026-2270")
 }
+
+// TestStatefulSetDeputyFindingAnchorsOnControllerRevisionHalf: when the two halves
+// come from different Roles, the finding is anchored on the controllerrevisions
+// grant and carries a structured hint that removes it, led by the upgrade note.
+// That is the half to cut: the controller owns ControllerRevisions, so a workload
+// that legitimately manages StatefulSets rarely needs to write them.
+func TestStatefulSetDeputyFindingAnchorsOnControllerRevisionHalf(t *testing.T) {
+	t.Parallel()
+	s := deputyRoleSnapshot("v1.36.4", "statefulsets")
+	s.Resources.Roles = append(s.Resources.Roles, rbacv1.Role{
+		ObjectMeta: metav1ObjectMeta("revision-writer", "app"),
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{"apps"},
+			Resources: []string{"controllerrevisions"},
+			Verbs:     []string{"update", "patch"},
+		}},
+	})
+	s.Resources.RoleBindings = append(s.Resources.RoleBindings, rbacv1.RoleBinding{
+		ObjectMeta: metav1ObjectMeta("revision-writer-binding", "app"),
+		RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "revision-writer"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "writer", Namespace: "app"}},
+	})
+
+	findings, err := New().Analyze(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	var found bool
+	for _, f := range findings {
+		if f.RuleID != "KUBE-VERSION-CVE-2026-2270" {
+			continue
+		}
+		found = true
+		if f.Resource == nil || f.Resource.Name != "revision-writer" {
+			t.Errorf("finding anchored on %+v, want Role revision-writer", f.Resource)
+		}
+		if f.RemediationHint == nil || f.RemediationHint.Patch == nil {
+			t.Fatal("finding carries no structured remediation hint")
+		}
+		if got := f.RemediationHint.Patch.Target.Name; got != "revision-writer" {
+			t.Errorf("hint targets %q, want revision-writer", got)
+		}
+		if cmd := f.RemediationHint.Patch.Command; len(cmd) == 0 || cmd[:len("# CVE-2026-2270")] != "# CVE-2026-2270" {
+			t.Errorf("hint command should lead with the upgrade note, got:\n%s", cmd)
+		}
+	}
+	if !found {
+		t.Fatal("KUBE-VERSION-CVE-2026-2270 not emitted when the halves come from two Roles")
+	}
+}

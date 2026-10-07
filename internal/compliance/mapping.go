@@ -108,6 +108,13 @@ var ruleControls = map[string][]models.FrameworkRef{
 		cis("5.1.4", "Minimize access to create pods"),
 		nsa("Authorization", "Role-based access control"),
 	},
+	// Version-gated: the pair is pod creation by another route (CIS 5.1.4), and the
+	// durable fix is the control-plane patch rather than the RBAC cut.
+	"KUBE-VERSION-CVE-2026-2270": {
+		cis("5.1.4", "Minimize access to create pods"),
+		nsa("Authorization", "Role-based access control"),
+		nsa("Upgrading and Application Security Practices", "Promptly apply security patches and updates"),
+	},
 	"KUBE-PRIVESC-005": {
 		cis("5.1.2", "Minimize access to secrets"),
 		nsa("Authorization", "Role-based access control"),
