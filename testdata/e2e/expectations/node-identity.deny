@@ -1,0 +1,5 @@
+# Negative guards for 26-privesc-node-identity.yaml.
+#
+# The joiner holds no approval or signer verb: not the CSR self-approval pair.
+KUBE-PRIVESC-011:ServiceAccount/nodeid-fixtures/nodeid-joiner
+KUBE-PRIVESC-024:ServiceAccount/nodeid-fixtures/nodeid-joiner

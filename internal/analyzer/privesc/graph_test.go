@@ -2,8 +2,10 @@ package privesc
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
@@ -1931,5 +1933,410 @@ func TestNodeMigrateHalves(t *testing.T) {
 				t.Fatalf("node_drain_migrate Permission = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestPodImageHijackEdge pins the KUBE-PRIVESC-034 edge: `update`/`patch` on the
+// main `pods` resource reaches the ServiceAccounts that running pods in scope use,
+// with the same foothold exec gives, honors resourceNames, and never fires on
+// read verbs or on `create` (which is the separate pod_create_token_theft edge).
+func TestPodImageHijackEdge(t *testing.T) {
+	t.Parallel()
+
+	automountOff := false
+	build := func(rule rbacv1.PolicyRule) *models.EscalationGraph {
+		snapshot := models.Snapshot{}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: metav1.ObjectMeta{Name: "apps", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}}},
+		}
+		snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+			{ObjectMeta: metav1.ObjectMeta{Name: "writer", Namespace: "apps"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "controller", Namespace: "apps"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "quiet", Namespace: "apps"}},
+		}
+		snapshot.Resources.Pods = []corev1.Pod{
+			{ObjectMeta: metav1.ObjectMeta{Name: "controller-0", Namespace: "apps"}, Spec: corev1.PodSpec{ServiceAccountName: "controller"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "quiet-0", Namespace: "apps"}, Spec: corev1.PodSpec{ServiceAccountName: "quiet", AutomountServiceAccountToken: &automountOff}},
+		}
+		snapshot.Resources.Roles = []rbacv1.Role{{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-writer", Namespace: "apps"},
+			Rules:      []rbacv1.PolicyRule{rule},
+		}}
+		snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+			ObjectMeta: metav1.ObjectMeta{Name: "pod-writer-binding", Namespace: "apps"},
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "pod-writer"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "writer", Namespace: "apps"}},
+		}}
+		return BuildGraph(snapshot)
+	}
+	writer := nodeID(models.SubjectRef{Kind: "ServiceAccount", Name: "writer", Namespace: "apps"})
+	controller := nodeID(models.SubjectRef{Kind: "ServiceAccount", Name: "controller", Namespace: "apps"})
+	quiet := nodeID(models.SubjectRef{Kind: "ServiceAccount", Name: "quiet", Namespace: "apps"})
+	hijackEdge := func(g *models.EscalationGraph, to string) *models.EscalationEdge {
+		for _, e := range g.Edges {
+			if e.From == writer && e.To == to && e.Action == "pod_image_hijack" {
+				return e
+			}
+		}
+		return nil
+	}
+
+	patch := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"patch"}}
+	g := build(patch)
+	edge := hijackEdge(g, controller)
+	if edge == nil {
+		t.Fatal("patch pods: expected a pod_image_hijack edge to the controller SA")
+	}
+	if edge.Technique != "KUBE-PRIVESC-034" {
+		t.Errorf("technique = %q, want KUBE-PRIVESC-034", edge.Technique)
+	}
+	if edge.Difficulty != difficultyModerate {
+		t.Errorf("difficulty = %q, want moderate", edge.Difficulty)
+	}
+	if edge.SourceBinding != "pod-writer-binding" || edge.BindingNamespace != "apps" {
+		t.Errorf("provenance = %q/%q, want pod-writer-binding/apps", edge.SourceBinding, edge.BindingNamespace)
+	}
+	want := models.FootholdPod | models.FootholdToken | models.FootholdIdentity
+	if edge.Grants != want {
+		t.Errorf("grants = %v, want shell + token + identity for a token-mounting pod", edge.Grants)
+	}
+	quietEdge := hijackEdge(g, quiet)
+	if quietEdge == nil {
+		t.Fatal("patch pods: expected an edge to the SA whose pod mounts no token")
+	}
+	if quietEdge.Grants != models.FootholdPod {
+		t.Errorf("token-less pod grants = %v, want the pod only", quietEdge.Grants)
+	}
+
+	if hijackEdge(build(rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"update"}}), controller) == nil {
+		t.Error("update pods: expected a pod_image_hijack edge")
+	}
+	for _, verb := range []string{"get", "list", "create", "delete"} {
+		if hijackEdge(build(rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{verb}}), controller) != nil {
+			t.Errorf("%s pods: unexpected pod_image_hijack edge", verb)
+		}
+	}
+	if hijackEdge(build(rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"pods"}, Verbs: []string{"patch"}}), controller) != nil {
+		t.Error("patch pods in a non-core group: unexpected edge")
+	}
+
+	scoped := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"patch"}, ResourceNames: []string{"quiet-0"}}
+	g = build(scoped)
+	if hijackEdge(g, controller) != nil {
+		t.Error("resourceNames scoped to quiet-0: unexpected edge to the controller SA")
+	}
+	if hijackEdge(g, quiet) == nil {
+		t.Error("resourceNames scoped to quiet-0: expected an edge to that pod's SA")
+	}
+}
+
+// TestNamespaceLabelFlipEdge pins the KUBE-PRIVESC-035 edge: a write on a
+// Namespace object whose PSA label blocks privileged pods, plus a way to create
+// pods there, reaches node_escape. Each half alone does nothing, an unrestricted
+// namespace has nothing to flip, and a namespaced grant reaches only its own
+// namespace object.
+func TestNamespaceLabelFlipEdge(t *testing.T) {
+	t.Parallel()
+
+	restricted := map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}
+	type binding struct {
+		namespace string // "" for a ClusterRoleBinding
+		rules     []rbacv1.PolicyRule
+	}
+	build := func(nsLabels map[string]string, bindings ...binding) *models.EscalationGraph {
+		snapshot := models.Snapshot{}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: metav1.ObjectMeta{Name: "locked", Labels: nsLabels}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "other", Labels: restricted}},
+		}
+		snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+			{ObjectMeta: metav1.ObjectMeta{Name: "flipper", Namespace: "locked"}},
+		}
+		for i, b := range bindings {
+			name := fmt.Sprintf("grant-%d", i)
+			subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "flipper", Namespace: "locked"}}
+			if b.namespace == "" {
+				snapshot.Resources.ClusterRoles = append(snapshot.Resources.ClusterRoles, rbacv1.ClusterRole{
+					ObjectMeta: metav1.ObjectMeta{Name: name}, Rules: b.rules,
+				})
+				snapshot.Resources.ClusterRoleBindings = append(snapshot.Resources.ClusterRoleBindings, rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{Name: name},
+					RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: name},
+					Subjects:   subjects,
+				})
+				continue
+			}
+			snapshot.Resources.Roles = append(snapshot.Resources.Roles, rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: b.namespace}, Rules: b.rules,
+			})
+			snapshot.Resources.RoleBindings = append(snapshot.Resources.RoleBindings, rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: b.namespace},
+				RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: name},
+				Subjects:   subjects,
+			})
+		}
+		return BuildGraph(snapshot)
+	}
+	flipper := nodeID(models.SubjectRef{Kind: "ServiceAccount", Name: "flipper", Namespace: "locked"})
+	flipEdges := func(g *models.EscalationGraph) []*models.EscalationEdge {
+		var out []*models.EscalationEdge
+		for _, e := range g.Edges {
+			if e.From == flipper && e.Action == "namespace_psa_label_flip" && e.To == sinkNodeEscape {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	nsPatch := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"patch"}}
+	podCreate := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}}
+
+	// Both halves from one namespaced Role in the restricted namespace.
+	g := build(restricted, binding{namespace: "locked", rules: []rbacv1.PolicyRule{nsPatch, podCreate}})
+	edges := flipEdges(g)
+	if len(edges) != 1 {
+		t.Fatalf("namespaced patch namespaces + create pods: got %d flip edges, want 1", len(edges))
+	}
+	edge := edges[0]
+	if edge.Technique != "KUBE-PRIVESC-035" || edge.Difficulty != difficultyModerate {
+		t.Errorf("technique/difficulty = %q/%q", edge.Technique, edge.Difficulty)
+	}
+	if !strings.Contains(edge.Permission, "patch namespaces") || !strings.Contains(edge.Permission, "create pods") || !strings.Contains(edge.Permission, "locked") {
+		t.Errorf("permission = %q, want both grants and the namespace", edge.Permission)
+	}
+	if len(edge.CutBreakers) != 1 || edge.CutBreakers[0].Name != "grant-0" || edge.CutBreakers[0].Namespace != "locked" {
+		t.Errorf("cut breakers = %+v, want the single granting RoleBinding locked/grant-0", edge.CutBreakers)
+	}
+	// The pod-create half alone is only token theft in a restricted namespace, so
+	// the flip must be the only route to node_escape here.
+	if hasEdge(g, flipper, "pod_create_privileged_escape", sinkNodeEscape) {
+		t.Error("restricted namespace: unexpected direct privileged pod-create edge")
+	}
+
+	// Each half alone.
+	if n := len(flipEdges(build(restricted, binding{namespace: "locked", rules: []rbacv1.PolicyRule{nsPatch}}))); n != 0 {
+		t.Errorf("namespace write alone: got %d flip edges, want 0", n)
+	}
+	if n := len(flipEdges(build(restricted, binding{namespace: "locked", rules: []rbacv1.PolicyRule{podCreate}}))); n != 0 {
+		t.Errorf("pod create alone: got %d flip edges, want 0", n)
+	}
+
+	// Nothing to flip when the namespace already admits privileged pods: the direct
+	// edge covers it.
+	g = build(nil, binding{namespace: "locked", rules: []rbacv1.PolicyRule{nsPatch, podCreate}})
+	if n := len(flipEdges(g)); n != 0 {
+		t.Errorf("unlabeled namespace: got %d flip edges, want 0", n)
+	}
+	if !hasEdge(g, flipper, "pod_create_privileged_escape", sinkNodeEscape) {
+		t.Error("unlabeled namespace: expected the direct privileged pod-create edge")
+	}
+
+	// A namespaced grant on namespaces reaches its own namespace object only: a
+	// Role in `other` cannot relabel `locked`, even with pod creation there.
+	g = build(restricted,
+		binding{namespace: "other", rules: []rbacv1.PolicyRule{nsPatch}},
+		binding{namespace: "locked", rules: []rbacv1.PolicyRule{podCreate}},
+	)
+	if n := len(flipEdges(g)); n != 0 {
+		t.Errorf("namespace write in another namespace: got %d flip edges, want 0", n)
+	}
+
+	// Cluster-scoped halves from two bindings: one grouped edge for both restricted
+	// namespaces, with a cut breaker per sole-grantor half.
+	g = build(restricted,
+		binding{rules: []rbacv1.PolicyRule{nsPatch}},
+		binding{rules: []rbacv1.PolicyRule{podCreate}},
+	)
+	edges = flipEdges(g)
+	if len(edges) != 1 {
+		t.Fatalf("cluster-scoped halves: got %d flip edges, want 1 grouped edge", len(edges))
+	}
+	if !strings.Contains(edges[0].Permission, "locked, other") {
+		t.Errorf("grouped permission = %q, want both namespaces listed", edges[0].Permission)
+	}
+	if len(edges[0].CutBreakers) != 2 {
+		t.Errorf("cut breakers = %+v, want one per half", edges[0].CutBreakers)
+	}
+
+	// resourceNames on the cluster-scoped namespace write scope it to the named
+	// namespaces only.
+	scoped := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"update"}, ResourceNames: []string{"other"}}
+	g = build(restricted, binding{rules: []rbacv1.PolicyRule{scoped, podCreate}})
+	edges = flipEdges(g)
+	if len(edges) != 1 || strings.Contains(edges[0].Permission, "locked") || !strings.Contains(edges[0].Permission, "other") {
+		t.Errorf("resourceNames-scoped namespace write: edges = %+v, want one edge naming only `other`", edges)
+	}
+
+	// A workload create grant is a pod-creation half too.
+	deployCreate := rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"create"}}
+	g = build(restricted, binding{namespace: "locked", rules: []rbacv1.PolicyRule{nsPatch, deployCreate}})
+	edges = flipEdges(g)
+	if len(edges) != 1 || !strings.Contains(edges[0].Permission, "create deployments") {
+		t.Errorf("deployment create as the pod half: edges = %+v", edges)
+	}
+
+	// A full wildcard holder is cluster-admin already and gets no flip edge.
+	wild := rbacv1.PolicyRule{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"*"}}
+	if n := len(flipEdges(build(restricted, binding{rules: []rbacv1.PolicyRule{wild}}))); n != 0 {
+		t.Errorf("wildcard holder: got %d flip edges, want 0", n)
+	}
+}
+
+// TestPodStatusInterceptEdge pins the KUBE-PRIVESC-036 edge: update/patch on
+// pods/status reaches traffic_intercept only when a Service selects a live pod the
+// grant can write, is `hard` by default (the kubelet corrects the status), and
+// `moderate` when a Service publishes not-ready addresses for a pod with no node.
+func TestPodStatusInterceptEdge(t *testing.T) {
+	t.Parallel()
+
+	type opts struct {
+		rule          rbacv1.PolicyRule
+		clusterScoped bool
+		podLabels     map[string]string
+		podPhase      corev1.PodPhase
+		podNode       string
+		svcSelector   map[string]string
+		publishNotRdy bool
+		svcNamespace  string
+		noService     bool
+		systemSubject bool
+	}
+	build := func(o opts) *models.EscalationGraph {
+		snapshot := models.Snapshot{}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: metav1.ObjectMeta{Name: "web"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "other"}},
+		}
+		saName := "status-writer"
+		if o.systemSubject {
+			saName = "system:status-writer"
+		}
+		snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+			{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: "web"}},
+		}
+		podLabels := o.podLabels
+		if podLabels == nil {
+			podLabels = map[string]string{"app": "api"}
+		}
+		snapshot.Resources.Pods = []corev1.Pod{{
+			ObjectMeta: metav1.ObjectMeta{Name: "api-0", Namespace: "web", Labels: podLabels},
+			Spec:       corev1.PodSpec{NodeName: o.podNode},
+			Status:     corev1.PodStatus{Phase: o.podPhase},
+		}}
+		if !o.noService {
+			selector := o.svcSelector
+			if selector == nil {
+				selector = map[string]string{"app": "api"}
+			}
+			ns := o.svcNamespace
+			if ns == "" {
+				ns = "web"
+			}
+			snapshot.Resources.Services = []corev1.Service{{
+				ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns},
+				Spec:       corev1.ServiceSpec{Selector: selector, PublishNotReadyAddresses: o.publishNotRdy},
+			}}
+		}
+		subject := rbacv1.Subject{Kind: "ServiceAccount", Name: saName, Namespace: "web"}
+		if o.clusterScoped {
+			snapshot.Resources.ClusterRoles = []rbacv1.ClusterRole{{ObjectMeta: metav1.ObjectMeta{Name: "status"}, Rules: []rbacv1.PolicyRule{o.rule}}}
+			snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+				ObjectMeta: metav1.ObjectMeta{Name: "status"},
+				RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "status"},
+				Subjects:   []rbacv1.Subject{subject},
+			}}
+		} else {
+			snapshot.Resources.Roles = []rbacv1.Role{{ObjectMeta: metav1.ObjectMeta{Name: "status", Namespace: "web"}, Rules: []rbacv1.PolicyRule{o.rule}}}
+			snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+				ObjectMeta: metav1.ObjectMeta{Name: "status", Namespace: "web"},
+				RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "status"},
+				Subjects:   []rbacv1.Subject{subject},
+			}}
+		}
+		return BuildGraph(snapshot)
+	}
+	edge := func(g *models.EscalationGraph, saName string) *models.EscalationEdge {
+		from := nodeID(models.SubjectRef{Kind: "ServiceAccount", Name: saName, Namespace: "web"})
+		for _, e := range g.Edges {
+			if e.From == from && e.Action == "pod_status_ip_spoof" && e.To == sinkTrafficIntercept {
+				return e
+			}
+		}
+		return nil
+	}
+	statusPatch := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"patch"}}
+
+	e := edge(build(opts{rule: statusPatch, podNode: "worker-1", podPhase: corev1.PodRunning}), "status-writer")
+	if e == nil {
+		t.Fatal("namespaced patch pods/status with a selected running pod: expected a pod_status_ip_spoof edge")
+	}
+	if e.Technique != "KUBE-PRIVESC-036" || e.Difficulty != difficultyHard {
+		t.Errorf("technique/difficulty = %q/%q, want KUBE-PRIVESC-036/hard", e.Technique, e.Difficulty)
+	}
+	if !strings.Contains(e.Description, "web/api") {
+		t.Errorf("description should name the Service, got %q", e.Description)
+	}
+	if e.SourceBinding != "status" || e.BindingNamespace != "web" {
+		t.Errorf("provenance = %q/%q, want status/web", e.SourceBinding, e.BindingNamespace)
+	}
+
+	// A pending pod behind a Service that publishes not-ready addresses has no
+	// kubelet to correct the write: moderate.
+	e = edge(build(opts{rule: statusPatch, podPhase: corev1.PodPending, publishNotRdy: true}), "status-writer")
+	if e == nil || e.Difficulty != difficultyModerate {
+		t.Errorf("publishNotReadyAddresses + unscheduled pod: edge = %+v, want moderate", e)
+	}
+	// Not-ready publication alone, with a kubelet owning the pod, stays hard.
+	e = edge(build(opts{rule: statusPatch, podPhase: corev1.PodRunning, podNode: "worker-1", publishNotRdy: true}), "status-writer")
+	if e == nil || e.Difficulty != difficultyHard {
+		t.Errorf("publishNotReadyAddresses with a scheduled pod: edge = %+v, want hard", e)
+	}
+
+	for name, o := range map[string]opts{
+		"no service":                {rule: statusPatch, podPhase: corev1.PodRunning, noService: true},
+		"selector does not match":   {rule: statusPatch, podPhase: corev1.PodRunning, svcSelector: map[string]string{"app": "db"}},
+		"service in another ns":     {rule: statusPatch, podPhase: corev1.PodRunning, svcNamespace: "other"},
+		"pod finished":              {rule: statusPatch, podPhase: corev1.PodSucceeded},
+		"read-only status":          {rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"get"}}, podPhase: corev1.PodRunning},
+		"main resource, not status": {rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"patch"}}, podPhase: corev1.PodRunning},
+		"resourceNames miss":        {rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"patch"}, ResourceNames: []string{"elsewhere"}}, podPhase: corev1.PodRunning},
+	} {
+		if edge(build(o), "status-writer") != nil {
+			t.Errorf("%s: unexpected pod_status_ip_spoof edge", name)
+		}
+	}
+	if edge(build(opts{rule: statusPatch, podPhase: corev1.PodRunning, systemSubject: true}), "system:status-writer") != nil {
+		t.Error("system: subject: unexpected edge")
+	}
+
+	// resourceNames naming the selected pod still reaches it, and a cluster-scoped
+	// grant reaches the Service in any namespace.
+	if edge(build(opts{rule: rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"update"}, ResourceNames: []string{"api-0"}}, podPhase: corev1.PodRunning}), "status-writer") == nil {
+		t.Error("resourceNames naming the selected pod: expected an edge")
+	}
+	if edge(build(opts{rule: statusPatch, clusterScoped: true, podPhase: corev1.PodRunning}), "status-writer") == nil {
+		t.Error("cluster-scoped grant: expected an edge")
+	}
+
+	// The path finding lands on the new sink with its own rule ID and category.
+	paths := FindPaths(build(opts{rule: statusPatch, podPhase: corev1.PodRunning}), 5)
+	var found bool
+	for _, p := range paths {
+		if p.Source.Name == "status-writer" && p.Target == models.TargetTrafficIntercept {
+			found = true
+			f := findingFromPath(p)
+			if f.RuleID != "KUBE-PRIVESC-PATH-TRAFFIC-INTERCEPT" {
+				t.Errorf("rule ID = %q", f.RuleID)
+			}
+			if f.Category != models.CategoryLateralMovement {
+				t.Errorf("category = %q, want lateral movement", f.Category)
+			}
+			// One hard hop downgrades a HIGH base to MEDIUM.
+			if f.Severity != models.SeverityMedium {
+				t.Errorf("severity = %s, want MEDIUM after the hard-hop downgrade", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a traffic_intercept path; paths: %+v", paths)
 	}
 }

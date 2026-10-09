@@ -237,6 +237,7 @@ func TestKindFromHintCaseInsensitive(t *testing.T) {
 		"namespace":                      "Namespace",
 		"validatingwebhookconfiguration": "ValidatingWebhookConfiguration",
 		"mutatingwebhookconfiguration":   "MutatingWebhookConfiguration",
+		"apiservice":                     "APIService",
 		"":                               "",
 		"frobnicator":                    "",
 	}
@@ -255,4 +256,46 @@ func writeTemp(t *testing.T, name, body string) string {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	return path
+}
+
+func TestLoadSnapshotAPIService(t *testing.T) {
+	t.Parallel()
+
+	path := writeTemp(t, "apiservice.yaml", `apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.metrics.k8s.io
+spec:
+  group: metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  service:
+    namespace: kube-system
+    name: metrics-server
+    port: 443
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1.apps
+  labels:
+    kube-aggregator.kubernetes.io/automanaged: onstart
+spec:
+  group: apps
+  version: v1
+`)
+	snapshot, err := LoadSnapshot(path, "")
+	if err != nil {
+		t.Fatalf("LoadSnapshot() error = %v", err)
+	}
+	if len(snapshot.Resources.APIServices) != 2 {
+		t.Fatalf("expected 2 APIServices, got %d", len(snapshot.Resources.APIServices))
+	}
+	metrics := snapshot.Resources.APIServices[0]
+	if metrics.Name != "v1beta1.metrics.k8s.io" || metrics.ServiceNamespace != "kube-system" || metrics.ServiceName != "metrics-server" || metrics.ServicePort != 443 || !metrics.InsecureSkipTLSVerify {
+		t.Fatalf("metrics APIService decoded wrong: %+v", metrics)
+	}
+	if apps := snapshot.Resources.APIServices[1]; apps.Backend() || apps.Automanaged != "onstart" || apps.Group != "apps" {
+		t.Fatalf("apps APIService decoded wrong: %+v", apps)
+	}
 }

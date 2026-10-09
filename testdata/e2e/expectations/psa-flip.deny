@@ -1,0 +1,6 @@
+# Negative guards for 23-privesc-psa-flip.yaml.
+#
+# The restricted label blocks a privileged pod today, so the direct pod-create
+# escape finding must stay quiet; the node-escape path psa-flip.chain pins exists
+# only because the label can be rewritten.
+KUBE-PRIVESC-002:ServiceAccount/psaflip-fixtures/psaflip-flipper

@@ -35,6 +35,8 @@ var (
 	mitreT1552_007 = models.MitreTechnique{ID: "T1552.007", Name: "Container API", URL: "https://attack.mitre.org/techniques/T1552/007/"}
 	mitreT1068     = models.MitreTechnique{ID: "T1068", Name: "Exploitation for Privilege Escalation", URL: "https://attack.mitre.org/techniques/T1068/"}
 	mitreT1556     = models.MitreTechnique{ID: "T1556", Name: "Modify Authentication Process", URL: "https://attack.mitre.org/techniques/T1556/"}
+	mitreT1557     = models.MitreTechnique{ID: "T1557", Name: "Adversary-in-the-Middle", URL: "https://attack.mitre.org/techniques/T1557/"}
+	mitreT1040     = models.MitreTechnique{ID: "T1040", Name: "Network Sniffing", URL: "https://attack.mitre.org/techniques/T1040/"}
 )
 
 var (
@@ -151,6 +153,48 @@ func hopNarrative(hop models.EscalationHop) string {
 			return fmt.Sprintf("Acting as %s, the attacker uses `pods/exec` (%s) to open a shell inside %s and inherit whatever ServiceAccount or host privileges that container holds.", from, perm, to)
 		}
 		return fmt.Sprintf("Acting as %s, the attacker uses `pods/exec` (%s) to open a shell inside a privileged pod and inherit whatever ServiceAccount or host privileges that container holds.", from, perm)
+
+	case "pod_image_hijack":
+		if hasTo {
+			return fmt.Sprintf("Acting as %s, the attacker uses `update`/`patch` on `pods` (%s) to change the container image of a pod running as %s. The API server's pod update validation keeps container images mutable on a live pod, and no in-tree controller reverts the change: the kubelet restarts the container with the attacker's image inside the same pod sandbox, with the same ServiceAccount token mount, securityContext, host namespaces, and volumes. The result is a shell in that pod without any exec or ephemeral-container verb.", from, perm, to)
+		}
+		return fmt.Sprintf("Acting as %s, the attacker uses `update`/`patch` on `pods` (%s) to change the container image of a running pod to one they control. The kubelet restarts the container with the new image inside the same pod, keeping its ServiceAccount token, securityContext, and host access.", from, perm)
+
+	case "namespace_psa_label_flip":
+		return fmt.Sprintf("Acting as %s, the attacker rewrites the `pod-security.kubernetes.io/enforce` label on a namespace that Pod Security Admission currently locks down (%s), setting it to `privileged`. PSA reads its enforcement level from that label on every admission and nothing in-tree protects the label, so the next pod the attacker creates there, privileged or host-mounting, is admitted. The write on the Namespace object is authorized like any other RBAC request: a cluster-scoped grant reaches every namespace, and a namespaced Role granting `patch namespaces` reaches its own namespace, because the API server treats `/api/v1/namespaces/<ns>` as a request in `<ns>`.", from, perm)
+
+	case "pod_status_ip_spoof":
+		return fmt.Sprintf("Acting as %s, the attacker writes the `pods/status` subresource (%s) of a pod that a Service selects, replacing its `podIP` with an address they control. The API server's status validator checks only that the address is well-formed, and NodeRestriction constrains node callers only. The EndpointSlice controller republishes the new address and kube-proxy re-points the Service within a second, so the Service's clients, bearer tokens included, now talk to the attacker. The pod's kubelet rewrites the status on its next sync (about 10 seconds), so the attacker keeps re-writing it, unless the Service publishes not-ready addresses and the pod has no node, in which case nothing corrects it.", from, perm)
+
+	case "endpointslice_write":
+		return fmt.Sprintf("Acting as %s, the attacker writes EndpointSlices (%s) for a Service. kube-proxy consumes every slice that carries the Service's `kubernetes.io/service-name` label, whatever its `managed-by` label says, and the EndpointSlice controller reconciles only the slices it manages, so a slice the attacker adds survives and receives its share of the Service's traffic. Clients resolve the Service name as before, and part of their connections reach the attacker.", from, perm)
+
+	case "service_backend_rewrite":
+		return fmt.Sprintf("Acting as %s, the attacker rewrites a Service's spec (%s): its selector, so it points at pods the attacker controls, its ports, or its type (an `ExternalName` sends clients to a hostname of the attacker's choosing). The controller republishes the backends within a second and clients resolve the Service name as before, so they connect to the attacker.", from, perm)
+
+	case "control_plane_backend_hijack":
+		return fmt.Sprintf("Acting as %s, the attacker takes over a Service the API server itself calls (%s): it steers the Service's traffic to a pod it controls and presents the backend's serving certificate, which the namespace's Secrets or pods hand it. Every request the API server sends that backend, admission reviews or aggregated API calls carrying the API server's own credentials, now arrives at the attacker.", from, perm)
+
+	case "apiservice_takeover":
+		return fmt.Sprintf("Acting as %s, the attacker rewrites an APIService registration (%s) so that an API group is served by a Service it controls. The aggregator forwards every request for that group, with the API server's front-proxy credentials and the caller's identity, to that Service. For a native group this is the API server's own authority handed over; for an aggregated group it is that group's whole request stream.", from, perm)
+
+	case "csr_nodeclient_autoapprove":
+		return fmt.Sprintf("Acting as %s, the attacker submits a CertificateSigningRequest for the `kubernetes.io/kube-apiserver-client-kubelet` signer naming `system:node:<name>` in `system:nodes` (%s). The controller manager's CSR approver asks the API server whether the requester may `create certificatesigningrequests/nodeclient`; it may, so the CSR is approved and signed with no human step. Nothing ties the node name to the requester, so the certificate is a kubelet identity for any node the attacker names.", from, perm)
+
+	case "bootstrap_token_mint":
+		return fmt.Sprintf("Acting as %s, the attacker writes a Secret of type `bootstrap.kubernetes.io/token` in kube-system (%s). The bootstrap-token authenticator treats it as a credential for `system:bootstrap:<id>` in the groups the Secret lists, and this cluster's bootstrap group is bound to the nodeclient CSR auto-approval. The token therefore buys an auto-approved kubelet client certificate for any node name.", from, perm)
+
+	case "impersonate_node":
+		return fmt.Sprintf("Acting as %s, the attacker sends requests with `Impersonate-User: system:node:<name>` and `Impersonate-Group: system:nodes` (%s). The Node authorizer, which checks only the name prefix and the group, treats the request as that node's kubelet.", from, perm)
+
+	case "node_token_request":
+		if hasTo {
+			return fmt.Sprintf("Holding a node identity, the attacker requests a token for ServiceAccount %s through the TokenRequest API. The Node authorizer allows a node to mint tokens for the ServiceAccount of any pod bound to it, and the identity names whichever node that pod runs on, so the request succeeds and the attacker now acts as %s.", to, to)
+		}
+		return "Holding a node identity, the attacker requests tokens for the ServiceAccounts of pods bound to the node it named."
+
+	case "node_secret_read":
+		return "Holding a node identity for a node that runs kube-system pods, the attacker reads the Secrets those pods reference. The Node authorizer allows a node to read any Secret a pod bound to it mounts or pulls with."
 
 	case "token_request":
 		if hasTo {
@@ -357,6 +401,83 @@ func contentKubeSystemSecretsPath(source models.SubjectRef, hops []models.Escala
 			refNSAHardening,
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1552_007, mitreT1078_004, mitreT1098},
+	}
+}
+
+// contentNodeIdentityPath renders a path ending at the node_identity sink: a
+// kubelet client identity for a node of the attacker's choosing.
+func contentNodeIdentityPath(source models.SubjectRef, hops []models.EscalationHop) ruleContent {
+	hopCount := len(hops)
+	steps := make([]string, 0, hopCount+2)
+	steps = append(steps, fmt.Sprintf("Attacker compromises any workload bound to `%s`.", source.Key()))
+	for _, hop := range hops {
+		steps = append(steps, hopNarrative(hop))
+	}
+	steps = append(steps, "With a kubelet identity for any node name, the attacker requests tokens for the ServiceAccounts of the pods on that node and reads the Secrets those pods reference. Repeating this for each node's name yields every pod credential in the cluster, including kube-system's.")
+	return ruleContent{
+		Title: fmt.Sprintf("`%s` can **obtain a node identity** for any node in %d hop(s)", source.Key(), hopCount),
+		Scope: scopeForPath(source, models.TargetNodeIdentity),
+		Description: fmt.Sprintf("Subject `%s` has a privesc path that terminates in a kubelet client identity (`system:node:<name>` in `system:nodes`) for a node of its choosing.\n\n"+
+			"The Node authorizer grants that identity, for the node it names, every Secret, ConfigMap, and PersistentVolumeClaim referenced by a pod bound to the node, and a TokenRequest for the ServiceAccount of any such pod. It checks the name prefix and the group, not that the caller is a kubelet, so an identity for any node name is the union of every pod credential in the cluster.\n\n"+
+			"The chain (%d hop(s); each step uses an explicit RBAC verb the engine validated):\n%s",
+			source.Key(), hopCount, formatHopList(hops)),
+		Impact:         "Act as a kubelet for any node: mint tokens for the ServiceAccounts of the pods on it and read the Secrets they reference. Across node names that is every pod credential in the cluster, kube-system's controllers included.",
+		AttackScenario: steps,
+		Remediation:    fmt.Sprintf("Remove `create certificatesigningrequests/nodeclient` from identities that are not the bootstrap group, keep kube-system Secret writes to the control plane, never pair `impersonate users` with `impersonate groups` naming `system:nodes`, then break the chain at: %s.", hopsRemediation(hops)),
+		RemediationSteps: []string{
+			fmt.Sprintf("Break the chain at: %s.", hopsRemediation(hops)),
+			"Audit who may create the nodeclient subresource: `kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.roleRef.name == \"system:certificates.k8s.io:certificatesigningrequests:nodeclient\") | .subjects[]? | \"\\(.kind) \\(.name)\"'`. Expect only `system:bootstrappers:kubeadm:default-node-token`.",
+			"Alert on kubelet client CSRs whose requester is not a bootstrap token or an existing node, and on approved CSRs naming a node that does not exist (`kubectl get csr -o custom-columns=NAME:.metadata.name,REQUESTOR:.spec.username,SIGNER:.spec.signerName,CONDITION:.status.conditions[*].type`).",
+			"Keep Secret writes in kube-system to the control plane and the platform team; alert on new Secrets of type `bootstrap.kubernetes.io/token`.",
+			"Where a Secret write in kube-system cannot be removed, rotate or expire bootstrap tokens (`kubeadm token list`) and delete unused ones.",
+			"Enable the NodeRestriction admission plugin (default on kubeadm) so a node identity obtained this way cannot also modify other nodes' pods or labels.",
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Using Node Authorization", URL: "https://kubernetes.io/docs/reference/access-authn-authz/node/"},
+			{Title: "Kubernetes: TLS bootstrapping (nodeclient auto-approval)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/#approval"},
+			{Title: "Kubernetes: Authenticating with Bootstrap Tokens", URL: "https://kubernetes.io/docs/reference/access-authn-authz/bootstrap-tokens/"},
+			refRBACGoodPrac,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1098, mitreT1552_007},
+	}
+}
+
+// contentTrafficInterceptPath is the content for a chain that ends at the
+// traffic_intercept sink: the subject can redirect one or more Services' traffic
+// to an address it controls.
+func contentTrafficInterceptPath(source models.SubjectRef, hops []models.EscalationHop) ruleContent {
+	hopCount := len(hops)
+	steps := make([]string, 0, hopCount+2)
+	steps = append(steps, fmt.Sprintf("Attacker compromises any workload bound to `%s`.", source.Key()))
+	for _, hop := range hops {
+		steps = append(steps, hopNarrative(hop))
+	}
+	steps = append(steps, "Final step: the Service's clients connect to an address the attacker controls. Every request they send arrives there first: bearer tokens in `Authorization` headers, webhook payloads, database credentials in connection strings. The attacker reads or alters them and forwards the request to the real backend, so nothing breaks and nothing is logged on the client side.")
+	return ruleContent{
+		Title: fmt.Sprintf("`%s` can **intercept in-cluster Service traffic** in %d hop(s)", source.Key(), hopCount),
+		Scope: scopeForPath(source, models.TargetTrafficIntercept),
+		Description: fmt.Sprintf("Subject `%s` has a privesc path that terminates in control over where a Service's traffic goes. A Service's backends are derived from the IPs its selected pods report in their status, and that status is an ordinary API subresource: a subject that can write it rewrites a pod's `podIP`, the EndpointSlice controller republishes the address, and kube-proxy re-points the Service at it within a second. Clients resolve the Service name as before and connect to the attacker.\n\n"+
+			"The chain (%d hop(s); each step uses an explicit RBAC verb the engine validated):\n%s\n\n"+
+			"What this yields depends on who calls the intercepted Service. For an application Service it is that application's credentials and data. For a Service that backs an admission webhook or an aggregated API, the clients are the API server itself, and the position becomes admission bypass or control-plane credential capture. The hop's difficulty says how durable the position is: `hard` when the pod's kubelet corrects the status every 10 seconds and the attacker must keep writing it, `moderate` when a selected Service publishes not-ready addresses and a selected pod has no node, so nothing ever corrects it.",
+			source.Key(), hopCount, formatHopList(hops)),
+		Impact:         "Adversary-in-the-middle position on one or more in-cluster Services: capture of bearer tokens, credentials, and request bodies that the Service's clients send, and the ability to alter responses. For a webhook or aggregated-API backend, this is admission bypass or API-server credential capture.",
+		AttackScenario: steps,
+		Remediation:    fmt.Sprintf("Remove write access to `pods/status` (and to `endpointslices`, `endpoints`, and `services`) from identities that are not the kubelet or a core controller, then break the chain at: %s.", hopsRemediation(hops)),
+		RemediationSteps: []string{
+			fmt.Sprintf("Break the chain at: %s.", hopsRemediation(hops)),
+			"Audit who can write pod status: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select(.rules[]?.resources[]? == \"pods/status\") | \"\\(.kind) \\(.metadata.namespace // \"-\")/\\(.metadata.name)\"'`. Expect `system:node` and a handful of `system:controller:*` roles, nothing bound to a workload.",
+			"Alert on `pods/status` writes from identities that are not `system:node:*`: the audit event's `user.username` and `objectRef.subresource` fields identify them directly.",
+			"For Services whose clients carry credentials (webhook backends, aggregated APIs, internal APIs), move the clients to mutual TLS or to an mTLS service mesh so a redirected backend cannot present the expected identity.",
+			"Avoid `publishNotReadyAddresses: true` on Services whose backends are not fully owned by the same team, since it publishes the status of pods no kubelet corrects.",
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes — EndpointSlices (how Service backends are derived from pod status)", URL: "https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/"},
+			refRBACGoodPrac,
+			refMSThreatMatrix,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1557, mitreT1040, mitreT1078_004},
 	}
 }
 

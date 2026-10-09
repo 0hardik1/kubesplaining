@@ -2,6 +2,7 @@ package rbac
 
 import (
 	"context"
+	appsv1 "k8s.io/api/apps/v1"
 	"strings"
 	"testing"
 
@@ -1117,4 +1118,234 @@ func TestImpersonationForms(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPodUpdateImageSwap covers KUBE-PRIVESC-034: `update`/`patch` on the main
+// `pods` resource. A grant that also carries `create` keeps the -001 framing
+// (first matching case wins), and read verbs fire nothing from this family.
+func TestPodUpdateImageSwap(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		rule    rbacv1.PolicyRule
+		present []string
+		absent  []string
+	}{
+		{"pods patch -> 034", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"patch"}}, []string{"KUBE-PRIVESC-034"}, []string{"KUBE-PRIVESC-001"}},
+		{"pods update -> 034", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"update"}}, []string{"KUBE-PRIVESC-034"}, []string{"KUBE-PRIVESC-001"}},
+		{"pods create+patch -> 001 only", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create", "patch"}}, []string{"KUBE-PRIVESC-001"}, []string{"KUBE-PRIVESC-034"}},
+		{"pods get/list -> neither", rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}}, nil, []string{"KUBE-PRIVESC-001", "KUBE-PRIVESC-034"}},
+		{"pods patch in apps group -> neither", rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"pods"}, Verbs: []string{"patch"}}, nil, []string{"KUBE-PRIVESC-034"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder", tc.rule))
+			if err != nil {
+				t.Fatalf("Analyze() error = %v", err)
+			}
+			for _, id := range tc.present {
+				assertRulePresent(t, findings, id)
+			}
+			for _, id := range tc.absent {
+				assertRuleAbsent(t, findings, id)
+			}
+		})
+	}
+
+	findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"patch"}}))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	f := findRule(findings, "KUBE-PRIVESC-034")
+	if f == nil {
+		t.Fatal("expected KUBE-PRIVESC-034")
+	}
+	if f.Severity != models.SeverityHigh {
+		t.Errorf("severity = %s, want HIGH", f.Severity)
+	}
+	if f.RemediationHint == nil || f.RemediationHint.Patch == nil {
+		t.Error("expected a structured remediation hint removing the pods write rule")
+	}
+	if !strings.Contains(f.Description, "image") {
+		t.Errorf("description should explain the image swap, got %q", f.Description)
+	}
+}
+
+// TestNamespaceLabelFlip covers KUBE-PRIVESC-035: update/patch on the Namespace
+// object plus pod creation in a namespace whose PSA label blocks privileged pods.
+func TestNamespaceLabelFlip(t *testing.T) {
+	t.Parallel()
+
+	restricted := map[string]string{"pod-security.kubernetes.io/enforce": "restricted"}
+	build := func(nsLabels map[string]string, rules ...rbacv1.PolicyRule) models.Snapshot {
+		return models.Snapshot{
+			Resources: models.SnapshotResources{
+				Namespaces: []corev1.Namespace{
+					{ObjectMeta: metav1.ObjectMeta{Name: "locked", Labels: nsLabels}},
+				},
+				Roles: []rbacv1.Role{{
+					ObjectMeta: metav1.ObjectMeta{Name: "ns-writer", Namespace: "locked"},
+					Rules:      rules,
+				}},
+				RoleBindings: []rbacv1.RoleBinding{{
+					ObjectMeta: metav1.ObjectMeta{Name: "ns-writer-binding", Namespace: "locked"},
+					RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "ns-writer"},
+					Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "flipper", Namespace: "locked"}},
+				}},
+			},
+		}
+	}
+	nsPatch := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"patch"}}
+	podCreate := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}}
+
+	findings, err := New().Analyze(context.Background(), build(restricted, nsPatch, podCreate))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	f := findRule(findings, "KUBE-PRIVESC-035")
+	if f == nil {
+		t.Fatal("namespaced patch namespaces + create pods in a restricted namespace: expected KUBE-PRIVESC-035")
+	}
+	if f.Severity != models.SeverityHigh {
+		t.Errorf("severity = %s, want HIGH", f.Severity)
+	}
+	if !strings.Contains(f.Description, "`locked`") || !strings.Contains(f.Description, "pod-security.kubernetes.io/enforce") {
+		t.Errorf("description should name the namespace and the PSA label, got %q", f.Description)
+	}
+	if f.RemediationHint == nil || f.RemediationHint.Patch == nil {
+		t.Error("expected a structured remediation hint removing the namespaces write rule")
+	}
+	// The finding is anchored on the namespace write, the half to remove.
+	if !strings.Contains(string(f.Evidence), `"namespaces"`) {
+		t.Errorf("evidence should carry the namespaces rule, got %s", f.Evidence)
+	}
+	// -001 still fires on the pod half; -002 does not, PSA blocks privileged here.
+	assertRulePresent(t, findings, "KUBE-PRIVESC-001")
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-002")
+
+	for name, snapshot := range map[string]models.Snapshot{
+		"namespace write alone":                          build(restricted, nsPatch),
+		"pod create alone":                               build(restricted, podCreate),
+		"unlabeled namespace":                            build(nil, nsPatch, podCreate),
+		"privileged namespace":                           build(map[string]string{"pod-security.kubernetes.io/enforce": "privileged"}, nsPatch, podCreate),
+		"namespaces read only":                           build(restricted, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"get", "list"}}, podCreate),
+		"other namespace named":                          build(restricted, rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"patch"}, ResourceNames: []string{"elsewhere"}}, podCreate),
+		"job create is a pod half but role write is not": build(restricted, nsPatch, rbacv1.PolicyRule{APIGroups: []string{"rbac.authorization.k8s.io"}, Resources: []string{"roles"}, Verbs: []string{"create"}}),
+	} {
+		findings, err := New().Analyze(context.Background(), snapshot)
+		if err != nil {
+			t.Fatalf("%s: Analyze() error = %v", name, err)
+		}
+		if findRule(findings, "KUBE-PRIVESC-035") != nil {
+			t.Errorf("%s: unexpected KUBE-PRIVESC-035", name)
+		}
+	}
+
+	// A workload create grant counts as the pod half; an update grant counts only
+	// when such a workload exists in the namespace.
+	deployUpdate := rbacv1.PolicyRule{APIGroups: []string{"apps"}, Resources: []string{"deployments"}, Verbs: []string{"patch"}}
+	findings, err = New().Analyze(context.Background(), build(restricted, nsPatch, deployUpdate))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-035")
+	withDeploy := build(restricted, nsPatch, deployUpdate)
+	withDeploy.Resources.Deployments = []appsv1.Deployment{{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "locked"}}}
+	findings, err = New().Analyze(context.Background(), withDeploy)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRulePresent(t, findings, "KUBE-PRIVESC-035")
+}
+
+// TestPodBindingPlacement covers KUBE-PRIVESC-030: `create` on `pods/binding` (or
+// the legacy `bindings` resource) is MEDIUM alone and HIGH when the same subject
+// can also create pods, and read verbs on the subresource fire nothing.
+func TestPodBindingPlacement(t *testing.T) {
+	t.Parallel()
+
+	bind := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/binding"}, Verbs: []string{"create"}}
+	legacy := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"bindings"}, Verbs: []string{"create"}}
+	podCreate := rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"create"}}
+
+	findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder", bind))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	f := findRule(findings, "KUBE-PRIVESC-030")
+	if f == nil {
+		t.Fatal("create pods/binding: expected KUBE-PRIVESC-030")
+	}
+	if f.Severity != models.SeverityMedium {
+		t.Errorf("binding alone: severity = %s, want MEDIUM", f.Severity)
+	}
+	if !strings.Contains(f.Description, "NoSchedule") {
+		t.Errorf("description should explain the taint bypass, got %q", f.Description)
+	}
+	if f.RemediationHint == nil || f.RemediationHint.Patch == nil {
+		t.Error("expected a structured remediation hint removing the binding rule")
+	}
+
+	findings, err = New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder", legacy, podCreate))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	f = findRule(findings, "KUBE-PRIVESC-030")
+	if f == nil {
+		t.Fatal("create bindings + create pods: expected KUBE-PRIVESC-030")
+	}
+	if f.Severity != models.SeverityHigh {
+		t.Errorf("binding + pod create: severity = %s, want HIGH", f.Severity)
+	}
+	if !strings.Contains(f.Description, "can also create pods") {
+		t.Errorf("description should name the pod-creation pairing, got %q", f.Description)
+	}
+	// The finding is anchored on the binding rule, the half to remove.
+	if !strings.Contains(string(f.Evidence), `"bindings"`) {
+		t.Errorf("evidence should carry the bindings rule, got %s", f.Evidence)
+	}
+
+	for name, rule := range map[string]rbacv1.PolicyRule{
+		"pods/binding get":          {APIGroups: []string{""}, Resources: []string{"pods/binding"}, Verbs: []string{"get"}},
+		"bindings in another group": {APIGroups: []string{"example.io"}, Resources: []string{"bindings"}, Verbs: []string{"create"}},
+	} {
+		findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder", rule))
+		if err != nil {
+			t.Fatalf("%s: Analyze() error = %v", name, err)
+		}
+		assertRuleAbsent(t, findings, "KUBE-PRIVESC-030")
+	}
+}
+
+// TestPodStatusWrite covers KUBE-PRIVESC-036: update/patch on pods/status.
+func TestPodStatusWrite(t *testing.T) {
+	t.Parallel()
+
+	findings, err := New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"patch"}}))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	f := findRule(findings, "KUBE-PRIVESC-036")
+	if f == nil {
+		t.Fatal("patch pods/status: expected KUBE-PRIVESC-036")
+	}
+	if f.Severity != models.SeverityMedium || f.Category != models.CategoryLateralMovement {
+		t.Errorf("severity/category = %s/%s, want MEDIUM/lateral movement", f.Severity, f.Category)
+	}
+	if f.RemediationHint == nil || f.RemediationHint.Patch == nil {
+		t.Error("expected a structured remediation hint")
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-034")
+
+	findings, err = New().Analyze(context.Background(), clusterRoleSnapshot("role", "binder",
+		rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"pods/status"}, Verbs: []string{"get", "list"}}))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	assertRuleAbsent(t, findings, "KUBE-PRIVESC-036")
 }

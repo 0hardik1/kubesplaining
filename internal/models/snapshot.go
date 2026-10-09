@@ -73,6 +73,15 @@ type SnapshotResources struct {
 	CertificateSigningRequests []CSR                                                    `json:"certificate_signing_requests,omitempty"`
 	ValidatingWebhookConfigs   []admissionregistrationv1.ValidatingWebhookConfiguration `json:"validating_webhook_configs,omitempty"`
 	MutatingWebhookConfigs     []admissionregistrationv1.MutatingWebhookConfiguration   `json:"mutating_webhook_configs,omitempty"`
+	// APIServices are the cluster's apiregistration.k8s.io registrations, reduced to
+	// the fields the analyzers read. An APIService with `spec.service` set routes an
+	// API group's requests, with the API server's own credentials, to a Service in
+	// some namespace. That namespace is therefore a control-plane backend namespace
+	// in the privesc graph (KUBE-PRIVESC-038), and write access to the registrations
+	// themselves is KUBE-PRIVESC-020. Collected through the dynamic client so the
+	// scanner takes no dependency on the kube-aggregator module; a cluster that
+	// refuses the list degrades to an empty slice with a warning.
+	APIServices []APIServiceSummary `json:"api_services,omitempty"`
 	// ValidatingAdmissionPolicies and ValidatingAdmissionPolicyBindings are the in-tree
 	// CEL-based admission policies (GA in Kubernetes v1.30). Phase 2 collects them for
 	// presence detection; Phase 3 will evaluate the CEL expressions offline.
@@ -148,4 +157,35 @@ func NewSnapshot() Snapshot {
 			CloudProvider:     "none",
 		},
 	}
+}
+
+// APIServiceSummary is the subset of an apiregistration.k8s.io/v1 APIService the
+// analyzers consume. Local APIServices (the API server's own groups) have no
+// Service; aggregated ones name the Service and namespace the aggregator proxies
+// to.
+type APIServiceSummary struct {
+	// Name is the registration's name, `<version>.<group>` (`v1beta1.metrics.k8s.io`,
+	// or `v1.` for the core group).
+	Name    string `json:"name"`
+	Group   string `json:"group"`
+	Version string `json:"version"`
+	// ServiceNamespace and ServiceName are spec.service, empty for a local APIService.
+	ServiceNamespace string `json:"service_namespace,omitempty"`
+	ServiceName      string `json:"service_name,omitempty"`
+	ServicePort      int32  `json:"service_port,omitempty"`
+	// InsecureSkipTLSVerify is spec.insecureSkipTLSVerify: the aggregator accepts any
+	// serving certificate from the backend.
+	InsecureSkipTLSVerify bool `json:"insecure_skip_tls_verify,omitempty"`
+	// HasCABundle reports whether spec.caBundle is set (the bytes themselves are not
+	// kept).
+	HasCABundle bool `json:"has_ca_bundle,omitempty"`
+	// Automanaged is the value of the `kube-aggregator.kubernetes.io/automanaged`
+	// label, which the API server stamps on the registrations it manages itself
+	// (`onstart` or `true`); empty for a registration something else created.
+	Automanaged string `json:"automanaged,omitempty"`
+}
+
+// Backend reports whether the APIService is served by an in-cluster Service.
+func (a APIServiceSummary) Backend() bool {
+	return a.ServiceNamespace != "" && a.ServiceName != ""
 }

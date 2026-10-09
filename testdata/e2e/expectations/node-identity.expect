@@ -1,0 +1,6 @@
+# Expected rule IDs from the node identity fixture
+# (testdata/e2e/vulnerable/26-privesc-node-identity.yaml): the kubelet CSR
+# auto-approval pair (-037) and the kube-system Secret write that mints a bootstrap
+# token on a kubeadm cluster (-026).
+KUBE-PRIVESC-037
+KUBE-PRIVESC-026

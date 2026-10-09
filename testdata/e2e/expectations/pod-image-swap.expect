@@ -1,0 +1,5 @@
+# Expected rule IDs from the pod image swap fixture
+# (testdata/e2e/vulnerable/22-privesc-pod-image-swap.yaml). `patch pods` on the main
+# resource is KUBE-PRIVESC-034; the target pod's cluster-wide secrets read is -005.
+KUBE-PRIVESC-034
+KUBE-PRIVESC-005

@@ -153,3 +153,63 @@ func TestConfusedDeputyEmitsBridgePerBinding(t *testing.T) {
 		}
 	}
 }
+
+// TestConfusedDeputyKyvernoPolicyWriter pins the Kyverno catalog entry: a tenant
+// that can write kyverno.io Policies in its own namespace bridges to the Kyverno
+// background controller when that controller is installed, and to nothing when
+// Kyverno is absent. Generate rules in a namespaced Policy still run with the
+// controller's identity, so the namespaced grant is the one that matters.
+func TestConfusedDeputyKyvernoPolicyWriter(t *testing.T) {
+	t.Parallel()
+
+	build := func(installed bool) models.Snapshot {
+		snapshot := models.Snapshot{}
+		snapshot.Resources.Namespaces = []corev1.Namespace{
+			{ObjectMeta: objectMeta("tenant", "")},
+			{ObjectMeta: objectMeta("kyverno", "")},
+		}
+		snapshot.Resources.Roles = []rbacv1.Role{{
+			ObjectMeta: objectMeta("policy-author", "tenant"),
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{"kyverno.io"},
+				Resources: []string{"policies"},
+				Verbs:     []string{"create"},
+			}},
+		}}
+		snapshot.Resources.RoleBindings = []rbacv1.RoleBinding{{
+			ObjectMeta: objectMeta("policy-author-rb", "tenant"),
+			RoleRef:    rbacv1.RoleRef{Kind: "Role", Name: "policy-author"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "tenant-dev", Namespace: "tenant"}},
+		}}
+		if installed {
+			snapshot.Resources.ServiceAccounts = []corev1.ServiceAccount{
+				{ObjectMeta: objectMeta("kyverno-background-controller", "kyverno")},
+			}
+			snapshot.Resources.ClusterRoleBindings = []rbacv1.ClusterRoleBinding{{
+				ObjectMeta: objectMeta("kyverno-crb", ""),
+				RoleRef:    rbacv1.RoleRef{Kind: "ClusterRole", Name: "cluster-admin"},
+				Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "kyverno-background-controller", Namespace: "kyverno"}},
+			}}
+		}
+		return snapshot
+	}
+
+	paths := FindPaths(BuildGraph(build(true)), 5)
+	var found bool
+	for _, p := range paths {
+		if p.Source.Name == "tenant-dev" && p.Target == models.TargetClusterAdmin &&
+			len(p.Hops) >= 2 && p.Hops[0].Action == "operator_reconcile" &&
+			p.Hops[0].ToSubject.Name == "kyverno-background-controller" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want tenant-dev -> kyverno-background-controller -> cluster_admin; paths: %+v", paths)
+	}
+
+	for _, p := range FindPaths(BuildGraph(build(false)), 5) {
+		if p.Source.Name == "tenant-dev" {
+			t.Fatalf("Kyverno not installed: unexpected path %+v", p)
+		}
+	}
+}

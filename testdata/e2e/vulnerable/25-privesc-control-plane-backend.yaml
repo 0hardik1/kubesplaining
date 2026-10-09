@@ -1,0 +1,221 @@
+# === MODULE: rbac + privesc (KUBE-PRIVESC-038 / -022 / -020 / -030, control-plane backends) ===
+# Admission webhooks and aggregated API servers are ordinary Services that the API
+# server itself calls, with its own front-proxy credentials. The namespace hosting
+# such a Service is a control-plane backend namespace: whoever can steer the
+# Service's traffic (write the Service or its EndpointSlices, or put a pod behind
+# it) and present its serving certificate (read the Secret, mount it, or run code in
+# the backend's pods) receives the API server's requests. The scanner derives these
+# namespaces from the webhook configurations and APIServices it collects.
+#
+# Shape:
+#   - hookbackend-fixtures hosts the Service a MutatingWebhookConfiguration on pods
+#     CREATE points at. The webhook's namespaceSelector matches a label no namespace
+#     carries, so the API server never calls it and nothing in the cluster depends
+#     on the (deliberately absent) backend. Its caBundle is a throwaway CA, which is
+#     what makes the backend hijackable from in-cluster material: a webhook with no
+#     caBundle is verified against system roots and is skipped.
+#   - hookbackend-operator holds `patch services` and `get secrets` in that
+#     namespace: the routing half and the TLS half. That is KUBE-PRIVESC-038
+#     (CRITICAL, the webhook rewrites every new pod) and KUBE-PRIVESC-022 (HIGH, a
+#     Service write in a backend namespace). The graph's one-hop route is:
+#       hookbackend-operator -(control_plane_backend_hijack)-> node_escape
+#     which control-plane-backend.chain pins.
+#   - apisvc-installer holds an unscoped cluster-wide `update apiservices`:
+#     KUBE-PRIVESC-020 (CRITICAL) and a one-hop apiservice_takeover route to
+#     cluster_admin.
+#   - podbind-scheduler holds `create pods/binding`: KUBE-PRIVESC-030, the
+#     scheduler's placement verb that bypasses the scheduler's own checks.
+#   - hookbackend-slicer holds `create endpointslices` in the backend namespace and
+#     nothing else: KUBE-PRIVESC-021 (HIGH here, because the namespace hosts a
+#     backend), and a one-hop endpointslice_write route to traffic_intercept. With
+#     no TLS half it does not reach the backend hijack (control-plane-backend.deny).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hookbackend-fixtures
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hookbackend-operator
+  namespace: hookbackend-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: apisvc-installer
+  namespace: hookbackend-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: podbind-scheduler
+  namespace: hookbackend-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hookbackend-slicer
+  namespace: hookbackend-fixtures
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hookbackend-injector
+  namespace: hookbackend-fixtures
+spec:
+  selector:
+    app: hookbackend-injector
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hookbackend-injector
+  namespace: hookbackend-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hookbackend-injector
+  template:
+    metadata:
+      labels:
+        app: hookbackend-injector
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: hookbackend-fixtures-injector
+webhooks:
+  - name: inject.hookbackend-fixtures.example.com
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 1
+    # Matches no namespace: the API server never calls this backend.
+    namespaceSelector:
+      matchLabels:
+        hookbackend-fixtures.example.com/target: "true"
+    clientConfig:
+      service:
+        namespace: hookbackend-fixtures
+        name: hookbackend-injector
+        path: /mutate
+        port: 443
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJtakNDQVQrZ0F3SUJBZ0lVVVF4aFNwekl5THIvN2MxTHBReFFKS3pxVnk4d0NnWUlLb1pJemowRUF3SXcKSWpFZ01CNEdBMVVFQXd3WGFHOXZhMkpoWTJ0bGJtUXRabWw0ZEhWeVpYTXRZMkV3SGhjTk1qWXhNREEzTVRZMApNVFU0V2hjTk16WXhNREEwTVRZME1UVTRXakFpTVNBd0hnWURWUVFEREJkb2IyOXJZbUZqYTJWdVpDMW1hWGgwCmRYSmxjeTFqWVRCWk1CTUdCeXFHU000OUFnRUdDQ3FHU000OUF3RUhBMElBQkFYWlV1ZEtxMklnUVRnVW5ncU8KT09SYk45MkQ1OE9wMHR4RW1mRDBXVnRlUWFXNXRDKzh5S2Z3MVJ1UnFCc0Y2NmdhRUswaVdtVGFLbVhucEg2Mwp1eTJqVXpCUk1CMEdBMVVkRGdRV0JCUk1HT2pWY3Z6Qm1EQkhsZFBXaHM3MUh6Q2o3akFmQmdOVkhTTUVHREFXCmdCUk1HT2pWY3Z6Qm1EQkhsZFBXaHM3MUh6Q2o3akFQQmdOVkhSTUJBZjhFQlRBREFRSC9NQW9HQ0NxR1NNNDkKQkFNQ0Ewa0FNRVlDSVFETXB4QlFxRXR0enlxZDh4dmRNa2Z1c29ZWWdkdVpZR3F3ZS85Y0w1R1NiUUloQUlNWQp0K3E2WldPbjZOQ2t1c0tiWFBmaE5hWm9VeGxLc0pZR00waklLQkNLCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hookbackend-operator
+  namespace: hookbackend-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hookbackend-operator
+  namespace: hookbackend-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: hookbackend-operator
+    namespace: hookbackend-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hookbackend-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-apisvc-installer
+rules:
+  - apiGroups: ["apiregistration.k8s.io"]
+    resources: ["apiservices"]
+    verbs: ["get", "list", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-apisvc-installer
+subjects:
+  - kind: ServiceAccount
+    name: apisvc-installer
+    namespace: hookbackend-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-apisvc-installer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: podbind-scheduler
+  namespace: hookbackend-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/binding"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: podbind-scheduler
+  namespace: hookbackend-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: podbind-scheduler
+    namespace: hookbackend-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: podbind-scheduler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hookbackend-slicer
+  namespace: hookbackend-fixtures
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hookbackend-slicer
+  namespace: hookbackend-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: hookbackend-slicer
+    namespace: hookbackend-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hookbackend-slicer

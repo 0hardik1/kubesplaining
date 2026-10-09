@@ -1,0 +1,88 @@
+# === MODULE: rbac + privesc (KUBE-PRIVESC-036 pod status write, traffic_intercept sink) ===
+# A Service's backends are derived from the IPs its selected pods report in
+# `status.podIPs`, and that status is an ordinary API subresource. The API server
+# validates only that the addresses are well-formed, the NodeRestriction plugin
+# constrains kubelets and nobody else, and the EndpointSlice controller republishes
+# whatever the status says. A subject that can write `pods/status` for a selected
+# pod therefore steers the Service's traffic to an address it chooses. The privesc
+# graph draws it as a pod_status_ip_spoof edge to the traffic_intercept sink.
+#
+# Shape: statusspoof-writer holds `patch pods/status` in this namespace and nothing
+# else. statusspoof-api is a Service whose selector matches the running pod below,
+# so the writer's one-hop route is:
+#   statusspoof-writer -(pod_status_ip_spoof)-> traffic_intercept
+# which pod-status-intercept.chain pins. The pod is bound to a node, so the hop is
+# `hard` (the kubelet re-syncs the status every 10 seconds) and the path finding is
+# downgraded one bucket from the sink's HIGH.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: statusspoof-fixtures
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: statusspoof-writer
+  namespace: statusspoof-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: statusspoof-status-writer
+  namespace: statusspoof-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: statusspoof-status-writer
+  namespace: statusspoof-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: statusspoof-writer
+    namespace: statusspoof-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: statusspoof-status-writer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: statusspoof-api
+  namespace: statusspoof-fixtures
+spec:
+  selector:
+    app: statusspoof-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: statusspoof-api
+  namespace: statusspoof-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: statusspoof-api
+  template:
+    metadata:
+      labels:
+        app: statusspoof-api
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]

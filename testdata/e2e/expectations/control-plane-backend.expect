@@ -1,0 +1,10 @@
+# Expected rule IDs from the control-plane backend fixture
+# (testdata/e2e/vulnerable/25-privesc-control-plane-backend.yaml): the backend hijack
+# conjunction (-038), the Service write in a backend namespace (-022), the APIService
+# write (-020), the pods/binding placement verb (-030), and the EndpointSlice write
+# (-021).
+KUBE-PRIVESC-038
+KUBE-PRIVESC-022
+KUBE-PRIVESC-020
+KUBE-PRIVESC-030
+KUBE-PRIVESC-021

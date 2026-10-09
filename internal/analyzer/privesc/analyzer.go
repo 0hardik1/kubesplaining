@@ -72,8 +72,13 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 		ruleID = "KUBE-CONFUSED-DEPUTY-001"
 	}
 	category := models.CategoryPrivilegeEscalation
-	if target == models.TargetKubeSystemSecrets {
+	switch target {
+	case models.TargetKubeSystemSecrets:
 		category = models.CategoryDataExfiltration
+	case models.TargetTrafficIntercept:
+		// Redirecting Service traffic is a position on the wire, not a new identity:
+		// what it yields is whatever the Service's clients send.
+		category = models.CategoryLateralMovement
 	}
 
 	content := contentForTarget(path.Source, target, path.TargetNamespace, path.Hops)
@@ -178,6 +183,10 @@ func contentForTarget(source models.SubjectRef, target models.EscalationTarget, 
 		return contentSystemMastersPath(source, hops)
 	case models.TargetAWSIAMRole:
 		return contentAWSIAMRolePath(source, hops)
+	case models.TargetTrafficIntercept:
+		return contentTrafficInterceptPath(source, hops)
+	case models.TargetNodeIdentity:
+		return contentNodeIdentityPath(source, hops)
 	default:
 		return contentGenericPath(source, target, hops)
 	}
@@ -226,6 +235,16 @@ func targetScoring(target models.EscalationTarget, hops []models.EscalationHop) 
 		// blast radius is the IAM role's policies, not the Kubernetes cluster itself,
 		// but the role is still real cloud-account access so it sits at High / 8.0.
 		base, severity, ruleID = 8.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-AWS-IAM-ROLE"
+	case models.TargetTrafficIntercept:
+		// A position on the wire for one or more Services. The clients' bearer tokens
+		// and request bodies are the prize, which is real but bounded by what those
+		// clients send, so it sits with kube-system secrets rather than cluster-admin.
+		base, severity, ruleID = 7.8, models.SeverityHigh, "KUBE-PRIVESC-PATH-TRAFFIC-INTERCEPT"
+	case models.TargetNodeIdentity:
+		// A node identity for any node name reaches the ServiceAccount tokens and
+		// referenced Secrets of every pod in the cluster. Below node_escape because
+		// it is API access through the Node authorizer, not code on the host.
+		base, severity, ruleID = 8.4, models.SeverityHigh, "KUBE-PRIVESC-PATH-NODE-IDENTITY"
 	default:
 		base, severity, ruleID = 7.0, models.SeverityHigh, "KUBE-PRIVESC-PATH-GENERIC"
 	}
@@ -282,6 +301,10 @@ func targetLabel(target models.EscalationTarget) string {
 		return "namespace-admin"
 	case models.TargetAWSIAMRole:
 		return "AWS IAM role"
+	case models.TargetTrafficIntercept:
+		return "Service traffic interception"
+	case models.TargetNodeIdentity:
+		return "node identity"
 	default:
 		return string(target)
 	}

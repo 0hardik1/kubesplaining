@@ -11,6 +11,17 @@ const (
 	TargetSystemMasters     EscalationTarget = "system_masters"
 	TargetTokenMint         EscalationTarget = "token_mint"
 	TargetAWSIAMRole        EscalationTarget = "aws_iam_role"
+	// TargetTrafficIntercept is the ability to redirect in-cluster Service traffic
+	// to an attacker-chosen address: rewriting the pod IP in a selected pod's
+	// status, or the Service's own backend list. The holder sees and can tamper with
+	// every request the Service's clients send, including bearer tokens.
+	TargetTrafficIntercept EscalationTarget = "traffic_intercept"
+	// TargetNodeIdentity is a kubelet client identity (`system:node:<name>` in
+	// `system:nodes`) for a node of the holder's choosing. The Node authorizer then
+	// grants it the Secrets, ConfigMaps, and ServiceAccount tokens of every pod
+	// bound to that node, so the sink is traversable: it fans out to those
+	// ServiceAccounts.
+	TargetNodeIdentity EscalationTarget = "node_identity"
 )
 
 // EscalationGraph is the directed privilege-escalation graph: subject nodes, sink nodes, and labeled edges.

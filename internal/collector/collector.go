@@ -670,6 +670,24 @@ func (c *Collector) Collect(ctx context.Context) (models.Snapshot, error) {
 			return apiGroups[name]
 		}
 
+		// APIServices live behind the aggregator, which every cluster serves, so no
+		// group pre-flight: a cluster that refuses the list degrades to a warning.
+		runTask("apiservices", func() error {
+			gvr := schema.GroupVersionResource{Group: "apiregistration.k8s.io", Version: "v1", Resource: "apiservices"}
+			list, err := c.dynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return err
+			}
+			items := make([]models.APIServiceSummary, 0, len(list.Items))
+			for _, item := range list.Items {
+				items = append(items, models.APIServiceSummaryFromObject(item.Object))
+			}
+			mu.Lock()
+			snapshot.Resources.APIServices = items
+			mu.Unlock()
+			return nil
+		})
+
 		if hasGroup("kyverno.io") {
 			runTask("kyverno.clusterpolicies", func() error {
 				gvr := schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "clusterpolicies"}
