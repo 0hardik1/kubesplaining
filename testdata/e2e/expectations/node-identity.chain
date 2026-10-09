@@ -1,0 +1,4 @@
+# Chain-shape assertions for 26-privesc-node-identity.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+KUBE-PRIVESC-PATH-NODE-IDENTITY:ServiceAccount/nodeid-fixtures/nodeid-joiner:node_identity 1 csr_nodeclient_autoapprove
+KUBE-PRIVESC-PATH-NODE-IDENTITY:ServiceAccount/nodeid-fixtures/nodeid-tokenwriter:node_identity 1 bootstrap_token_mint

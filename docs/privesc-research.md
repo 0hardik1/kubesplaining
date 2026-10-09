@@ -41,7 +41,7 @@ A "detectable" gap must be inferable from a `models.Snapshot` **offline** (RBAC 
 
 ## Baseline recap — what is already modeled
 
-So gaps are unambiguous. The `privesc` graph has **7 sinks** — `cluster_admin`,
+So gaps are unambiguous. (Baseline as of 2026-07; §O5 brings the count to nine with `traffic_intercept` and `node_identity`.) The `privesc` graph has **7 sinks** — `cluster_admin`,
 `system_masters`, `node_escape`, `kube_system_secrets`, `token_mint`, per-namespace
 `namespace_admin`, external `aws_iam_role` — and edges from `KUBE-PRIVESC-001…017`
 (pod-create/exec/ephemeral/portforward, secrets read/mint, impersonate, bind/escalate,
@@ -649,3 +649,55 @@ Highest value next, by (impact x cost): the **DRA prefixed-verb matcher fix** (l
 `hostUsers` attenuation and `gitRepo` / image-volume inspection (Tier A, pure PodSpec), then the
 **unauthenticated-service NetworkPolicy join** (reuses two subsystems that already exist), then
 the Copy Fail image-sharing join (a genuinely new analysis shape).
+
+### O5. Implemented 2026-10-07: Service steering, control-plane backend namespaces, node identity
+
+This round started from the research leads in section N and from a fresh read of the
+Kubernetes source (SHA 9cd9559c, the v1.36 line), with each candidate verified against a
+kind v1.36.1 cluster before it became a rule. Everything below is a detection and a
+remediation; the verification notes stay in the private research repository.
+
+**Shipped.**
+
+| Item | Rule / edge | What the source and the live cluster confirmed |
+| --- | --- | --- |
+| Pod image swap | `KUBE-PRIVESC-034`, `pod_image_hijack` | `ValidatePodUpdate` copies the old image into the comparison and rejects every other spec change, so the image fields are the one mutable thing on a live pod; the kubelet restarts the container in the same sandbox with the same mounts. |
+| PSA label flip | `KUBE-PRIVESC-035`, `namespace_psa_label_flip` | The request-info parser gives `/api/v1/namespaces/X` the namespace `X`, so a namespaced Role can grant `update namespaces` for its own namespace; PSA reads the enforce label from the Namespace object at admission time. |
+| Pod binding | `KUBE-PRIVESC-030` | `BindingREST.Create` runs only `ValidatePodBinding` and then sets `spec.nodeName`; the kubelet's own admission re-checks resource fit, node affinity, `nodeName`, and host ports, and among taints only `NoExecute`. |
+| Pod status write | `KUBE-PRIVESC-036`, `pod_status_ip_spoof`, sink `traffic_intercept` | `ValidatePodStatusUpdate` checks that IPs are well-formed and nothing else; NodeRestriction skips non-node callers; the EndpointSlice controller publishes `status.podIPs` as it finds them. The kubelet's status sync (10 s) is what makes the hop `hard`; `publishNotReadyAddresses` on a Service selecting a node-less pod removes the correction. |
+| EndpointSlice and Service writes | `KUBE-PRIVESC-021`, `-022`, `endpointslice_write`, `service_backend_rewrite` | kube-proxy accepts every slice labelled for the Service; the controller reconciles only its own. Writes on core `endpoints` were tested and **refuted** for selector Services (the mirroring controller ignores them), so they are documented and not flagged. |
+| Control-plane backend namespaces | `KUBE-PRIVESC-038`, `control_plane_backend_hijack`, `models.ControlPlaneBackends` | Webhook TLS pins `ServerName` to `<svc>.<ns>.svc` and verifies against the configured `caBundle` (host roots when empty, which an in-cluster Secret cannot satisfy); `--enable-aggregator-routing` is off by default, so the aggregator dials the Service's cluster IP like any client. The two-half model (routing + TLS) and the sink choice by backend kind follow from that. |
+| APIService collection and writes | `KUBE-PRIVESC-020`, `apiservice_takeover`, snapshot `api_services` | A registration with `spec.service` set makes the aggregator proxy the group to that Service with the front-proxy client certificate. Collected through the dynamic client (no kube-aggregator dependency); the drift posture rules (a native group served by a Service, `insecureSkipTLSVerify`) are listed below as open. |
+| Kubelet CSR auto-approval | `KUBE-PRIVESC-037`, `csr_nodeclient_autoapprove`, sink `node_identity` | The sarapprove recognizer approves a kubelet client CSR for **any** node name when the requester passes a SubjectAccessReview for `create certificatesigningrequests/nodeclient`. Confirmed live: a non-node requester holding the pair receives an approved and signed certificate for a node that does not exist. |
+| Bootstrap token minting | `KUBE-PRIVESC-026`, `bootstrap_token_mint` | A `bootstrap.kubernetes.io/token` Secret is a credential for the groups it names; on a kubeadm cluster that group holds the auto-approval above. Gated on the ClusterRoleBinding so clusters without it stay quiet. |
+| Node identity fan-out | `node_token_request`, `node_secret_read` (`KUBE-NODE-AUTHZ`) | The Node authorizer grants a node the TokenRequest for the ServiceAccount of any pod bound to it and the Secrets those pods reference; the identity names any node, so the sink is the union over nodes and is traversable. |
+| Kyverno as a confused deputy | catalog entries for `kyverno.io` policies | Generate and mutateExisting rules run as the background controller, which holds broad write access by design. |
+
+**Corrections to earlier sections.** Section N proposed a per-node sink; a single traversable
+`node_identity` sink is sufficient because every route into it names the node freely, so
+per-node granularity would only multiply findings without changing the remediation. Section
+N also listed core `endpoints` writes next to EndpointSlice writes; the live test separated
+them (see the table). The `kubectl auth can-i` pitfalls met during verification are worth
+recording: it answers for the current context's identity unless `--as` is given, and it does
+not evaluate `resourceNames` the way the authorizer does, so a `no` for a name-scoped grant
+can be wrong in both directions. The scanner's matcher does evaluate them.
+
+**Open, in priority order.**
+
+1. APIService drift posture: a native-group registration with `spec.service` set or without
+   the `automanaged` label, and any registration with `insecureSkipTLSVerify`. The data is
+   collected now; the rules belong in a small aggregation module.
+2. `resourceslices` writes (DRA, `resource.k8s.io`) as scheduling steering: a static read
+   says a forged slice can draw pods onto a node of the writer's choosing. Needs a live
+   check against a DRA-enabled cluster before it becomes a rule.
+3. Pod-level `resourceclaims` and certificate-bundle (`clusterTrustBundles`) writes: the
+   relevant features are beta and off by default on the verified line, so these are
+   documented and not implemented.
+4. Webhook `namespaceSelector` and `objectSelector` are not yet consulted when the backend
+   model decides a mutating webhook rewrites pods; a webhook scoped to a label no namespace
+   carries is still treated as pod-rewriting. Conservative in the right direction, but it
+   over-grades `-038` for such a configuration.
+5. The `edit` ClusterRole gating for `-022` means a tenant's Service write inside its own
+   non-backend namespace is never reported. That is intended, but a Service whose clients are
+   other tenants' workloads is still a cross-tenant interception point that only a
+   NetworkPolicy join would surface.

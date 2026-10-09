@@ -19,6 +19,19 @@ func TestNewPrivescActionsHaveTechniqueCopy(t *testing.T) {
 		"workload_create_token_theft",
 		"workload_hijack",
 		"workload_privileged_escape",
+		"pod_image_hijack",
+		"namespace_psa_label_flip",
+		"pod_bind_placement",
+		"pod_status_ip_spoof",
+		"endpointslice_write",
+		"service_backend_rewrite",
+		"control_plane_backend_hijack",
+		"apiservice_takeover",
+		"csr_nodeclient_autoapprove",
+		"bootstrap_token_mint",
+		"impersonate_node",
+		"node_token_request",
+		"node_secret_read",
 	} {
 		explainer, ok := Techniques[action]
 		if !ok {

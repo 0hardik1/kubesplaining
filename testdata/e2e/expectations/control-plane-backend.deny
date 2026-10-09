@@ -1,0 +1,8 @@
+# Negative guards for 25-privesc-control-plane-backend.yaml.
+#
+# The APIService installer holds neither half of the backend hijack.
+KUBE-PRIVESC-038:ServiceAccount/hookbackend-fixtures/apisvc-installer
+# `create pods/binding` is not `create pods`: no token theft by creation.
+KUBE-PRIVESC-001:ServiceAccount/hookbackend-fixtures/podbind-scheduler
+# The slicer holds the routing half only: no backend hijack without a TLS half.
+KUBE-PRIVESC-038:ServiceAccount/hookbackend-fixtures/hookbackend-slicer

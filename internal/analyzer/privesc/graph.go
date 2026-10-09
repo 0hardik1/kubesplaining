@@ -20,6 +20,7 @@ const (
 	sinkNodeEscape           = "sink:node_escape"
 	sinkSystemMasters        = "sink:system_masters"
 	sinkTokenMint            = "sink:token_mint"
+	sinkTrafficIntercept     = "sink:traffic_intercept"
 	sinkNamespaceAdminPrefix = "sink:namespace_admin:"
 )
 
@@ -40,6 +41,8 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	addSink(graph, sinkNodeEscape, models.TargetNodeEscape)
 	addSink(graph, sinkSystemMasters, models.TargetSystemMasters)
 	addSink(graph, sinkTokenMint, models.TargetTokenMint)
+	addSink(graph, sinkTrafficIntercept, models.TargetTrafficIntercept)
+	addNodeIdentitySink(graph)
 
 	subjectsByNs := serviceAccountsByNamespace(snapshot)
 	podSAsByNs := podServiceAccountsByNamespace(snapshot)
@@ -84,6 +87,13 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 		// the same ServiceAccounts as pod creation, and a pod edge inserted first
 		// stays the reported route when a subject holds both grants.
 		addWorkloadEdges(graph, perms.Subject, perms.Rules, subjectsByNs, workloads, privilegedNamespaces, admitsPrivileged)
+		// After the pod and workload edges: the flip is a two-write detour into a
+		// namespace PSA locks down, so a direct route into an unrestricted namespace,
+		// when the subject has one, stays the reported one.
+		addNamespaceLabelFlipEdges(graph, perms.Subject, perms.Rules, snapshot.Resources.Namespaces, workloads)
+		addPodStatusInterceptEdges(graph, perms.Subject, perms.Rules, snapshot)
+		addBackendEdges(graph, perms.Subject, perms.Rules, snapshot, workloads, privilegedNamespaces)
+		addNodeIdentityEdges(graph, perms.Subject, perms.Rules, snapshot)
 		// Last of the per-subject builders, and only on an affected server version.
 		// Its edges are `hard` cross-namespace routes, so keeping them last lets any
 		// cheaper direct route a subject also holds win BFS ties.
@@ -95,6 +105,9 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	// Runs after the per-subject loop so every namespace-admin sink that any
 	// subject reaches already exists as a node.
 	addNamespaceAdminTokenTheftEdges(graph, subjectsByNs)
+	// The node_identity sink fans out to the ServiceAccounts whose pods a node
+	// identity can mint tokens for; it needs the full node set, so it runs here.
+	addNodeIdentityFanOut(graph, snapshot, tokenMounted)
 
 	// Confused-deputy bridges need every controller SA node to already exist, and a
 	// controller holding no RBAC of its own never appears in permissions.Aggregate.
@@ -402,6 +415,35 @@ func addEdgesForRule(
 				Action:      "ephemeral_container_inject",
 				Permission:  verbResource(rule, "pods/ephemeralcontainers"),
 				Description: fmt.Sprintf("can inject an ephemeral container into pods running as ServiceAccount %s/%s", target.Namespace, target.Name),
+				Grants:      shellFoothold(target, tokenMounted),
+			})
+		}
+	}
+
+	// update/patch on the main `pods` resource. The API server's pod update
+	// validation (ValidatePodUpdate in pkg/apis/core/validation) keeps the container
+	// and initContainer image fields mutable on a live pod, and nothing in-tree
+	// re-checks who changed them: the kubelet sees a new image on its next sync and
+	// restarts that container with it, inside the same pod sandbox. The replacement
+	// container keeps the pod's ServiceAccount token mount, securityContext, host
+	// namespaces, and volumes, so this is the exec/ephemeral-container position
+	// reached through a write verb the `edit` ClusterRole and many operator roles
+	// carry for label and annotation patching. No workload controller reverts it:
+	// ReplicaSet, StatefulSet, and DaemonSet compare pod labels and hashes, not
+	// container images, so the swapped pod runs until something else deletes it.
+	// resourceNames scope the grant to the named pods, exactly as for exec.
+	if matchesResourceVerb(rule, []string{"pods"}, []string{"update", "patch"}) {
+		targets := execTargets(rule, clusterScope, podSAsByNs, podSAsByName)
+		for _, target := range targets {
+			if target.Key() == subject.Key() {
+				continue
+			}
+			ensureSubjectNode(graph, target)
+			add(nodeID(target), &models.EscalationEdge{
+				Technique:   "KUBE-PRIVESC-034",
+				Action:      "pod_image_hijack",
+				Permission:  verbResource(rule, "pods"),
+				Description: fmt.Sprintf("can swap the container image of pods running as ServiceAccount %s/%s and run code inside them", target.Namespace, target.Name),
 				Grants:      shellFoothold(target, tokenMounted),
 			})
 		}
@@ -1557,6 +1599,11 @@ var actionDifficulty = map[string]string{
 	"mint_arbitrary_token":       difficultyEasy,
 	"secret_mint_token":          difficultyEasy,
 	"csr_approve":                difficultyEasy,
+	"apiservice_takeover":        difficultyEasy,
+	"csr_nodeclient_autoapprove": difficultyEasy,
+	"impersonate_node":           difficultyEasy,
+	"node_token_request":         difficultyEasy,
+	"node_secret_read":           difficultyEasy,
 	"operator_reconcile":         difficultyEasy,
 	"colocated_sa_token_theft":   difficultyEasy,
 	"implicit_group_membership":  difficultyEasy,
@@ -1565,6 +1612,12 @@ var actionDifficulty = map[string]string{
 	"pod_create_token_theft":       difficultyModerate,
 	"pod_exec":                     difficultyModerate,
 	"ephemeral_container_inject":   difficultyModerate,
+	"pod_image_hijack":             difficultyModerate,
+	"namespace_psa_label_flip":     difficultyModerate,
+	"endpointslice_write":          difficultyModerate,
+	"service_backend_rewrite":      difficultyModerate,
+	"control_plane_backend_hijack": difficultyModerate,
+	"bootstrap_token_mint":         difficultyModerate,
 	"pod_create_privileged_escape": difficultyModerate,
 	"workload_create_token_theft":  difficultyModerate,
 	"workload_hijack":              difficultyModerate,
@@ -1582,7 +1635,12 @@ var actionDifficulty = map[string]string{
 	// Needs attacker-controlled infrastructure, a timing window, or key material the
 	// grant designates but the snapshot cannot confirm the holder has (csr_sign: the
 	// signing CA key that makes an issued certificate authenticate).
-	"node_drain_migrate":   difficultyHard,
+	"node_drain_migrate": difficultyHard,
+	// The kubelet rewrites the pod's status on its next sync (10 s), so the spoofed
+	// address holds only while the attacker keeps re-writing it. The builder lowers
+	// this to moderate when a selected Service publishes not-ready addresses and a
+	// selected pod has no kubelet to correct it.
+	"pod_status_ip_spoof":  difficultyHard,
 	"imds_node_role_pivot": difficultyHard,
 	"csr_sign":             difficultyHard,
 	// CVE-2026-2270: beyond both write grants, the attacker must craft a
@@ -1762,6 +1820,9 @@ var resourceAPIGroup = map[string]string{
 	"pods/ephemeralcontainers": "",
 	"pods/portforward":         "",
 	"pods/eviction":            "",
+	"pods/status":              "",
+	"services":                 "",
+	"endpoints":                "",
 	"secrets":                  "",
 	"serviceaccounts":          "",
 	"serviceaccounts/token":    "",
@@ -1770,18 +1831,24 @@ var resourceAPIGroup = map[string]string{
 	"nodes/status":             "",
 	"users":                    "",
 	"groups":                   "",
+	"namespaces":               "",
 	// rbac.authorization.k8s.io
 	"roles":               "rbac.authorization.k8s.io",
 	"clusterroles":        "rbac.authorization.k8s.io",
 	"rolebindings":        "rbac.authorization.k8s.io",
 	"clusterrolebindings": "rbac.authorization.k8s.io",
 	// certificates.k8s.io
-	"certificatesigningrequests":          "certificates.k8s.io",
-	"certificatesigningrequests/approval": "certificates.k8s.io",
-	"certificatesigningrequests/status":   "certificates.k8s.io",
+	"certificatesigningrequests":            "certificates.k8s.io",
+	"certificatesigningrequests/approval":   "certificates.k8s.io",
+	"certificatesigningrequests/status":     "certificates.k8s.io",
+	"certificatesigningrequests/nodeclient": "certificates.k8s.io",
 	// admissionregistration.k8s.io
 	"mutatingadmissionpolicies":       "admissionregistration.k8s.io",
 	"mutatingadmissionpolicybindings": "admissionregistration.k8s.io",
+	// discovery.k8s.io
+	"endpointslices": "discovery.k8s.io",
+	// apiregistration.k8s.io
+	"apiservices": "apiregistration.k8s.io",
 }
 
 // matchesResourceVerb reports whether a rule authorizes any of the given verbs on

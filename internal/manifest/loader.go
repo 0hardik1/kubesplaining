@@ -184,6 +184,8 @@ func appendObject(snapshot *models.Snapshot, raw map[string]any, resourceTypeHin
 			return err
 		}
 		snapshot.Resources.MutatingWebhookConfigs = append(snapshot.Resources.MutatingWebhookConfigs, obj)
+	case "APIService":
+		snapshot.Resources.APIServices = append(snapshot.Resources.APIServices, models.APIServiceSummaryFromObject(raw))
 	case "Secret":
 		var obj corev1.Secret
 		if err := json.Unmarshal(payload, &obj); err != nil {
@@ -258,6 +260,8 @@ func kindFromHint(hint string) string {
 		return "ValidatingWebhookConfiguration"
 	case "mutatingwebhookconfiguration":
 		return "MutatingWebhookConfiguration"
+	case "apiservice":
+		return "APIService"
 	default:
 		return ""
 	}

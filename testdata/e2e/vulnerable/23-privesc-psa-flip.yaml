@@ -1,0 +1,56 @@
+# === MODULE: rbac + privesc (KUBE-PRIVESC-035 Pod Security Admission label flip) ===
+# Pod Security Admission reads the standard it enforces from the
+# pod-security.kubernetes.io/enforce label on the Namespace object, and nothing
+# in-tree protects that label. A subject that can patch the namespace and create
+# pods in it relabels the namespace to `privileged` and lands a privileged pod in a
+# namespace the cluster's PSA posture reports as `restricted`.
+#
+# Shape: one unmounted ServiceAccount with a namespaced Role granting BOTH halves,
+# `patch namespaces` and `create pods`, bound inside the restricted namespace. The
+# Role is namespaced on purpose: the API server treats /api/v1/namespaces/<ns> as
+# a request in <ns>, so a RoleBinding here authorizes the write on this namespace
+# object, which is the easy-to-miss half of the finding. No workloads, so no
+# rollout wait.
+#
+# psa-flip.deny pins that the restricted label still blocks the direct
+# privileged-pod route (no KUBE-PRIVESC-002), so the node-escape path psa-flip.chain
+# asserts can only be the namespace_psa_label_flip edge.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: psaflip-fixtures
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: psaflip-flipper
+  namespace: psaflip-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: psaflip-namespace-and-pods
+  namespace: psaflip-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: psaflip-namespace-and-pods
+  namespace: psaflip-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: psaflip-flipper
+    namespace: psaflip-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: psaflip-namespace-and-pods

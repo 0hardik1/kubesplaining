@@ -1,0 +1,7 @@
+# Negative guards for 24-privesc-pod-status-intercept.yaml.
+#
+# `patch pods/status` is not `patch pods`: no image-swap finding on the writer.
+KUBE-PRIVESC-034:ServiceAccount/statusspoof-fixtures/statusspoof-writer
+# No pod-create or exec grant: no token theft by creation and no node escape.
+KUBE-PRIVESC-001:ServiceAccount/statusspoof-fixtures/statusspoof-writer
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/statusspoof-fixtures/statusspoof-writer

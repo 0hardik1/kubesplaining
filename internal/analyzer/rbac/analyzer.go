@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/0hardik1/kubesplaining/internal/kubeversion"
@@ -54,6 +55,9 @@ var (
 	targetCSR         = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests")}
 	targetCSRApproval = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/approval")}
 	targetCSRStatus   = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/status")}
+	// The nodeclient subresource is the SubjectAccessReview the controller manager's
+	// CSR approver makes before auto-approving a kubelet client CSR (KUBE-PRIVESC-037).
+	targetCSRNodeClient = []permissions.ResourceTarget{permissions.InGroup(groupCerts, "certificatesigningrequests/nodeclient")}
 	// The two halves of the KUBE-PRIVESC-019 mutating-admission-policy primitive. Both
 	// are cluster-scoped resources in admissionregistration.k8s.io, so the caller also
 	// requires rule.Namespace == "" (a RoleBinding granting these is dead RBAC).
@@ -70,6 +74,22 @@ var (
 	// authorized against `userextras/<key>` in the same group; see
 	// impersonatedUserExtras, which matches any key.
 	targetImpersonateUID = []permissions.ResourceTarget{permissions.InGroup(groupAuthentication, "uids")}
+
+	// targetNamespaces is the Namespace object itself, whose labels Pod Security
+	// Admission reads (KUBE-PRIVESC-035).
+	targetNamespaces = []permissions.ResourceTarget{permissions.Core("namespaces")}
+	// targetPodBinding is the scheduler's write: the `pods/binding` subresource and
+	// the legacy top-level `bindings` resource both route to BindingREST
+	// (KUBE-PRIVESC-030).
+	targetPodBinding = []permissions.ResourceTarget{permissions.Core("pods/binding"), permissions.Core("bindings")}
+	// targetPodStatus is the kubelet's write: the pod IPs a Service's backends are
+	// derived from live here (KUBE-PRIVESC-036).
+	targetPodStatus = []permissions.ResourceTarget{permissions.Core("pods/status")}
+	// Service backend steering (KUBE-PRIVESC-021 / -022) and API registration
+	// rewriting (KUBE-PRIVESC-020).
+	targetEndpointSlices = []permissions.ResourceTarget{permissions.InGroup("discovery.k8s.io", "endpointslices")}
+	targetServices       = []permissions.ResourceTarget{permissions.Core("services")}
+	targetAPIServices    = []permissions.ResourceTarget{permissions.InGroup("apiregistration.k8s.io", "apiservices")}
 )
 
 // constrainedImpersonationModes are the KEP-5284 constrained-impersonation verbs and
@@ -228,6 +248,9 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 
 	usedServiceAccounts := usedServiceAccounts(snapshot)
 	privilegedNamespaces := namespacesAllowingPrivileged(snapshot)
+	// Namespaces hosting a Service the API server itself calls (webhook backends,
+	// aggregated API servers): grants there are control-plane grants.
+	backendNamespaces := controlPlaneBackendNamespaces(snapshot)
 	// CVE-2026-2270 is gated on the server version so patched clusters stay quiet;
 	// computed once and consulted in the per-subject correlation below.
 	statefulSetDeputyVuln := kubeversion.StatefulSetControllerRevisionDeputy(snapshot.Metadata.ClusterVersion)
@@ -302,6 +325,14 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					"KUBE-PRIVESC-001", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.4),
 					contentPrivesc001(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			case rule.grants(targetPods, "update", "patch"):
+				// A write to an existing pod. ValidatePodUpdate keeps container images
+				// mutable on a live pod and the kubelet restarts the container with the
+				// new image in place, so this is the exec position through a write verb.
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-034", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scaledScore(8.0),
+					contentPrivesc034(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case rule.grants(targetPodExec, "create", "get"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-004", models.SeverityHigh, models.CategoryPrivilegeEscalation,
@@ -312,6 +343,49 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 					"KUBE-PRIVESC-013", models.SeverityHigh, models.CategoryPrivilegeEscalation,
 					scaledScore(8.0),
 					contentPrivesc013(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
+			case rule.Namespace == "" && rule.grants(targetAPIServices, "update", "patch"):
+				// Re-pointing an API group's registration at a Service the holder
+				// controls. CRITICAL when the grant reaches a native group's registration.
+				severity, base := models.SeverityHigh, 7.8
+				if nativeAPIServiceReach(rule) {
+					severity, base = models.SeverityCritical, 9.2
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-020", severity, models.CategoryPrivilegeEscalation,
+					scaledScore(base),
+					contentPrivesc020(perms.Subject, bindingRef, roleRef, rule.ResourceNames, severity == models.SeverityCritical)), snapshot))
+			case rule.grants(targetEndpointSlices, "create", "update", "patch"):
+				// A foreign EndpointSlice joins a Service's backends. HIGH when the grant
+				// reaches a control-plane backend namespace.
+				severity, base := models.SeverityMedium, 6.5
+				cpbn := backendNamespacesInScope(rule.Namespace, backendNamespaces)
+				if len(cpbn) > 0 {
+					severity, base = models.SeverityHigh, 7.8
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-021", severity, models.CategoryLateralMovement,
+					scaledScore(base),
+					contentPrivesc021(rule.Namespace, perms.Subject, bindingRef, roleRef, cpbn)), snapshot))
+			case rule.grants(targetServices, "update", "patch") && (rule.Namespace == "" || len(backendNamespaces[rule.Namespace]) > 0):
+				// The `edit` ClusterRole carries this verb for every tenant, so the
+				// finding fires only where the reach is more than the tenant's own
+				// Services: cluster-wide, or a namespace hosting a control-plane backend.
+				severity, base := models.SeverityMedium, 6.0
+				cpbn := backendNamespacesInScope(rule.Namespace, backendNamespaces)
+				if len(cpbn) > 0 {
+					severity, base = models.SeverityHigh, 7.5
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-022", severity, models.CategoryLateralMovement,
+					scaledScore(base),
+					contentPrivesc022(rule.Namespace, perms.Subject, bindingRef, roleRef, cpbn)), snapshot))
+			case rule.grants(targetPodStatus, "update", "patch"):
+				// The kubelet's write. A non-node holder rewrites a pod's podIP and
+				// the Services selecting it follow within a second.
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
+					"KUBE-PRIVESC-036", models.SeverityMedium, models.CategoryLateralMovement,
+					scaledScore(6.5),
+					contentPrivesc036(rule.Namespace, perms.Subject, bindingRef, roleRef)), snapshot))
 			case rule.grants(targetPortForward, "create"):
 				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, rule,
 					"KUBE-PRIVESC-015", models.SeverityMedium, models.CategoryLateralMovement,
@@ -577,6 +651,234 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 				"KUBE-PRIVESC-019", models.SeverityCritical, models.CategoryPrivilegeEscalation,
 				scoring.Clamp(9.0*exploitability),
 				contentPrivesc019(perms.Subject, mapPolicyRule.formattedBinding(), mapPolicyRule.formattedRole(), mapBindingRule.formattedBinding(), mapBindingRule.formattedRole())), snapshot))
+		}
+
+		// KUBE-PRIVESC-035, Pod Security Admission label flip. PSA reads the standard
+		// it enforces from labels on the Namespace object and nothing in-tree protects
+		// them, so `update`/`patch` on `namespaces` rewrites `enforce` to `privileged`.
+		// The write alone escalates nothing; paired with a way to create pods in that
+		// namespace it is a node escape in a namespace the operator locked down. A
+		// namespaced Role granting `patch namespaces` counts for its own namespace:
+		// the API server treats `/api/v1/namespaces/<ns>` as a request in <ns>. The
+		// finding is anchored on the namespace write, the half to remove.
+		if enforcing := namespacesEnforcingPSA(snapshot); len(enforcing) > 0 {
+			present := workloadKindsPresent(snapshot)
+			var nsWriteRule, podRule *effectiveRule
+			var flipped []string
+			for _, ns := range enforcing {
+				var nsR, podR *effectiveRule
+				for i := range perms.Rules {
+					r := &perms.Rules[i]
+					if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcard(r.APIGroups) {
+						continue // already cluster-admin via KUBE-PRIVESC-017
+					}
+					if nsR == nil && namespaceWriteReaches(*r, ns) {
+						nsR = r
+					}
+					if podR == nil && podCreationReaches(*r, ns, present[ns]) {
+						podR = r
+					}
+				}
+				if nsR != nil && podR != nil {
+					flipped = append(flipped, ns)
+					if nsWriteRule == nil {
+						nsWriteRule, podRule = nsR, podR
+					}
+				}
+			}
+			if nsWriteRule != nil {
+				exploitability := 1.0
+				if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+					exploitability = 1.2
+				}
+				blastRadius := 1.0
+				if nsWriteRule.Namespace == "" {
+					blastRadius = 1.2
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *nsWriteRule,
+					"KUBE-PRIVESC-035", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(8.2*exploitability*blastRadius),
+					contentPrivesc035(perms.Subject, nsWriteRule.formattedBinding(), nsWriteRule.formattedRole(), podRule.formattedBinding(), podRule.formattedRole(), flipped)), snapshot))
+			}
+		}
+
+		// KUBE-PRIVESC-030, pod binding: acting as the scheduler. `create` on
+		// `pods/binding` (or the legacy `bindings` resource) sets spec.nodeName on any
+		// pending pod. BindingREST runs only ValidatePodBinding (target kind and name)
+		// before assigning the pod, and the kubelet re-checks only NoExecute taints, so
+		// the bind ignores node selectors, affinity, and NoSchedule taints, including
+		// the control-plane taint. Alone it is placement control over pods the holder
+		// did not author; with a pod-creation route it chooses where its own pod runs,
+		// which is the co-residency a tainted control-plane node relies on denying.
+		var bindRule, bindPodRule *effectiveRule
+		for i := range perms.Rules {
+			r := &perms.Rules[i]
+			if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcard(r.APIGroups) {
+				continue // already cluster-admin via KUBE-PRIVESC-017
+			}
+			if bindRule == nil && r.grants(targetPodBinding, "create") {
+				bindRule = r
+			}
+			if bindPodRule == nil && (r.grants(targetPods, "create") || r.grants(targetWorkloads, "create", "update", "patch")) {
+				bindPodRule = r
+			}
+		}
+		if bindRule != nil {
+			exploitability := 1.0
+			if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+				exploitability = 1.2
+			}
+			blastRadius := 1.0
+			if bindRule.Namespace == "" {
+				blastRadius = 1.2
+			}
+			severity, base := models.SeverityMedium, 5.5
+			podBinding, podRole := "", ""
+			if bindPodRule != nil {
+				severity, base = models.SeverityHigh, 7.0
+				podBinding, podRole = bindPodRule.formattedBinding(), bindPodRule.formattedRole()
+			}
+			findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *bindRule,
+				"KUBE-PRIVESC-030", severity, models.CategoryPrivilegeEscalation,
+				scoring.Clamp(base*exploitability*blastRadius),
+				contentPrivesc030(bindRule.Namespace, perms.Subject, bindRule.formattedBinding(), bindRule.formattedRole(), podBinding, podRole)), snapshot))
+		}
+
+		// KUBE-PRIVESC-037, kubelet client CSR auto-approval. The controller
+		// manager's CSR approver approves a kubelet client CSR when a
+		// SubjectAccessReview says the requester may `create
+		// certificatesigningrequests/nodeclient`; nothing ties the node name in the
+		// CSR to the requester. With `create certificatesigningrequests` to submit
+		// it, the holder has a kubelet identity for any node name. kubeadm binds the
+		// pair to its bootstrap group, where it belongs; anywhere else it is a path
+		// to every pod credential in the cluster.
+		{
+			var csrCreate, nodeClient *effectiveRule
+			for i := range perms.Rules {
+				r := &perms.Rules[i]
+				if r.Namespace != "" {
+					continue
+				}
+				if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcard(r.APIGroups) {
+					continue // already cluster-admin via KUBE-PRIVESC-017
+				}
+				if csrCreate == nil && r.grants(targetCSR, "create") {
+					csrCreate = r
+				}
+				if nodeClient == nil && r.grants(targetCSRNodeClient, "create") {
+					nodeClient = r
+				}
+			}
+			if csrCreate != nil && nodeClient != nil && !isBootstrapGroup(perms.Subject) {
+				exploitability := 1.0
+				if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+					exploitability = 1.2
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *nodeClient,
+					"KUBE-PRIVESC-037", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(7.8*exploitability),
+					contentPrivesc037(perms.Subject, csrCreate.formattedBinding(), csrCreate.formattedRole(), nodeClient.formattedBinding(), nodeClient.formattedRole())), snapshot))
+			}
+		}
+
+		// KUBE-PRIVESC-026, bootstrap-token minting. A Secret of type
+		// bootstrap.kubernetes.io/token in kube-system is a credential for
+		// `system:bootstrap:<id>` in the groups the Secret lists. On a cluster whose
+		// bootstrap group auto-approves kubelet client CSRs (kubeadm's default), a
+		// Secret write reaching kube-system therefore mints a node identity for any
+		// node name. Gated on that binding: without it the token buys nothing.
+		if models.KubeadmBootstrapAutoApproval(snapshot) {
+			for i := range perms.Rules {
+				r := &perms.Rules[i]
+				if r.Namespace != "" && r.Namespace != "kube-system" {
+					continue
+				}
+				if len(r.ResourceNames) > 0 || !r.grants(targetSecrets, "create", "update", "patch") {
+					continue
+				}
+				if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcard(r.APIGroups) {
+					continue // already cluster-admin via KUBE-PRIVESC-017
+				}
+				exploitability := 1.0
+				if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+					exploitability = 1.2
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *r,
+					"KUBE-PRIVESC-026", models.SeverityHigh, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(7.5*exploitability),
+					contentPrivesc026(r.Namespace, perms.Subject, r.formattedBinding(), r.formattedRole())), snapshot))
+				break
+			}
+		}
+
+		// KUBE-PRIVESC-038, control-plane backend hijack. In a namespace that hosts a
+		// Service the API server itself calls, a way to steer that Service's traffic
+		// (write EndpointSlices or the Service, or put a pod of the holder's own behind
+		// it) plus a way to present its serving certificate (read the Secret, mount it,
+		// or run code in the backend's pods) puts the holder in the API server's request
+		// path. A plain `edit` or `admin` RoleBinding there holds both halves. The
+		// finding is anchored on the routing half.
+		if len(backendNamespaces) > 0 {
+			present := workloadKindsPresent(snapshot)
+			var routingRule, tlsRule *effectiveRule
+			var hijacked []string
+			critical := false
+			for _, ns := range sortedKeys(backendNamespaces) {
+				var rR, tR *effectiveRule
+				for i := range perms.Rules {
+					r := &perms.Rules[i]
+					if hasWildcard(r.Verbs) && hasWildcard(r.Resources) && hasWildcard(r.APIGroups) {
+						continue // already cluster-admin via KUBE-PRIVESC-017
+					}
+					if rR == nil && backendRoutingHalf(*r, ns, present[ns]) {
+						rR = r
+					}
+					if tR == nil && backendTLSHalf(*r, ns, present[ns]) {
+						tR = r
+					}
+				}
+				if rR == nil {
+					continue
+				}
+				reachable := false
+				for _, b := range backendNamespaces[ns] {
+					if !b.InsecureTLS && !b.HasCABundle {
+						continue // verified against system roots: no in-cluster Secret satisfies it
+					}
+					if !b.InsecureTLS && tR == nil {
+						continue
+					}
+					reachable = true
+					if (b.Kind == "APIService" && b.Native) || b.MatchesPodCreate {
+						critical = true
+					}
+				}
+				if !reachable {
+					continue
+				}
+				hijacked = append(hijacked, ns)
+				if routingRule == nil {
+					routingRule, tlsRule = rR, tR
+				}
+			}
+			if routingRule != nil {
+				exploitability := 1.0
+				if perms.Subject.Kind == "ServiceAccount" && usedServiceAccounts[perms.Subject.Key()] {
+					exploitability = 1.2
+				}
+				severity, base := models.SeverityHigh, 8.2
+				if critical {
+					severity, base = models.SeverityCritical, 9.0
+				}
+				tlsBinding, tlsRole := "", ""
+				if tlsRule != nil {
+					tlsBinding, tlsRole = tlsRule.formattedBinding(), tlsRule.formattedRole()
+				}
+				findings = appendFinding(findings, seen, attachDangerousRemediation(findingFromContent(perms.Subject, *routingRule,
+					"KUBE-PRIVESC-038", severity, models.CategoryPrivilegeEscalation,
+					scoring.Clamp(base*exploitability),
+					contentPrivesc038(perms.Subject, routingRule.formattedBinding(), routingRule.formattedRole(), tlsBinding, tlsRole, hijacked, backendNamespaces)), snapshot))
+			}
 		}
 
 		// KUBE-VERSION-CVE-2026-2270 — StatefulSet + ControllerRevision confused
@@ -1245,6 +1547,176 @@ func namespacesAllowingPrivileged(snapshot models.Snapshot) map[string]bool {
 		}
 	}
 	return out
+}
+
+// namespacesEnforcingPSA returns, sorted, the namespaces whose PSA `enforce` label
+// currently blocks privileged pods (`baseline` or `restricted`). Flipping the label
+// changes nothing anywhere else: an unlabeled or `privileged` namespace already
+// admits a privileged pod, which is KUBE-PRIVESC-002's territory.
+func namespacesEnforcingPSA(snapshot models.Snapshot) []string {
+	var out []string
+	for _, ns := range snapshot.Resources.Namespaces {
+		switch ns.Labels[psaEnforceLabel] {
+		case "baseline", "restricted":
+			out = append(out, ns.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// namespaceWriteReaches reports whether r lets its holder update or patch the
+// Namespace object named ns. The request path `/api/v1/namespaces/<ns>` carries
+// <ns> as the request's namespace, so a RoleBinding in <ns> authorizes it: a
+// namespaced grant reaches its own namespace object only, and a cluster-scoped
+// grant reaches every namespace its resourceNames do not exclude.
+func namespaceWriteReaches(r effectiveRule, ns string) bool {
+	if !r.grants(targetNamespaces, "update", "patch") {
+		return false
+	}
+	if r.Namespace != "" && r.Namespace != ns {
+		return false
+	}
+	if len(r.ResourceNames) > 0 && !slices.Contains(r.ResourceNames, ns) {
+		return false
+	}
+	return true
+}
+
+// workloadKindsPresent indexes, per namespace, the pod-template-carrying workload
+// resources that exist there and whose template can be rewritten after creation
+// (Jobs are immutable, so they are left out). Used by podCreationReaches: an
+// update grant on Deployments reaches nothing in a namespace with no Deployment.
+func workloadKindsPresent(snapshot models.Snapshot) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	mark := func(ns, resource string) {
+		if out[ns] == nil {
+			out[ns] = map[string]bool{}
+		}
+		out[ns][resource] = true
+	}
+	for _, d := range snapshot.Resources.Deployments {
+		mark(d.Namespace, "deployments")
+	}
+	for _, d := range snapshot.Resources.DaemonSets {
+		mark(d.Namespace, "daemonsets")
+	}
+	for _, s := range snapshot.Resources.StatefulSets {
+		mark(s.Namespace, "statefulsets")
+	}
+	for _, c := range snapshot.Resources.CronJobs {
+		mark(c.Namespace, "cronjobs")
+	}
+	return out
+}
+
+// updatableWorkloadTargets are the workload resources whose pod template can be
+// rewritten after creation, keyed by resource name for workloadKindsPresent.
+var updatableWorkloadTargets = map[string]permissions.ResourceTarget{
+	"deployments":  permissions.InGroup(groupApps, "deployments"),
+	"daemonsets":   permissions.InGroup(groupApps, "daemonsets"),
+	"statefulsets": permissions.InGroup(groupApps, "statefulsets"),
+	"cronjobs":     permissions.InGroup(groupBatch, "cronjobs"),
+}
+
+// podCreationReaches reports whether r gives its holder a way to get a pod of its
+// own design running in ns once PSA admits privileged pods there: `create pods`,
+// `create` on a workload kind, or `update`/`patch` on a workload kind that exists
+// in ns (present lists the kinds that do).
+func podCreationReaches(r effectiveRule, ns string, present map[string]bool) bool {
+	if r.Namespace != "" && r.Namespace != ns {
+		return false
+	}
+	if r.grants(targetPods, "create") || r.grants(targetWorkloads, "create") {
+		return true
+	}
+	for resource, target := range updatableWorkloadTargets {
+		if present[resource] && r.grants([]permissions.ResourceTarget{target}, "update", "patch") {
+			return true
+		}
+	}
+	return false
+}
+
+// isBootstrapGroup reports whether the subject is a bootstrap group, where the
+// nodeclient auto-approval pair is the designed configuration.
+func isBootstrapGroup(subject models.SubjectRef) bool {
+	return subject.Kind == "Group" && strings.HasPrefix(subject.Name, "system:bootstrappers")
+}
+
+// controlPlaneBackendNamespaces indexes the snapshot's control-plane backends
+// (webhook backends and aggregated API servers) by the namespace hosting them.
+func controlPlaneBackendNamespaces(snapshot models.Snapshot) map[string][]models.ControlPlaneBackend {
+	out := map[string][]models.ControlPlaneBackend{}
+	for _, b := range models.ControlPlaneBackends(snapshot) {
+		out[b.Namespace] = append(out[b.Namespace], b)
+	}
+	return out
+}
+
+// backendNamespacesInScope returns, sorted, the control-plane backend namespaces a
+// grant in ruleNamespace reaches: all of them for a cluster-scoped grant, its own
+// if it hosts one.
+func backendNamespacesInScope(ruleNamespace string, backends map[string][]models.ControlPlaneBackend) []string {
+	if ruleNamespace != "" {
+		if len(backends[ruleNamespace]) > 0 {
+			return []string{ruleNamespace}
+		}
+		return nil
+	}
+	return sortedKeys(backends)
+}
+
+// sortedKeys returns a map's keys in sorted order.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// nativeAPIServiceReach reports whether a cluster-scoped update/patch on
+// APIServices can reach a native group's registration: unscoped, or resourceNames
+// naming one (`<version>.<group>` with the group in models.BuiltinAPIGroups).
+func nativeAPIServiceReach(r effectiveRule) bool {
+	if len(r.ResourceNames) == 0 {
+		return true
+	}
+	for _, name := range r.ResourceNames {
+		if _, group := models.APIServiceGroupFromName(name); models.BuiltinAPIGroups[group] {
+			return true
+		}
+	}
+	return false
+}
+
+// backendRoutingHalf reports whether r lets its holder steer the traffic of Services
+// in ns: write EndpointSlices or the Service, or put a pod of its own behind it (a
+// pod-creation route, or a label patch on an existing pod).
+func backendRoutingHalf(r effectiveRule, ns string, present map[string]bool) bool {
+	if r.Namespace != "" && r.Namespace != ns {
+		return false
+	}
+	return r.grants(targetEndpointSlices, "create", "update", "patch") ||
+		r.grants(targetServices, "update", "patch") ||
+		podCreationReaches(r, ns, present) ||
+		r.grants(targetPods, "update", "patch")
+}
+
+// backendTLSHalf reports whether r lets its holder present a backend's serving
+// certificate in ns: read Secrets, mount them in a pod of its own, or run code in
+// the backend's pods.
+func backendTLSHalf(r effectiveRule, ns string, present map[string]bool) bool {
+	if r.Namespace != "" && r.Namespace != ns {
+		return false
+	}
+	return r.grants(targetSecrets, "get", "list", "watch") ||
+		podCreationReaches(r, ns, present) ||
+		r.grants(targetPodExec, "create", "get") ||
+		r.grants(targetEphemeral, "update", "patch") ||
+		r.grants(targetPods, "update", "patch")
 }
 
 // podCreatePrivilegedTarget reports whether a pod-create grant in ruleNamespace

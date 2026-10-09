@@ -180,6 +180,11 @@ var (
 		Name: "Container and Resource Discovery",
 		URL:  "https://attack.mitre.org/techniques/T1613/",
 	}
+	mitreT1557 = models.MitreTechnique{
+		ID:   "T1557",
+		Name: "Adversary-in-the-Middle",
+		URL:  "https://attack.mitre.org/techniques/T1557/",
+	}
 	mitreT1090 = models.MitreTechnique{
 		ID:   "T1090",
 		Name: "Proxy",
@@ -861,6 +866,414 @@ func contentPrivesc004(ruleNamespace string, subject models.SubjectRef, sourceBi
 			refNSAHardening,
 		},
 		MitreTechniques: []models.MitreTechnique{mitreT1609, mitreT1552_007, mitreT1611, mitreT1078_004},
+	}
+}
+
+// contentPrivesc034 covers update/patch on the main `pods` resource. The API
+// server's pod update validation (ValidatePodUpdate) keeps the container image
+// fields mutable on a live pod, and the kubelet restarts the container with the new
+// image inside the same pod sandbox, so the grant reaches the same position as
+// exec or an ephemeral container without either subresource.
+func contentPrivesc034(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s `update`/`patch` on pods swaps container images inside running pods (`%s`)", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `update`/`patch` core `pods` via %s → %s. %s.\n\n"+
+			"A pod's spec is mostly immutable after creation, but the API server's pod update validation deliberately keeps a few fields writable on a live pod, and `spec.containers[*].image` and `spec.initContainers[*].image` are among them. Nothing in-tree checks who changed an image: the kubelet notices the new value on its next sync and restarts that container with the new image, inside the same pod sandbox. The replacement container inherits everything the pod already had: the mounted ServiceAccount token, the `securityContext` (including `privileged`), host namespaces, and every volume, `hostPath` included.\n\n"+
+			"That makes a plain write verb on `pods` equivalent to `pods/exec` (KUBE-PRIVESC-004) and `pods/ephemeralcontainers` (KUBE-PRIVESC-013): the holder picks a running pod whose ServiceAccount, or whose pod spec, is more privileged than their own, and runs their own code in it. No workload controller reverts the change, because ReplicaSet, StatefulSet, and DaemonSet reconcile on pod labels and template hashes, not on the live container image. The verb is commonly granted for label and annotation patching (the built-in `edit` ClusterRole carries it, and so do many operator roles), which is why it is easy to overlook.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("Run attacker-chosen code inside any existing pod in %s, inheriting that pod's ServiceAccount token, securityContext, and host access, without any exec, attach, or ephemeral-container permission.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("patch", "pods", ruleNamespace, subject)),
+			"They list running pods and their ServiceAccounts, and pick one whose identity or pod spec (privileged, hostPath, hostPID) is worth more than their own.",
+			"They patch that pod's `spec.containers[*].image` to an image they control. The API server accepts the update because the image field is mutable on a live pod.",
+			"The kubelet restarts the container with the new image. The attacker's code now runs with the pod's mounted ServiceAccount token and its securityContext, and continues from there as the pod's identity or, for a privileged pod, onto the node.",
+		},
+		Remediation: "Remove `update`/`patch` on `pods` from identities that only need to read pods or manage them through controllers; where label or annotation patching is required, add a ValidatingAdmissionPolicy that rejects image changes on pod UPDATE.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `update`/`patch` on `pods` from %s. Controllers and deploy tooling change pods by rewriting the owning workload's template, not the live pod, so almost no application identity needs this verb.", subjectKey(subject)),
+			"Audit who else holds it: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select(.rules[]? | (.resources // [] | index(\"pods\")) and ((.verbs // []) | map(. == \"update\" or . == \"patch\" or . == \"*\") | any)) | \"\\(.kind) \\(.metadata.namespace // \"-\")/\\(.metadata.name)\"'`. Expect only `edit`, `admin`, and controller roles.",
+			"Where a tool genuinely needs to patch pod labels or annotations, keep the verb but add a `ValidatingAdmissionPolicy` on `pods` UPDATE that denies the request when `object.spec.containers.map(c, c.image) != oldObject.spec.containers.map(c, c.image)` (and the same comparison for `initContainers`). No in-tree component changes a live pod's image, so the policy can apply to every non-admin user.",
+			"Pin sensitive workloads to dedicated, least-privilege ServiceAccounts so that code injected into a co-tenant pod does not yield a powerful token.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("patch", "pods", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Pod update and replacement (which pod fields stay mutable)", URL: "https://kubernetes.io/docs/concepts/workloads/pods/#pod-update-and-replacement"},
+			{Title: "Kubernetes: Validating Admission Policy", URL: "https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1552_007, mitreT1611, mitreT1078_004},
+	}
+}
+
+// contentPrivesc035 is the Pod Security Admission label flip (KUBE-PRIVESC-035):
+// update/patch on the Namespace object plus a way to create pods in it.
+func contentPrivesc035(subject models.SubjectRef, nsBinding, nsRole, podBinding, podRole string, namespaces []string) ruleContent {
+	list := strings.Join(namespaces, "`, `")
+	first := namespaces[0]
+	scope := models.Scope{
+		Level:  models.ScopeNamespace,
+		Detail: fmt.Sprintf("Namespaces whose Pod Security Admission label the subject can rewrite and create pods in: `%s`", list),
+	}
+	if len(namespaces) > 1 {
+		scope.Level = models.ScopeCluster
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("Pod Security Admission label flip: `%s` can relabel `%s` and run a privileged pod there", subjectKey(subject), first),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `update`/`patch` the Namespace object (via %s → %s) and create pods (via %s → %s) in `%s`, where Pod Security Admission currently enforces `baseline` or `restricted`.\n\n"+
+			"Pod Security Admission decides which standard to enforce by reading the `pod-security.kubernetes.io/enforce` label on the Namespace at admission time, and nothing in-tree protects that label: it is ordinary metadata, writable by anyone who can write the namespace. A subject holding both halves sets the label to `privileged` and the next pod it creates there, privileged or mounting the host root, is admitted. The PSA lockdown the operator relies on is one label write away from gone, and no pod-level control (`securityContext`, `hostPath` denial, host namespaces) applies any more.\n\n"+
+			"Two things make this grant easy to miss. The namespace write is not part of the built-in `admin` or `edit` ClusterRoles, so it usually arrives through a custom role for namespace self-service tooling, a GitOps controller, or a quota/label operator. And Namespaces look like cluster-scoped objects a namespaced Role could never touch, but the API server treats `/api/v1/namespaces/<ns>` as a request in `<ns>`, so a RoleBinding inside the namespace authorizes `patch namespaces` on that namespace itself.\n\n"+
+			"Both halves are load-bearing, which is why this finding requires them together: the label write alone changes nothing without a pod to admit, and a pod-create grant into a `restricted` namespace is bounded to token theft (KUBE-PRIVESC-001) until the label moves.",
+			subjectKey(subject), nsBinding, nsRole, podBinding, podRole, list),
+		Impact: fmt.Sprintf("Defeat Pod Security Admission in `%s` with one label write, then run a privileged or host-mounting pod there and escape to the node, from a namespace the cluster's PSA posture reports as locked down.", list),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms both halves with `%s` and `%s`.", kubectlAuthCanI("patch", "namespaces", first, subject), kubectlAuthCanI("create", "pods", first, subject)),
+			fmt.Sprintf("They set `pod-security.kubernetes.io/enforce=privileged` on `%s` (a `kubectl label namespace` is a `patch namespaces` request). The API server accepts it as ordinary metadata.", first),
+			"They create a pod there with `privileged: true` or a `hostPath` mount of the node root. Pod Security Admission now reads `privileged` and admits it.",
+			"From that pod they are on the node, with every co-located pod's filesystem and projected ServiceAccount token, and the kubelet's credentials.",
+		},
+		Remediation: "Remove `update`/`patch` on `namespaces` from identities that are not cluster administrators; where a tool must write namespace metadata, add a ValidatingAdmissionPolicy that denies changes to `pod-security.kubernetes.io/*` labels.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `update`/`patch` on `namespaces` from %s. Label and quota tooling rarely needs the whole Namespace object; prefer giving it the specific objects it manages.", subjectKey(subject)),
+			"Audit who else holds it, including through namespaced Roles: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select(.rules[]? | (.resources // [] | index(\"namespaces\")) and ((.verbs // []) | map(. == \"update\" or . == \"patch\" or . == \"*\") | any)) | \"\\(.kind) \\(.metadata.namespace // \"-\")/\\(.metadata.name)\"'`.",
+			"Add a `ValidatingAdmissionPolicy` on `namespaces` UPDATE that denies the request when any `pod-security.kubernetes.io/` label differs between `object.metadata.labels` and `oldObject.metadata.labels`, with an exception only for the platform team's identity. This keeps the PSA posture stable even if a write grant slips back in.",
+			"Set the cluster-wide PSA default in the AdmissionConfiguration (`defaults.enforce: baseline` or `restricted`) so a removed label does not fall back to `privileged`, and keep the `exemptions.namespaces` list to the system namespaces.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("patch", "namespaces", first, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Pod Security Admission (namespace labels)", URL: "https://kubernetes.io/docs/concepts/security/pod-security-admission/#pod-security-admission-labels-for-namespaces"},
+			{Title: "Kubernetes: Enforce Pod Security Standards with Namespace Labels", URL: "https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-namespace-labels/"},
+			{Title: "Kubernetes: Pod Security Admission configuration (cluster-wide defaults and exemptions)", URL: "https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-admission-controller/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1611, mitreT1098, mitreT1078_004},
+	}
+}
+
+// contentPrivesc030 covers `create` on `pods/binding` (or the legacy `bindings`
+// resource): the scheduler's own write, which places any pending pod on any node
+// with no scheduling constraint re-checked. podBinding/podRole are empty when the
+// subject holds no pod-creation route of its own.
+func contentPrivesc030(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole, podBinding, podRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	withPods := podBinding != ""
+	title := fmt.Sprintf("%s `create pods/binding` lets `%s` act as the scheduler and place pods on any node", phrase, subjectKey(subject))
+	pairing := "The subject holds no pod-creation route of its own in this snapshot, so the primitive applies to pods other identities create: it can pin them onto a chosen node, or keep them pending by binding them to a node that cannot run them."
+	if withPods {
+		pairing = fmt.Sprintf("The same subject can also create pods (via %s → %s), so it chooses where its own pod runs. Co-residency with a control-plane node, which a `NoSchedule` taint normally denies to tenant pods, is one bind request away, and co-residency is what turns a later host escape from that pod into control-plane PKI access.", podBinding, podRole)
+	}
+	return ruleContent{
+		Title: title,
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `create` the `pods/binding` subresource (or the legacy `bindings` resource) via %s → %s. %s.\n\n"+
+			"This is the write kube-scheduler makes to place a pod. The API server's binding handler validates only that the target is a Node with a name, refuses pods that are already assigned, being deleted, or scheduling-gated, and then sets `spec.nodeName`. It does not re-run node selectors, affinity, topology spread, resource fit, or taint tolerations; those live in the scheduler the request bypasses. The kubelet that receives the pod re-checks resource fit, node affinity, `nodeName`, and host ports before admitting it, but among taints only `NoExecute`, so a `NoSchedule` taint, including the one that keeps tenant pods off control-plane nodes, does not stop the bind.\n\n"+
+			"%s\n\n"+
+			"The verb is held by `system:kube-scheduler` and by custom schedulers; application identities almost never need it.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail, pairing),
+		Impact: fmt.Sprintf("Place any pending pod in %s on any node of the subject's choosing, bypassing node selectors, affinity, and `NoSchedule` taints. Paired with pod creation, this is control-plane co-residency on demand.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("create", "pods/binding", ruleNamespace, subject)),
+			"They pick a pending pod (their own, if they can create one with `schedulerName` set to a scheduler that does not exist, so nothing else binds it first) and a target node, typically a control-plane node.",
+			"They post a Binding for that pod naming the node. The API server sets `spec.nodeName` without consulting the scheduler's constraints, and the kubelet starts the pod because the control-plane taint is `NoSchedule`, which the kubelet does not enforce.",
+			"The pod now shares a node with the API server's static pods and its PKI directory; any host escape from it lands on the control plane.",
+		},
+		Remediation: "Remove `create` on `pods/binding` and `bindings` from every identity that is not a scheduler; where a custom scheduler needs it, bind it to a dedicated ServiceAccount and keep that ServiceAccount off pod creation.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `create` on `pods/binding` and `bindings` from %s. Only kube-scheduler and purpose-built schedulers place pods.", subjectKey(subject)),
+			"Audit who else holds it: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select(.rules[]?.resources[]? | test(\"^(pods/binding|bindings)$\")) | \"\\(.kind) \\(.metadata.namespace // \"-\")/\\(.metadata.name)\"'`. Expect `system:kube-scheduler` and your custom scheduler's role, nothing else.",
+			"Treat control-plane isolation as a taint-plus-authorization property, not a taint alone: a `NoSchedule` taint only steers the scheduler, so pair it with a ValidatingAdmissionPolicy on `pods/binding` CREATE that denies a target node carrying the `node-role.kubernetes.io/control-plane` label for any user other than the scheduler.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "pods/binding", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Taints and Tolerations (NoSchedule is enforced by the scheduler, NoExecute by the kubelet)", URL: "https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/"},
+			{Title: "Kubernetes: Configure Multiple Schedulers", URL: "https://kubernetes.io/docs/tasks/extend-kubernetes/configure-multiple-schedulers/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1610, mitreT1611, mitreT1078_004},
+	}
+}
+
+// contentPrivesc036 covers update/patch on `pods/status`: the kubelet's write, whose
+// podIPs field is where a Service's backends come from.
+func contentPrivesc036(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	return ruleContent{
+		Title: fmt.Sprintf("%s `update`/`patch` on `pods/status` lets `%s` redirect Service traffic", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `update`/`patch` the `pods/status` subresource via %s → %s. %s.\n\n"+
+			"`pods/status` is the kubelet's write: it is where a pod's `podIPs` are reported, and the EndpointSlice controller derives every Service's backends from that field. The API server's status validator checks only that each address is well-formed, and the NodeRestriction admission plugin constrains node callers only, so a non-node holder of this verb can set any pod's IP to any address. The Services that select the pod follow within a second, through the EndpointSlice and kube-proxy's rules, and their clients, bearer tokens included, connect to the new address. The pod's own kubelet writes the real IP back on its next status sync (about 10 seconds), so the position has to be re-asserted, except for a pod that has no node: nothing corrects its status, and a Service with `publishNotReadyAddresses: true` publishes it as a ready backend indefinitely.\n\n"+
+			"Outside the kubelet, the verb belongs to a short list of core controllers (the scheduler, the node and disruption controllers, garbage collection). An application identity holding it is a traffic-interception primitive against every Service in its scope, and against an admission webhook or aggregated API backend it is admission bypass or API-server credential capture.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: fmt.Sprintf("Redirect the traffic of any Service in %s that selects a pod the subject can write, capturing or altering what its clients send. The privesc graph joins this grant with the Services whose selectors match a live pod in scope and reports the result as a path to the traffic_intercept sink.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("patch", "pods/status", ruleNamespace, subject)),
+			"They pick a Service whose clients carry something valuable (an internal API, a webhook backend, a database proxy) and a live pod it selects.",
+			"They write that pod's status with a `podIP` of a listener they control. The API server accepts it, the EndpointSlice controller republishes the address, and kube-proxy re-points the Service.",
+			"Clients of the Service now connect to the attacker, who reads or alters the requests and forwards them to the real backend. They repeat the write every few seconds to stay ahead of the kubelet's status sync, or pick a Service that publishes not-ready addresses for a pod no kubelet owns.",
+		},
+		Remediation: "Remove `update`/`patch` on `pods/status` from every identity that is not the kubelet or a core controller, and alert on status writes from identities that are not `system:node:*`.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `update`/`patch` on `pods/status` from %s. No application needs to write pod status; a controller that does should run as its own ServiceAccount with the verb scoped by `resourceNames` where possible.", subjectKey(subject)),
+			"Audit who else holds it: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select(.rules[]?.resources[]? == \"pods/status\") | \"\\(.kind) \\(.metadata.namespace // \"-\")/\\(.metadata.name)\"'`. Expect `system:node` and `system:controller:*` roles only.",
+			"Add an audit alert on `pods/status` UPDATE and PATCH events whose `user.username` does not start with `system:node:`.",
+			"For Services whose clients carry credentials (webhook backends, aggregated APIs, internal APIs), require mutual TLS or an mTLS mesh so a redirected backend cannot present the expected identity.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("patch", "pods/status", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: EndpointSlices (Service backends derive from pod status)", URL: "https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/"},
+			{Title: "Kubernetes: NodeRestriction admission (constrains node callers only)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/#noderestriction"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1557, mitreT1078_004, mitreT1090},
+	}
+}
+
+// contentPrivesc037 covers the kubelet client CSR auto-approval pair.
+func contentPrivesc037(subject models.SubjectRef, csrBinding, csrRole, nodeClientBinding, nodeClientRole string) ruleContent {
+	return ruleContent{
+		Title: fmt.Sprintf("`create certificatesigningrequests/nodeclient` lets `%s` obtain an auto-approved kubelet identity for any node", subjectKey(subject)),
+		Scope: models.Scope{Level: models.ScopeCluster, Detail: "Cluster-wide: the certificate names any node, and the Node authorizer grants that node's pod credentials"},
+		Description: fmt.Sprintf("Subject %s can `create` `certificatesigningrequests` via %s → %s and `create` `certificatesigningrequests/nodeclient` via %s → %s.\n\n"+
+			"The controller manager's CSR approving controller auto-approves a CSR for the `kubernetes.io/kube-apiserver-client-kubelet` signer when it names `system:node:<name>` in `system:nodes` and a SubjectAccessReview says the requester may `create certificatesigningrequests/nodeclient`. It does not compare the node name to the requester, nor check that the node exists. The holder of both grants therefore gets a signed kubelet client certificate for any node name it writes into the CSR, with no human approval.\n\n"+
+			"The Node authorizer then grants that identity every Secret, ConfigMap, and PersistentVolumeClaim referenced by a pod bound to the named node, and a TokenRequest for the ServiceAccount of any such pod. Across node names that is every pod credential in the cluster. kubeadm binds this pair to `system:bootstrappers:kubeadm:default-node-token`, which is the designed use; any other holder is a copy of the bootstrap privilege.",
+			subjectKey(subject), csrBinding, csrRole, nodeClientBinding, nodeClientRole),
+		Impact: "A kubelet client certificate for any node name, which the Node authorizer turns into the ServiceAccount tokens and referenced Secrets of every pod on that node. The privesc graph reports the resulting path as KUBE-PRIVESC-PATH-NODE-IDENTITY.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the pair with `%s` and `%s`.", kubectlAuthCanI("create", "certificatesigningrequests", "", subject), kubectlAuthCanI("create", "certificatesigningrequests/nodeclient", "", subject)),
+			"They list nodes (or guess a name) and submit a kubelet client CSR for `system:node:<node>`; the controller manager approves and signs it within seconds.",
+			"With the certificate they request tokens for the ServiceAccounts of that node's pods and read the Secrets those pods reference, then repeat for a control-plane node to reach kube-system's controllers.",
+		},
+		Remediation: "Remove `create certificatesigningrequests/nodeclient` from every identity other than the kubeadm bootstrap group, and alert on kubelet client CSRs whose requester is not a bootstrap token or the node itself.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `create` on `certificatesigningrequests/nodeclient` from %s.", subjectKey(subject)),
+			"Audit the binding set: `kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.roleRef.name == \"system:certificates.k8s.io:certificatesigningrequests:nodeclient\") | .subjects[]? | \"\\(.kind) \\(.name)\"'`. Expect only `Group system:bootstrappers:kubeadm:default-node-token`.",
+			"Alert on CSRs for `kubernetes.io/kube-apiserver-client-kubelet` whose `spec.username` is not `system:bootstrap:*` or `system:node:*`, and on approved CSRs naming a node that is not in `kubectl get nodes`.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "certificatesigningrequests/nodeclient", "", subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: TLS bootstrapping (approval and the nodeclient subresource)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/#approval"},
+			{Title: "Kubernetes: Using Node Authorization", URL: "https://kubernetes.io/docs/reference/access-authn-authz/node/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1098, mitreT1552_007},
+	}
+}
+
+// contentPrivesc026 covers a Secret write reaching kube-system on a cluster whose
+// bootstrap group auto-approves kubelet client CSRs.
+func contentPrivesc026(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	return ruleContent{
+		Title: fmt.Sprintf("Secret write reaching kube-system lets `%s` mint a bootstrap token, and with it a kubelet identity for any node", subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `create`/`update`/`patch` `secrets` via %s → %s. %s. This cluster binds its bootstrap group to the kubelet client CSR auto-approval (`system:certificates.k8s.io:certificatesigningrequests:nodeclient`).\n\n"+
+			"A Secret of type `bootstrap.kubernetes.io/token` in kube-system is a credential: the bootstrap-token authenticator accepts `<id>.<secret>` as `system:bootstrap:<id>` in the groups the Secret's `auth-extra-groups` names. Writing such a Secret with the kubeadm bootstrap group listed mints a token that may submit a kubelet client CSR for any node name, which the controller manager auto-approves. The Node authorizer then grants that identity the ServiceAccount tokens and referenced Secrets of every pod on the named node.\n\n"+
+			"A Secret write in kube-system is usually held by installers and backup tooling; here it is a node identity for the asking.",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail),
+		Impact: "Mint a bootstrap token, trade it for a kubelet client certificate naming any node, and act as that node toward the API server: the ServiceAccount tokens and referenced Secrets of every pod on it. The privesc graph reports the resulting path as KUBE-PRIVESC-PATH-NODE-IDENTITY.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the write with `%s`.", kubectlAuthCanI("create", "secrets", "kube-system", subject)),
+			"They create a Secret of type `bootstrap.kubernetes.io/token` in kube-system that lists the kubeadm bootstrap group in `auth-extra-groups`.",
+			"Authenticating with the token, they submit a kubelet client CSR for a node name of their choosing; the controller manager approves and signs it.",
+			"With the certificate they request tokens for that node's pods' ServiceAccounts and read the Secrets those pods reference.",
+		},
+		Remediation: "Keep Secret writes in kube-system to the control plane and the platform team, alert on new Secrets of type bootstrap.kubernetes.io/token, and expire or delete bootstrap tokens that are not in use.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `create`/`update`/`patch` on `secrets` in kube-system from %s, or scope the grant with `resourceNames` to the Secrets it manages.", subjectKey(subject)),
+			"Alert on Secrets of type `bootstrap.kubernetes.io/token` that kubeadm did not create: `kubectl get secrets -n kube-system --field-selector type=bootstrap.kubernetes.io/token`.",
+			"List and expire tokens that are not needed: `kubeadm token list` then `kubeadm token delete <id>`; node joins should mint a short-lived token per join.",
+			"Alert on kubelet client CSRs naming a node that is not in `kubectl get nodes`.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "secrets", "kube-system", subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Authenticating with Bootstrap Tokens", URL: "https://kubernetes.io/docs/reference/access-authn-authz/bootstrap-tokens/"},
+			{Title: "Kubernetes: TLS bootstrapping (approval)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/kubelet-tls-bootstrapping/#approval"},
+			{Title: "Kubernetes: Using Node Authorization", URL: "https://kubernetes.io/docs/reference/access-authn-authz/node/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1078_004, mitreT1098, mitreT1552_007},
+	}
+}
+
+// contentPrivesc020 covers cluster-scoped update/patch on APIServices.
+func contentPrivesc020(subject models.SubjectRef, sourceBinding, sourceRole string, resourceNames []string, native bool) ruleContent {
+	scope := models.Scope{Level: models.ScopeCluster, Detail: "Cluster-wide: APIService registrations are cluster-scoped and decide which server answers each API group"}
+	reach := "any API group's registration, native groups included"
+	if len(resourceNames) > 0 {
+		reach = fmt.Sprintf("the registrations named `%s`", strings.Join(resourceNames, "`, `"))
+	}
+	consequence := "For an aggregated group (metrics, a custom API server) the holder receives every request the API server forwards for it, with the caller's identity attached, and answers as it likes."
+	if native {
+		consequence = "For a native group the holder serves that group in the API server's stead: the aggregator forwards RBAC, authentication, or core requests to the holder's Service, with the API server's front-proxy credentials and the caller's identity. That is the API server's own authority handed over, and nothing in-tree reverts the registration."
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("Cluster-wide `update`/`patch` on `apiservices` lets `%s` re-route API groups to a server it controls", subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `update`/`patch` `apiservices` (apiregistration.k8s.io) via %s → %s, reaching %s.\n\n"+
+			"An APIService registration tells the kube-aggregator which server answers an API group and version. A registration with `spec.service` set makes the aggregator proxy that group's requests to a Service in some namespace, authenticating to it with the API server's own front-proxy client certificate and forwarding the original caller's identity in headers. Rewriting the registration re-routes the group.\n\n"+
+			"%s\n\n"+
+			"The verb is held by a few installers (metrics-server, cert-manager's cainjector, OLM) and is routinely granted without `resourceNames`, which is what turns a metrics add-on's permission into a control-plane one.",
+			subjectKey(subject), sourceBinding, sourceRole, reach, consequence),
+		Impact: "Serve an API group in the API server's stead, receiving every request for it together with the API server's front-proxy credentials and the caller's identity. For a native group this is cluster-admin; for an aggregated group it is that group's whole request stream.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("patch", "apiservices", "", subject)),
+			"They run a Service of their own and rewrite a registration's `spec.service` to point at it (setting `insecureSkipTLSVerify` or their own `caBundle` so the aggregator accepts their serving certificate).",
+			"The aggregator forwards that group's requests to their Service with the API server's front-proxy credentials and each caller's identity. They answer, record, or alter them.",
+			"For a native group, every client of that group, controllers included, is now talking to the attacker.",
+		},
+		Remediation: "Remove `update`/`patch` on `apiservices` from every identity that is not a cluster administrator; where an installer needs it, scope it with `resourceNames` to the registrations the installer owns.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `update`/`patch` on `apiservices` from %s, or scope it with `resourceNames` to the installer's own registrations (for metrics-server, `v1beta1.metrics.k8s.io`).", subjectKey(subject)),
+			"Audit who else holds it: `kubectl get clusterroles -o json | jq -r '.items[] | select(.rules[]? | (.resources // [] | index(\"apiservices\")) and ((.verbs // []) | map(. == \"update\" or . == \"patch\" or . == \"*\") | any)) | .metadata.name'`.",
+			"Alert on APIService writes that set `spec.service` on a registration in a native API group, or that remove the `kube-aggregator.kubernetes.io/automanaged` label.",
+			"Prefer CRDs over aggregated API servers where the data model allows; a CRD needs no registration write.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("patch", "apiservices", "", subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Kubernetes API Aggregation Layer", URL: "https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/apiserver-aggregation/"},
+			{Title: "Kubernetes: Configure the Aggregation Layer (front-proxy credentials)", URL: "https://kubernetes.io/docs/tasks/extend-kubernetes/configure-aggregation-layer/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1557, mitreT1098, mitreT1078_004},
+	}
+}
+
+// contentPrivesc021 covers create/update/patch on EndpointSlices.
+func contentPrivesc021(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string, backendNamespaces []string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	cpbn := ""
+	if len(backendNamespaces) > 0 {
+		cpbn = fmt.Sprintf("\n\nThe grant reaches `%s`, which hosts a Service the API server itself calls (an admission webhook backend or an aggregated API server). Steering that Service, and presenting its serving certificate, puts the holder in the API server's request path; see KUBE-PRIVESC-038 for the pairing.", strings.Join(backendNamespaces, "`, `"))
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("%s write on `endpointslices` lets `%s` steer Service traffic", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `create`/`update`/`patch` `endpointslices` (discovery.k8s.io) via %s → %s. %s.\n\n"+
+			"A Service's backends are the EndpointSlices that carry its `kubernetes.io/service-name` label. kube-proxy consumes every such slice whatever its `endpointslice.kubernetes.io/managed-by` label says, and the EndpointSlice controller reconciles only the slices it manages. A slice the holder adds therefore survives and takes its share of the Service's traffic: the Service's clients resolve the same name, and part of their connections reach addresses the holder chose.\n\n"+
+			"Outside kube-controller-manager and a few service meshes, nothing needs this verb.%s",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail, cpbn),
+		Impact: fmt.Sprintf("Redirect part of any Service's traffic in %s to addresses the subject chooses, capturing or altering what the Service's clients send.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("create", "endpointslices", ruleNamespace, subject)),
+			"They pick a Service whose clients carry something valuable and create an EndpointSlice labelled with that Service's name, listing an address they control. kube-proxy adds it to the Service's backends.",
+			"Clients of the Service now reach the attacker for a share of their requests.",
+		},
+		Remediation: "Remove write access to `endpointslices` from every identity that is not kube-controller-manager or a known mesh control plane, and alert on an EndpointSlice whose `managed-by` label is not the EndpointSlice controller.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `create`/`update`/`patch` on `endpointslices` from %s.", subjectKey(subject)),
+			"Audit who else holds it: `kubectl get clusterroles,roles -A -o json | jq -r '.items[] | select(.rules[]?.resources[]? == \"endpointslices\") | \"\\(.kind) \\(.metadata.namespace // \"-\")/\\(.metadata.name)\"'`.",
+			"Alert on EndpointSlices whose `endpointslice.kubernetes.io/managed-by` label is not `endpointslice-controller.k8s.io`.",
+			"For Services whose clients carry credentials, require mutual TLS so a redirected backend cannot present the expected identity.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("create", "endpointslices", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: EndpointSlices (ownership and the managed-by label)", URL: "https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/#management"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1557, mitreT1078_004},
+	}
+}
+
+// contentPrivesc022 covers update/patch on Services where the reach is more than a
+// tenant's own Services: cluster-wide, or a control-plane backend namespace.
+func contentPrivesc022(ruleNamespace string, subject models.SubjectRef, sourceBinding, sourceRole string, backendNamespaces []string) ruleContent {
+	scope := scopeForRule(ruleNamespace)
+	phrase := scopePhrase(scope)
+	cpbn := "The grant is cluster-wide, so it reaches every namespace's Services, including any that the API server itself calls."
+	if len(backendNamespaces) > 0 {
+		cpbn = fmt.Sprintf("The grant reaches `%s`, which hosts a Service the API server itself calls (an admission webhook backend or an aggregated API server). Re-pointing that Service, and presenting its serving certificate, puts the holder in the API server's request path; see KUBE-PRIVESC-038 for the pairing.", strings.Join(backendNamespaces, "`, `"))
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("%s `update`/`patch` on `services` lets `%s` re-point Service traffic", phrase, subjectKey(subject)),
+		Scope: scope,
+		Description: fmt.Sprintf("Subject %s can `update`/`patch` `services` via %s → %s. %s.\n\n"+
+			"A Service's selector, ports, and type are plain spec fields. Rewriting the selector points the Service at pods the holder controls, and the EndpointSlice controller republishes the backends within a second; changing the type to `ExternalName` sends clients to a hostname of the holder's choosing. Clients resolve the same name and connect to the new backend.\n\n"+
+			"The built-in `edit` ClusterRole carries this verb, so inside a tenant's own namespace it is expected and not reported. %s",
+			subjectKey(subject), sourceBinding, sourceRole, scope.Detail, cpbn),
+		Impact: fmt.Sprintf("Redirect the traffic of Services in %s to backends the subject chooses, capturing or altering what their clients send.", phrase),
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the verb with `%s`.", kubectlAuthCanI("patch", "services", ruleNamespace, subject)),
+			"They pick a Service whose clients carry something valuable and change its selector to match a pod they run, or its type to `ExternalName` pointing at a host they control.",
+			"The controller republishes the backends and the Service's clients connect to the attacker.",
+		},
+		Remediation: "Remove `update`/`patch` on `services` from cluster-wide grants and from every identity bound in a namespace that hosts a webhook or aggregated API backend.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Drop `update`/`patch` on `services` from %s where the grant is cluster-wide or lands in a control-plane backend namespace.", subjectKey(subject)),
+			"Do not bind tenant, CI, or developer identities (nor the `edit` or `admin` ClusterRoles) in namespaces that host webhook or aggregated API backends; treat those namespaces like kube-system.",
+			"For Services whose clients carry credentials, require mutual TLS so a redirected backend cannot present the expected identity.",
+			fmt.Sprintf("Verify with `%s` returning `no`.", kubectlAuthCanI("patch", "services", ruleNamespace, subject)),
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Service (selectors, ExternalName)", URL: "https://kubernetes.io/docs/concepts/services-networking/service/"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1557, mitreT1078_004},
+	}
+}
+
+// contentPrivesc038 covers the control-plane backend hijack conjunction.
+func contentPrivesc038(subject models.SubjectRef, routingBinding, routingRole, tlsBinding, tlsRole string, namespaces []string, backends map[string][]models.ControlPlaneBackend) ruleContent {
+	list := strings.Join(namespaces, "`, `")
+	var names []string
+	for _, ns := range namespaces {
+		for _, b := range backends[ns] {
+			names = append(names, b.Label())
+		}
+	}
+	if len(names) > 4 {
+		names = append(names[:4], fmt.Sprintf("+%d more", len(names)-4))
+	}
+	var tls string
+	if tlsBinding != "" {
+		tls = fmt.Sprintf("The subject also holds a way to present the backend's serving certificate (via %s → %s): read the Secret, mount it in a pod of its own, or run code in the backend's pods", tlsBinding, tlsRole)
+	} else {
+		tls = "At least one backend is registered with `insecureSkipTLSVerify`, so no serving certificate is needed"
+	}
+	return ruleContent{
+		Title: fmt.Sprintf("Control-plane backend hijack: `%s` can take over %s in `%s`", subjectKey(subject), names[0], namespaces[0]),
+		Scope: models.Scope{Level: models.ScopeCluster, Detail: fmt.Sprintf("Namespaces hosting a Service the API server calls, where the subject holds both halves: `%s`", list)},
+		Description: fmt.Sprintf("Subject %s can steer the traffic of Services in `%s` (via %s → %s), a namespace that hosts %s, which the API server itself calls. %s.\n\n"+
+			"An admission webhook backend receives every admission review for the objects its rules match, and an aggregated API server receives every request for its API group, both sent by the API server with its own front-proxy credentials and the caller's identity. The API server reaches them through an ordinary Service, verified against the configuration's `caBundle` with the Service's DNS name pinned. Whoever can both steer that Service (write its EndpointSlices or spec, or put a pod of their own behind it) and present its serving certificate (read the Secret, mount it, or run code in the backend's pods) is that backend.\n\n"+
+			"This is why a namespace hosting such a backend has to be treated like kube-system: the built-in `edit` ClusterRole holds both halves (write Services and pods, read Secrets), and so does `admin`. A mutating webhook on pods CREATE hijacked this way rewrites every new pod, the position KUBE-PRIVESC-019 describes; a native-group APIService hijacked this way serves a core API group; a validating webhook is bypassed; any other backend is an interception point for the API server's traffic.",
+			subjectKey(subject), namespaces[0], routingBinding, routingRole, strings.Join(names, ", "), tls),
+		Impact: "Take over a Service the API server calls with its own credentials: rewrite every admitted pod (mutating webhook), bypass policy (validating webhook), or serve an API group in the API server's stead (APIService). The privesc graph reports the resulting path with the sink the backend's kind decides.",
+		AttackScenario: []string{
+			fmt.Sprintf("Attacker confirms the routing half with `%s` and the TLS half with `%s`.", kubectlAuthCanI("patch", "services", namespaces[0], subject), kubectlAuthCanI("get", "secrets", namespaces[0], subject)),
+			"They obtain the backend's serving key (the Secret, a pod that mounts it, or a shell in the backend's own pod) and run a listener that presents it.",
+			"They steer the backend Service at their listener: a rewritten selector, an EndpointSlice of their own, or a pod of theirs that matches the selector.",
+			"The API server's next admission review or aggregated request arrives at the attacker, who answers it (an injected privileged pod, an allowed request, a forged API response) and forwards the rest to the real backend so nothing visibly breaks.",
+		},
+		Remediation: "Treat every namespace that hosts a webhook or APIService backend like kube-system: no tenant, CI, or developer bindings there, and no `edit`/`admin` ClusterRoleBindings scoped to it; move the backend into a dedicated namespace if it shares one today.",
+		RemediationSteps: []string{
+			fmt.Sprintf("Remove %s's bindings in `%s`, or move the backend into a namespace with no tenant bindings.", subjectKey(subject), list),
+			"Audit RoleBindings in every backend namespace: `kubectl get rolebindings -n <ns> -o wide`. Expect only the backend's own ServiceAccount and the platform team.",
+			"Set the webhook `caBundle` or APIService `caBundle` to a dedicated CA that signs only that backend's serving certificate, keep the serving key in a Secret no other workload mounts, and never set `insecureSkipTLSVerify`.",
+			"Apply a NetworkPolicy that lets only the control plane reach the backend pods, and alert on EndpointSlices in these namespaces whose `managed-by` label is not the EndpointSlice controller.",
+			"Review every grant of `update`/`patch` on `apiservices` and scope it with `resourceNames` to the installer's own registrations.",
+		},
+		LearnMore: []models.Reference{
+			{Title: "Kubernetes: Dynamic Admission Control (webhook clientConfig.service and caBundle)", URL: "https://kubernetes.io/docs/reference/access-authn-authz/extensible-admission-controllers/#contacting-the-webhook"},
+			{Title: "Kubernetes: Configure the Aggregation Layer (front-proxy credentials)", URL: "https://kubernetes.io/docs/tasks/extend-kubernetes/configure-aggregation-layer/"},
+			{Title: "Kubernetes: EndpointSlices (ownership and the managed-by label)", URL: "https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/#management"},
+			refRBACGoodPractices,
+			refNSAHardening,
+		},
+		MitreTechniques: []models.MitreTechnique{mitreT1557, mitreT1610, mitreT1098, mitreT1078_004},
 	}
 }
 

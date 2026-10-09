@@ -1,0 +1,6 @@
+# Chain-shape assertions for 23-privesc-psa-flip.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The namespace is PSA restricted, so the flipper's only route to node escape is
+# relabeling it first: a single conjunction hop.
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/psaflip-fixtures/psaflip-flipper:node_escape 1 namespace_psa_label_flip

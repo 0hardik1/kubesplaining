@@ -108,6 +108,64 @@ var ruleControls = map[string][]models.FrameworkRef{
 		cis("5.1.4", "Minimize access to create pods"),
 		nsa("Authorization", "Role-based access control"),
 	},
+	// A write to a live pod runs new code in it, which is pod creation's reach by
+	// another verb, so it shares the pod-creation control.
+	"KUBE-PRIVESC-034": {
+		cis("5.1.4", "Minimize access to create pods"),
+		nsa("Authorization", "Role-based access control"),
+	},
+	// Placing a pod is pod creation's reach over where it runs, so it shares the
+	// pod-creation control.
+	"KUBE-PRIVESC-030": {
+		cis("5.1.4", "Minimize access to create pods"),
+		nsa("Authorization", "Role-based access control"),
+	},
+	// A kubelet identity for any node name, and the Secret write that mints the
+	// bootstrap token for one.
+	"KUBE-PRIVESC-037": {
+		nsa("Authorization", "Role-based access control"),
+		nsa("Authentication", "Kubelet TLS bootstrapping and certificate approval"),
+	},
+	"KUBE-PRIVESC-026": {
+		cis("5.1.2", "Minimize access to secrets"),
+		nsa("Authorization", "Role-based access control"),
+		nsa("Authentication", "Bootstrap tokens"),
+	},
+	// Re-routing an API group is control-plane authority handed over.
+	"KUBE-PRIVESC-020": {
+		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
+		nsa("Authorization", "Role-based access control"),
+		nsa("Network Separation and Hardening", "Control plane hardening"),
+	},
+	// Service steering grants are network-position grants.
+	"KUBE-PRIVESC-021": {
+		nsa("Network Separation and Hardening", "Service traffic and network policies"),
+		nsa("Authorization", "Role-based access control"),
+	},
+	"KUBE-PRIVESC-022": {
+		nsa("Network Separation and Hardening", "Service traffic and network policies"),
+		nsa("Authorization", "Role-based access control"),
+	},
+	// A hijacked webhook or aggregated API backend is the API server's own request
+	// path.
+	"KUBE-PRIVESC-038": {
+		cis("5.1.1", "Ensure that the cluster-admin role is only used where required"),
+		nsa("Authorization", "Role-based access control"),
+		nsa("Network Separation and Hardening", "Control plane hardening"),
+	},
+	// A status write that redirects Service traffic is a network-position grant, so
+	// it carries the network control alongside the RBAC one.
+	"KUBE-PRIVESC-036": {
+		nsa("Network Separation and Hardening", "Service traffic and network policies"),
+		nsa("Authorization", "Role-based access control"),
+	},
+	// The pair defeats the namespace's Pod Security level, so it maps to the pod
+	// security controls as well as the RBAC one.
+	"KUBE-PRIVESC-035": {
+		cis("5.2.1", "Minimize the admission of privileged containers"),
+		nsa("Pod Security", "Pod Security Standards / Pod Security Admission"),
+		nsa("Authorization", "Role-based access control"),
+	},
 	// Version-gated: the pair is pod creation by another route (CIS 5.1.4), and the
 	// durable fix is the control-plane patch rather than the RBAC cut.
 	"KUBE-VERSION-CVE-2026-2270": {

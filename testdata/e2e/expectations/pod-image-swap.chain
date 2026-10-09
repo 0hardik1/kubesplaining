@@ -1,0 +1,7 @@
+# Chain-shape assertions for 22-privesc-pod-image-swap.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The patcher holds only `patch pods`. Its route to kube-system secrets runs
+# through the running imgswap-reader pod: swap its image, inherit its mounted
+# token, read Secrets cluster-wide.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/imgswap-fixtures/imgswap-patcher:kube_system_secrets 2 pod_image_hijack,read_secrets

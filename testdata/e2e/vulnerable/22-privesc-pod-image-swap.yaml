@@ -1,0 +1,103 @@
+# === MODULE: rbac + privesc (KUBE-PRIVESC-034 pod image swap) ===
+# `update`/`patch` on the main `pods` resource lets a subject change the container
+# image of a running pod. The API server's pod update validation keeps the image
+# fields mutable on a live pod, and the kubelet restarts the container with the new
+# image inside the same pod sandbox: same ServiceAccount token mount, same
+# securityContext, same volumes. That is the exec position (KUBE-PRIVESC-004)
+# through a write verb, and the privesc graph draws it as a pod_image_hijack edge
+# to the ServiceAccount the target pod runs as.
+#
+# Shape: imgswap-patcher holds `patch pods` in this namespace and nothing else.
+# imgswap-reader runs a pod here and reads Secrets cluster-wide, so the only route
+# from the patcher to the kube-system secrets sink is through the running pod:
+#   imgswap-patcher -(pod_image_hijack)-> imgswap-reader -(read_secrets)-> kube_system_secrets
+# which pod-image-swap.chain pins.
+#
+# The namespace enforces PSA `baseline`, which admits the plain busybox pod below
+# but blocks privileged pods, so the patcher gets no direct node-escape route and
+# the chain proves the image-swap edge specifically (pod-image-swap.deny).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: imgswap-fixtures
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: imgswap-patcher
+  namespace: imgswap-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: imgswap-reader
+  namespace: imgswap-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: imgswap-pod-patcher
+  namespace: imgswap-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: imgswap-pod-patcher
+  namespace: imgswap-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: imgswap-patcher
+    namespace: imgswap-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: imgswap-pod-patcher
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-imgswap-secret-reader
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-imgswap-secret-reader
+subjects:
+  - kind: ServiceAccount
+    name: imgswap-reader
+    namespace: imgswap-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-imgswap-secret-reader
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imgswap-reader-app
+  namespace: imgswap-fixtures
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imgswap-reader-app
+  template:
+    metadata:
+      labels:
+        app: imgswap-reader-app
+    spec:
+      serviceAccountName: imgswap-reader
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]

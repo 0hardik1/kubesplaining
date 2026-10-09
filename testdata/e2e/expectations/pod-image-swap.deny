@@ -1,0 +1,9 @@
+# Negative guards for 22-privesc-pod-image-swap.yaml.
+#
+# `patch pods` is not `create pods`: no token-theft-by-creation finding on the patcher.
+KUBE-PRIVESC-001:ServiceAccount/imgswap-fixtures/imgswap-patcher
+# The namespace enforces PSA baseline and the patcher cannot create pods, so there
+# is no privileged-pod route of its own. (A node-escape path still exists on the e2e
+# cluster: the EKS fixtures make every pod without IRSA an IMDS node-role pivot, a
+# `hard` continuation from the shell the image swap gives, so that path is not denied.)
+KUBE-PRIVESC-002:ServiceAccount/imgswap-fixtures/imgswap-patcher

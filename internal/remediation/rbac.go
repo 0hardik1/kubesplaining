@@ -222,6 +222,7 @@ func isDangerousRBACRule(ruleID string) bool {
 	switch ruleID {
 	case "KUBE-PRIVESC-001",
 		"KUBE-PRIVESC-002",
+		"KUBE-PRIVESC-030",
 		"KUBE-PRIVESC-003",
 		"KUBE-PRIVESC-004",
 		"KUBE-PRIVESC-005",
@@ -237,6 +238,15 @@ func isDangerousRBACRule(ruleID string) bool {
 		"KUBE-PRIVESC-016",
 		"KUBE-PRIVESC-017",
 		"KUBE-PRIVESC-019",
+		"KUBE-PRIVESC-020",
+		"KUBE-PRIVESC-021",
+		"KUBE-PRIVESC-022",
+		"KUBE-PRIVESC-026",
+		"KUBE-PRIVESC-034",
+		"KUBE-PRIVESC-035",
+		"KUBE-PRIVESC-036",
+		"KUBE-PRIVESC-037",
+		"KUBE-PRIVESC-038",
 		"KUBE-VERSION-CVE-2026-2270":
 		return true
 	}

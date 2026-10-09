@@ -1,0 +1,10 @@
+# Chain-shape assertions for 25-privesc-control-plane-backend.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The operator's two halves in the webhook's namespace are one hop to node_escape
+# (a hijacked mutating webhook on pods CREATE rewrites every new pod).
+KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/hookbackend-fixtures/hookbackend-operator:node_escape 1 control_plane_backend_hijack
+# An unscoped APIService write re-routes a native API group: one hop to cluster-admin.
+KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/hookbackend-fixtures/apisvc-installer:cluster_admin_equivalent 1 apiservice_takeover
+# An EndpointSlice write in a namespace with Services is one hop to traffic interception.
+KUBE-PRIVESC-PATH-TRAFFIC-INTERCEPT:ServiceAccount/hookbackend-fixtures/hookbackend-slicer:traffic_intercept 1 endpointslice_write

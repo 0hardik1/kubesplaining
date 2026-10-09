@@ -51,6 +51,18 @@ var operatorCatalog = []operatorEntry{
 		gains: "runs an attacker-authored pipeline step"},
 	{group: "monitoring.coreos.com", resources: []string{"servicemonitors"}, saNamespace: "monitoring", saName: "prometheus-operator",
 		gains: "scrapes an attacker-chosen bearerTokenFile, exfiltrating a mounted ServiceAccount token (GHSA-cxh2-4639-vmc5)"},
+	// Kyverno: a `generate` rule makes the controller create any resource the
+	// policy author spells out, including RoleBindings and pods, with the
+	// controller's own cluster-wide permissions; a `mutateExisting` rule rewrites
+	// objects already in the cluster. Since Kyverno 1.10 both run in the
+	// background controller; before that, in the single `kyverno` ServiceAccount.
+	// A namespaced Policy is enough: generate rules in a Policy still run with the
+	// controller's identity, which is what makes this a deputy and not a tenant
+	// writing its own namespace.
+	{group: "kyverno.io", resources: []string{"clusterpolicies", "policies"}, saNamespace: "kyverno", saName: "kyverno-background-controller",
+		gains: "generates attacker-authored resources (RoleBindings, pods, Secrets) or rewrites existing ones through a generate / mutateExisting rule"},
+	{group: "kyverno.io", resources: []string{"clusterpolicies", "policies"}, saNamespace: "kyverno", saName: "kyverno",
+		gains: "generates attacker-authored resources (RoleBindings, pods, Secrets) or rewrites existing ones through a generate / mutateExisting rule"},
 }
 
 // deputyVerbs are the write verbs that let a subject steer a reconciler.

@@ -364,6 +364,122 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "Read the mounted ServiceAccount token", Cmd: "cat /var/run/secrets/kubernetes.io/serviceaccount/token"},
 		},
 	},
+	"pod_image_hijack": {
+		Title: "Pod image swap: code injection into a running pod",
+		Plain: template.HTML(`<p>The API server keeps a pod's container <code>image</code> fields writable after the pod is running, and nothing in-tree checks who changed them. A subject with plain <code>update</code> or <code>patch</code> on <code>pods</code> can point a running container at an image it controls; the kubelet restarts that container with the new image inside the same pod, so the attacker's code inherits the pod's mounted ServiceAccount token, its <code>securityContext</code>, and any host access it had.</p><p>This is the same position <code>pods/exec</code> or an ephemeral container gives, reached through a write verb that <code>edit</code>-style roles and label-patching operators carry routinely. No workload controller reverts it: ReplicaSets, StatefulSets, and DaemonSets reconcile on labels and template hashes, not on the live image.</p>`),
+		Mitre: "T1610 - Deploy Container",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the write verb on pods", Cmd: "kubectl auth can-i patch pods -n <namespace>"},
+			{Note: "Find a running pod whose ServiceAccount or pod spec is worth more than the attacker's own", Cmd: "kubectl get pods -n <namespace> -o custom-columns=NAME:.metadata.name,SA:.spec.serviceAccountName,PRIV:.spec.containers[*].securityContext.privileged"},
+			{Note: "A patch to spec.containers[*].image on that pod makes the kubelet restart the container with the new image, keeping the token mount and securityContext", Cmd: "kubectl get pod <pod> -n <namespace> -o jsonpath='{.spec.containers[*].image}'"},
+		},
+	},
+	"namespace_psa_label_flip": {
+		Title: "Pod Security Admission label flip",
+		Plain: template.HTML(`<p><strong>Pod Security Admission</strong> decides how strictly to vet pods in a namespace by reading the <code>pod-security.kubernetes.io/enforce</code> label on the Namespace object at admission time. That label is ordinary metadata: nothing in Kubernetes protects it, so anyone who can <code>update</code> or <code>patch</code> the namespace can set it to <code>privileged</code> and switch the lockdown off.</p><p>Alone the label write changes nothing. Paired with a way to create pods in that namespace, it lets the attacker land a privileged or host-mounting pod in a namespace the cluster's PSA posture reports as <code>restricted</code>, and escape to the node from there. The write grant is outside the built-in <code>admin</code>/<code>edit</code> roles, and a namespaced Role can carry it for its own namespace, because the API server treats <code>/api/v1/namespaces/&lt;ns&gt;</code> as a request inside <code>&lt;ns&gt;</code>.</p>`),
+		Mitre: "T1611 - Escape to Host",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm both halves: the namespace write and pod creation in the same namespace", Cmd: "kubectl auth can-i patch namespaces -n <namespace> && kubectl auth can-i create pods -n <namespace>"},
+			{Note: "Read the label PSA enforces today; a write that sets it to privileged disables the standard for every later pod", Cmd: "kubectl get namespace <namespace> -o jsonpath='{.metadata.labels.pod-security\\.kubernetes\\.io/enforce}'"},
+		},
+	},
+	"pod_bind_placement": {
+		Title: "Pod binding: acting as the scheduler",
+		Plain: template.HTML(`<p>The <code>pods/binding</code> subresource (and the legacy <code>bindings</code> resource) is the write kube-scheduler makes to place a pod: it sets <code>spec.nodeName</code>. The API server validates only that the target is a named Node, so a subject holding <code>create</code> on it places any pending pod on any node without the scheduler's checks. The kubelet still re-checks resource fit, node affinity, <code>nodeName</code>, and host ports, so the bind cannot overcommit a node, but taints with the <code>NoSchedule</code> effect only steer the scheduler; the kubelet enforces <code>NoExecute</code> alone.</p><p> The control-plane taint is <code>NoSchedule</code>, so a direct bind puts a tenant pod next to the API server's static pods and PKI directory. Paired with pod creation, that is control-plane co-residency on demand, which turns a later host escape from the pod into control-plane access.</p>`),
+		Mitre: "T1610 - Deploy Container",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the scheduler's write verb", Cmd: "kubectl auth can-i create pods/binding -n <namespace>"},
+			{Note: "List the nodes the bind could target; a NoSchedule control-plane taint does not stop a direct binding", Cmd: "kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints[*].effect"},
+		},
+	},
+	"pod_status_ip_spoof": {
+		Title: "Pod status rewrite: Service traffic redirection",
+		Plain: template.HTML(`<p>A Service's backends are not configured anywhere: the EndpointSlice controller derives them from the <code>podIPs</code> that selected pods report in their <strong>status</strong>. That status is an ordinary API subresource, <code>pods/status</code>. The API server checks only that each address is well-formed, and the NodeRestriction plugin constrains node callers only, so a non-node subject with <code>update</code> or <code>patch</code> on it can give any selected pod any IP.</p><p>The Service follows within a second: the EndpointSlice is republished and kube-proxy re-points its rules. Clients resolve the Service name as before and connect to the attacker, bearer tokens and all. The pod's kubelet writes the real IP back on its next sync (about 10 seconds), so the attacker keeps re-writing it, unless the Service publishes not-ready addresses and the pod has no node, in which case nothing ever corrects it. Against a webhook or aggregated-API backend, the clients are the API server itself.</p>`),
+		Mitre: "T1557 - Adversary-in-the-Middle",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the status write verb", Cmd: "kubectl auth can-i patch pods --subresource=status -n <namespace>"},
+			{Note: "List the Services whose selectors match pods in scope; these are the ones a status rewrite redirects", Cmd: "kubectl get services -n <namespace> -o custom-columns=NAME:.metadata.name,SELECTOR:.spec.selector,NOTREADY:.spec.publishNotReadyAddresses"},
+		},
+	},
+	"csr_nodeclient_autoapprove": {
+		Title: "Kubelet CSR auto-approval: a node identity for any name",
+		Plain: template.HTML(`<p>Kubelets get their client certificates by submitting a <strong>CertificateSigningRequest</strong> that names <code>system:node:&lt;name&gt;</code> in the group <code>system:nodes</code>. The controller manager approves such a request by itself when a SubjectAccessReview says the requester may <code>create certificatesigningrequests/nodeclient</code>. It does not compare the node name to the requester, nor check that the node exists.</p><p>Whoever holds that subresource together with <code>create certificatesigningrequests</code> therefore gets a signed kubelet identity for any node name, and the Node authorizer grants that identity the ServiceAccount tokens and referenced Secrets of every pod on the named node. kubeadm binds the pair to its bootstrap group, which is the designed use.</p>`),
+		Mitre: "T1078.004 - Valid Accounts: Cloud Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the pair", Cmd: "kubectl auth can-i create certificatesigningrequests && kubectl auth can-i create certificatesigningrequests/nodeclient"},
+			{Note: "List who is bound to the auto-approval ClusterRole; expect only the kubeadm bootstrap group", Cmd: "kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.roleRef.name == \"system:certificates.k8s.io:certificatesigningrequests:nodeclient\") | .subjects[]? | \"\\(.kind) \\(.name)\"'"},
+		},
+	},
+	"bootstrap_token_mint": {
+		Title: "Bootstrap token minting",
+		Plain: template.HTML(`<p>A Secret of type <code>bootstrap.kubernetes.io/token</code> in kube-system is a credential: the bootstrap-token authenticator accepts its <code>&lt;id&gt;.&lt;secret&gt;</code> as the user <code>system:bootstrap:&lt;id&gt;</code> in the groups the Secret's <code>auth-extra-groups</code> names. On a kubeadm cluster that group may submit kubelet client CSRs that the controller manager auto-approves.</p><p>A Secret write reaching kube-system therefore mints a token that buys a kubelet identity for any node name. The edge is drawn only when the cluster has the auto-approval binding; without it, the token authenticates but reaches nothing.</p>`),
+		Mitre: "T1098 - Account Manipulation",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the write", Cmd: "kubectl auth can-i create secrets -n kube-system"},
+			{Note: "List existing bootstrap tokens; alert on ones kubeadm did not create", Cmd: "kubectl get secrets -n kube-system --field-selector type=bootstrap.kubernetes.io/token"},
+		},
+	},
+	"impersonate_node": {
+		Title: "Node impersonation",
+		Plain: template.HTML(`<p>The Node authorizer recognises a kubelet by two things: a username that starts with <code>system:node:</code> and membership of the group <code>system:nodes</code>. A subject that may impersonate users reaching such a name <em>and</em> impersonate the nodes group can send requests the authorizer treats as that node's kubelet, for any node name.</p><p>An unscoped <code>impersonate groups</code> already reaches <code>system:masters</code>; this edge covers the grant scoped by <code>resourceNames</code> to the nodes group.</p>`),
+		Mitre: "T1078.004 - Valid Accounts: Cloud Accounts",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm both halves", Cmd: "kubectl auth can-i impersonate users; kubectl auth can-i impersonate groups"},
+			{Note: "Find grants scoped to the nodes group", Cmd: "kubectl get clusterroles -o json | jq -r '.items[] | select(.rules[]? | ((.verbs // []) | index(\"impersonate\")) and ((.resourceNames // []) | index(\"system:nodes\"))) | .metadata.name'"},
+		},
+	},
+	"node_token_request": {
+		Title: "Node authorizer: token request for a node's pods",
+		Plain: template.HTML(`<p>The <strong>Node authorizer</strong> lets a kubelet request a token (the TokenRequest API) for the ServiceAccount of any pod bound to its node, because the kubelet has to mount that token into the pod. A node identity for a chosen name therefore yields the tokens of every ServiceAccount with a pod on that node, and across names, in the cluster.</p><p>This edge leaves the node_identity sink; it is what makes that sink traversable in the graph.</p>`),
+		Mitre: "T1528 - Steal Application Access Token",
+		AttackerSteps: []AttackerStep{
+			{Note: "See which ServiceAccounts a given node's pods run as", Cmd: "kubectl get pods -A --field-selector spec.nodeName=<node> -o custom-columns=NS:.metadata.namespace,POD:.metadata.name,SA:.spec.serviceAccountName"},
+		},
+	},
+	"node_secret_read": {
+		Title: "Node authorizer: Secrets of a node's pods",
+		Plain: template.HTML(`<p>The <strong>Node authorizer</strong> lets a kubelet read any Secret a pod bound to its node references, as a volume, an environment source, or an image pull secret, because the kubelet has to mount them. A node identity for a control-plane node therefore reads the Secrets kube-system's pods reference.</p>`),
+		Mitre: "T1552.007 - Unsecured Credentials: Container API",
+		AttackerSteps: []AttackerStep{
+			{Note: "See which Secrets kube-system pods reference on a node", Cmd: "kubectl get pods -n kube-system --field-selector spec.nodeName=<node> -o jsonpath='{range .items[*]}{.metadata.name}{\": \"}{.spec.volumes[*].secret.secretName}{\"\\n\"}{end}'"},
+		},
+	},
+	"endpointslice_write": {
+		Title: "EndpointSlice write: Service traffic steering",
+		Plain: template.HTML(`<p>A Service's backends are the <strong>EndpointSlices</strong> that carry its <code>kubernetes.io/service-name</code> label. kube-proxy consumes every such slice whatever its <code>managed-by</code> label says, and the EndpointSlice controller reconciles only the slices it manages itself. A slice an attacker creates therefore survives and takes its share of the Service's traffic.</p><p>Clients resolve the Service name as before, and part of their connections reach addresses the attacker chose. Outside kube-controller-manager and a few service meshes, nothing needs this verb.</p>`),
+		Mitre: "T1557 - Adversary-in-the-Middle",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the write verb", Cmd: "kubectl auth can-i create endpointslices -n <namespace>"},
+			{Note: "List the Services in scope and who manages their slices; a slice not managed by the controller is the signal to alert on", Cmd: "kubectl get endpointslices -n <namespace> -L kubernetes.io/service-name,endpointslice.kubernetes.io/managed-by"},
+		},
+	},
+	"service_backend_rewrite": {
+		Title: "Service rewrite: re-pointing a Service",
+		Plain: template.HTML(`<p>A Service's selector, ports, and type are plain spec fields. Rewriting the selector points the Service at pods the attacker controls, and the EndpointSlice controller republishes the backends within a second; changing the type to <code>ExternalName</code> sends clients to a hostname of the attacker's choosing. Clients resolve the same name and connect to the new backend.</p><p>The built-in <code>edit</code> ClusterRole carries this verb, so inside a tenant's own namespace it is expected. It matters where the reach is more than the tenant's own Services: cluster-wide, or in a namespace that hosts a Service the API server itself calls.</p>`),
+		Mitre: "T1557 - Adversary-in-the-Middle",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the write verb", Cmd: "kubectl auth can-i patch services -n <namespace>"},
+			{Note: "List the Services in scope with their selectors and types", Cmd: "kubectl get services -n <namespace> -o custom-columns=NAME:.metadata.name,TYPE:.spec.type,SELECTOR:.spec.selector"},
+		},
+	},
+	"control_plane_backend_hijack": {
+		Title: "Control-plane backend hijack",
+		Plain: template.HTML(`<p>Admission webhooks and aggregated API servers are ordinary Services that the <strong>API server itself</strong> calls, with its own front-proxy credentials and the caller's identity attached. The API server verifies them against the configuration's <code>caBundle</code> with the Service's DNS name pinned. Whoever can steer that Service's traffic (write its EndpointSlices or spec, or put a pod of their own behind it) and present its serving certificate (read the Secret, mount it, or run code in the backend's pods) <em>is</em> that backend.</p><p>A namespace hosting such a backend therefore has to be treated like kube-system: the built-in <code>edit</code> and <code>admin</code> ClusterRoles hold both halves. A hijacked mutating webhook on pods rewrites every new pod; a hijacked native-group APIService serves a core API group; a validating webhook is bypassed; anything else is an interception point for the API server's traffic.</p>`),
+		Mitre: "T1557 - Adversary-in-the-Middle",
+		AttackerSteps: []AttackerStep{
+			{Note: "List the namespaces that host webhook and APIService backends; these are the ones to audit like kube-system", Cmd: "kubectl get mutatingwebhookconfigurations,validatingwebhookconfigurations -o jsonpath='{range .items[*].webhooks[*].clientConfig.service}{.namespace}/{.name}{\"\\n\"}{end}'; kubectl get apiservices -o jsonpath='{range .items[?(@.spec.service)]}{.spec.service.namespace}/{.spec.service.name}{\"\\n\"}{end}'"},
+			{Note: "Review who is bound in such a namespace", Cmd: "kubectl get rolebindings -n <backend-namespace> -o wide"},
+		},
+	},
+	"apiservice_takeover": {
+		Title: "APIService rewrite: serving an API group",
+		Plain: template.HTML(`<p>An <strong>APIService</strong> registration tells the kube-aggregator which server answers an API group and version. One with <code>spec.service</code> set makes the aggregator proxy that group's requests to a Service, authenticating with the API server's own front-proxy client certificate and forwarding the caller's identity in headers. Rewriting the registration re-routes the group.</p><p>For an aggregated group the attacker receives every request forwarded for it. For a native group (apps, rbac, authentication, core) the attacker serves it in the API server's stead, with the API server's credentials: that is cluster-admin, and nothing in-tree reverts the registration. The verb is held by installers such as metrics-server and is routinely granted without <code>resourceNames</code>.</p>`),
+		Mitre: "T1557 - Adversary-in-the-Middle",
+		AttackerSteps: []AttackerStep{
+			{Note: "Confirm the write verb", Cmd: "kubectl auth can-i patch apiservices"},
+			{Note: "List registrations that point at a Service, and any native-group registration that is not automanaged; these are the drift signals to alert on", Cmd: "kubectl get apiservices -o custom-columns=NAME:.metadata.name,SERVICE:.spec.service.namespace/.spec.service.name,AUTOMANAGED:.metadata.labels.kube-aggregator\\.kubernetes\\.io/automanaged"},
+		},
+	},
 	"token_request": {
 		Title: "TokenRequest minting",
 		Plain: template.HTML(`<p>The <code>create</code> verb on <code>serviceaccounts/token</code> mints a fresh, valid token for any ServiceAccount in scope, with no pod required. Cleaner than the pod-creation route and harder to spot in audit logs.</p>`),
@@ -713,6 +829,26 @@ func TechniqueKeyForFinding(f models.Finding) string {
 		return "secret_mint_token"
 	case f.RuleID == "KUBE-PRIVESC-013":
 		return "ephemeral_container_inject"
+	case f.RuleID == "KUBE-PRIVESC-030":
+		return "pod_bind_placement"
+	case f.RuleID == "KUBE-PRIVESC-034":
+		return "pod_image_hijack"
+	case f.RuleID == "KUBE-PRIVESC-035":
+		return "namespace_psa_label_flip"
+	case f.RuleID == "KUBE-PRIVESC-036":
+		return "pod_status_ip_spoof"
+	case f.RuleID == "KUBE-PRIVESC-020":
+		return "apiservice_takeover"
+	case f.RuleID == "KUBE-PRIVESC-021":
+		return "endpointslice_write"
+	case f.RuleID == "KUBE-PRIVESC-022":
+		return "service_backend_rewrite"
+	case f.RuleID == "KUBE-PRIVESC-038":
+		return "control_plane_backend_hijack"
+	case f.RuleID == "KUBE-PRIVESC-037":
+		return "csr_nodeclient_autoapprove"
+	case f.RuleID == "KUBE-PRIVESC-026":
+		return "bootstrap_token_mint"
 	case f.RuleID == "KUBE-PRIVESC-015":
 		return "port_forward"
 	case f.RuleID == "KUBE-PRIVESC-016":

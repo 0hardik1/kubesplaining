@@ -1,0 +1,6 @@
+# Chain-shape assertions for 24-privesc-pod-status-intercept.yaml:
+# <finding-id-prefix> <min-hops> <ordered,hop,actions> [primary|alternate]
+#
+# The writer holds only `patch pods/status`; the Service selects the running pod,
+# so the route to traffic interception is one hop.
+KUBE-PRIVESC-PATH-TRAFFIC-INTERCEPT:ServiceAccount/statusspoof-fixtures/statusspoof-writer:traffic_intercept 1 pod_status_ip_spoof

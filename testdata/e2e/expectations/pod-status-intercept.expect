@@ -1,0 +1,4 @@
+# Expected rule IDs from the pod status intercept fixture
+# (testdata/e2e/vulnerable/24-privesc-pod-status-intercept.yaml). `patch pods/status`
+# is KUBE-PRIVESC-036.
+KUBE-PRIVESC-036

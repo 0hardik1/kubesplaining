@@ -1,0 +1,4 @@
+# Expected rule ID from the Pod Security Admission label-flip fixture
+# (testdata/e2e/vulnerable/23-privesc-psa-flip.yaml): `patch namespaces` plus
+# `create pods` inside a restricted namespace is KUBE-PRIVESC-035.
+KUBE-PRIVESC-035

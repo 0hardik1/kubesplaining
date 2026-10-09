@@ -1,0 +1,84 @@
+# === MODULE: rbac + privesc (KUBE-PRIVESC-037 / -026, node_identity sink) ===
+# A kubelet client identity (`system:node:<name>` in `system:nodes`) gets, from the
+# Node authorizer, the Secrets and ServiceAccount tokens of every pod bound to the
+# node it names, and nothing checks that the caller is a kubelet or that the node
+# exists. Two routes to such an identity for a name of the holder's choosing:
+#
+#   - The controller manager auto-approves a kubelet client CSR when a
+#     SubjectAccessReview says the requester may `create
+#     certificatesigningrequests/nodeclient`. nodeid-joiner holds that together with
+#     `create certificatesigningrequests`: KUBE-PRIVESC-037, and the graph's
+#     csr_nodeclient_autoapprove edge into node_identity.
+#   - A Secret of type bootstrap.kubernetes.io/token in kube-system is a credential
+#     for the kubeadm bootstrap group, which this cluster (kind runs kubeadm) binds
+#     to that same auto-approval. nodeid-tokenwriter holds `create secrets` in
+#     kube-system: KUBE-PRIVESC-026, and the graph's bootstrap_token_mint edge.
+#
+# node-identity.chain pins both one-hop routes.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nodeid-fixtures
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodeid-joiner
+  namespace: nodeid-fixtures
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodeid-tokenwriter
+  namespace: nodeid-fixtures
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cr-nodeid-joiner
+rules:
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["certificatesigningrequests/nodeclient"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crb-nodeid-joiner
+subjects:
+  - kind: ServiceAccount
+    name: nodeid-joiner
+    namespace: nodeid-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cr-nodeid-joiner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nodeid-tokenwriter
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nodeid-tokenwriter
+  namespace: kube-system
+subjects:
+  - kind: ServiceAccount
+    name: nodeid-tokenwriter
+    namespace: nodeid-fixtures
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nodeid-tokenwriter
