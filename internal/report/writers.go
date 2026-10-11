@@ -13,13 +13,25 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
-// marshalGraphPayload serializes the GraphPayload for inline embedding in a
-// <script type="application/json"> block. encoding/json escapes <, >, & to \uXXXX by default,
-// which prevents the JSON from breaking out of the script tag. On the (essentially impossible)
-// case of a marshal failure we degrade to "{}" so the page still loads — interactivity is off,
-// but the static SVG continues to render.
-func marshalGraphPayload(p GraphPayload) template.JS {
-	b, err := json.Marshal(p)
+// glossaryHover is the slice of a GlossaryEntry the hover definitions need. The long
+// form and docs link render server-side in each finding's Background block, so they
+// stay out of the inline JSON.
+type glossaryHover struct {
+	Title string `json:"Title"`
+	Short string `json:"Short"`
+}
+
+// marshalGlossary serializes the hover half of the glossary for inline embedding in a
+// <script type="application/json"> block. encoding/json escapes <, >, & to \uXXXX by
+// default, which prevents the JSON from breaking out of the script tag. On the
+// (essentially impossible) case of a marshal failure we degrade to "{}" so the page
+// still loads with hovers off.
+func marshalGlossary(g map[string]GlossaryEntry) template.JS {
+	out := make(map[string]glossaryHover, len(g))
+	for k, e := range g {
+		out[k] = glossaryHover{Title: e.Title, Short: e.Short}
+	}
+	b, err := json.Marshal(out)
 	if err != nil {
 		return template.JS("{}")
 	}
@@ -153,6 +165,22 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"sevShort": func(s any) string {
 			return strings.ToUpper(fmt.Sprint(s))
 		},
+		// sevLabel is the reader-facing severity word ("Critical"); the CSS
+		// upper-cases it where a pill wants capitals.
+		"sevLabel": func(s any) string {
+			switch strings.ToUpper(fmt.Sprint(s)) {
+			case "CRITICAL":
+				return "Critical"
+			case "HIGH":
+				return "High"
+			case "MEDIUM":
+				return "Medium"
+			case "LOW":
+				return "Low"
+			default:
+				return "Info"
+			}
+		},
 		"subject": func(subject *models.SubjectRef) string {
 			if subject == nil {
 				return "-"
@@ -218,8 +246,6 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"add":      func(a, b int) int { return a + b },
 		"sub":      func(a, b int) int { return a - b },
 		"div":      func(a, b int) int { return a / b },
-		"midY":     func(n GraphNode) int { return n.Y + n.Height/2 },
-		"rightX":   func(n GraphNode) int { return n.X + n.Width },
 		"catKey":   func(c models.RiskCategory) string { return categoryCSSKey(c) },
 		"catLabel": func(c models.RiskCategory) string { return categoryLabel(c) },
 		"scopeLabel": func(level models.ScopeLevel) string {
@@ -277,11 +303,12 @@ func writeHTMLWithOptions(path string, snapshot models.Snapshot, findings []mode
 		"alternateSummaryLabel": func(alt, primary []models.EscalationHop) template.HTML {
 			return alternateSummaryHTML(alt, primary)
 		},
-		// findingEducationHTML returns a "Background" block of glossary/technique
-		// definitions tailored to the finding (subject kind, resource kind, technique).
-		// Returns "" when no entries apply, gating the wrapper.
-		"findingEducationHTML": func(f models.Finding) template.HTML {
-			return renderFindingEducation(f)
+		// ruleEducationHTML returns a "Background" block of glossary/technique
+		// definitions for a rule's findings (subject kind, resource kind, technique),
+		// rendered once per rule card. Returns "" when no entries apply, gating the
+		// wrapper.
+		"ruleEducationHTML": func(findings []models.Finding) template.HTML {
+			return renderRuleEducation(findings)
 		},
 		// scoringTooltip exposes the structured ScoringBreakdown for templates that
 		// want to drive an expandable row instead of a `title` tooltip. When an

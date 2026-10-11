@@ -10,6 +10,10 @@ Kubesplaining is an open-source Kubernetes security assessment CLI that reads a 
 
 <video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
 
+![Attack paths tab: one graph per escalation target, hover to trace a chain](docs/media/attack-paths-demo.gif)
+
+*The Attack paths tab of the HTML report: select a target, then hover an identity or an arrow to trace its chain.*
+
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
 ## Install
@@ -321,7 +325,7 @@ The module is **opt-in via `--audit-log`**. A plain `kubesplaining scan` (no aud
 | --- | --- | --- |
 | `kubesplaining scan` / `make scan` | No | Same behavior as before; module silently no-ops. |
 | `scan --audit-log <path>` | Used if supplied | LP findings appear alongside the regular findings. |
-| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Attack Paths / Risk Overview / Findings tabs are hidden. |
+| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Summary / Attack paths / Findings / Compliance tabs are hidden. |
 | `make scan-lp AUDIT_LOG=<path>` | **Yes** (Makefile errors if missing) | Same as the focused mode above; convenience target. |
 
 ### Quick start

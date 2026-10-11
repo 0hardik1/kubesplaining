@@ -1,10 +1,8 @@
-// Package report — combined educational block for the static Findings tab.
-// renderFindingEducation pulls relevant Glossary entries (subject kind, resource kind)
-// and the Techniques entry for the finding, then renders them as a "Background" block
-// inside the "How an attacker abuses this" section. This brings the same explanatory
-// copy that drives the interactive Attack Graph side-panel into every finding card,
-// so a reader does not need to click into the graph to learn what a ServiceAccount is
-// or what the impersonate verb does.
+// Package report: combined educational block for the static Findings tab.
+// renderRuleEducation pulls relevant Glossary entries (subject kind, resource kind)
+// and the Techniques entry for a rule's findings, then renders them as a collapsible
+// "Background" block on the rule card, so a reader learns what a ServiceAccount is or
+// what the impersonate verb does without leaving the finding.
 //
 // All HTML is constructed from in-process Glossary/Techniques values whose Long/Plain
 // fields are already template.HTML. Subject/resource keys come from analyzer-supplied
@@ -18,37 +16,49 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/models"
 )
 
-// renderFindingEducation returns a "Background" HTML block listing the relevant
-// glossary/technique definitions for f. Returns "" when nothing applies — the
-// template gates the wrapper on this.
+// renderRuleEducation returns a "Background" HTML block listing the glossary and
+// technique definitions that apply to a rule's findings. It renders once per rule
+// card, not once per affected object: instances of one rule usually share the same
+// subject kind, resource kind, and technique, so a per-instance block repeated the
+// same paragraphs dozens of times. Entries are unioned across instances so a rule
+// that fires on both a ServiceAccount and a User still explains both. Returns ""
+// when nothing applies; the template gates the wrapper on this.
 //
-// Dedupe rule: when the finding has an EscalationPath, the per-hop chain cards
-// already render Techniques[hop.Action].Plain for each step; in that case we
-// suppress the technique entry here to avoid duplicating it. Non-chain findings
-// still get the technique entry up top so RBAC/podsec/admission/etc. findings
-// pick up the same educational copy a privesc finding has always had.
-func renderFindingEducation(f models.Finding) template.HTML {
+// Dedupe rule: when a finding has an EscalationPath, the per-hop chain cards already
+// render Techniques[hop.Action].Plain for each step, so its technique entry is left
+// out here. Non-chain findings still get the technique entry so RBAC, podsec,
+// admission, and similar findings carry the same explainer a privesc finding has.
+func renderRuleEducation(findings []models.Finding) template.HTML {
 	var blocks []string
-
-	// Subject (ServiceAccount, User, Group, system:masters).
-	if key := GlossaryKeyForSubject(f.Subject); key != "" {
-		if entry, ok := Glossary[key]; ok {
-			blocks = append(blocks, educationCard(entry.Title, "Subject", entry.Long, entry.DocURL))
+	seen := map[string]bool{}
+	add := func(label, key, title string, body template.HTML, docURL string) {
+		id := label + "\x00" + key
+		if seen[id] {
+			return
 		}
+		seen[id] = true
+		blocks = append(blocks, educationCard(title, label, body, docURL))
 	}
 
-	// Resource (Pod, Secret, ConfigMap, Role, ClusterRoleBinding, ...).
-	if key := GlossaryKeyForResource(f.Resource); key != "" {
-		if entry, ok := Glossary[key]; ok {
-			blocks = append(blocks, educationCard(entry.Title, "Resource", entry.Long, entry.DocURL))
+	for _, f := range findings {
+		// Subject (ServiceAccount, User, Group, system:masters).
+		if key := GlossaryKeyForSubject(f.Subject); key != "" {
+			if entry, ok := Glossary[key]; ok {
+				add("Subject", key, entry.Title, entry.Long, entry.DocURL)
+			}
 		}
-	}
-
-	// Technique — only when the chain section won't already explain it per-hop.
-	if len(f.EscalationPath) == 0 {
-		if key := TechniqueKeyForFinding(f); key != "" {
-			if entry, ok := Techniques[key]; ok {
-				blocks = append(blocks, educationCard(entry.Title, "Technique", entry.Plain, ""))
+		// Resource (Pod, Secret, ConfigMap, Role, ClusterRoleBinding, ...).
+		if key := GlossaryKeyForResource(f.Resource); key != "" {
+			if entry, ok := Glossary[key]; ok {
+				add("Resource", key, entry.Title, entry.Long, entry.DocURL)
+			}
+		}
+		// Technique, only when the chain section will not already explain it per hop.
+		if len(f.EscalationPath) == 0 {
+			if key := TechniqueKeyForFinding(f); key != "" {
+				if entry, ok := Techniques[key]; ok {
+					add("Technique", key, entry.Title, entry.Plain, "")
+				}
 			}
 		}
 	}
@@ -58,7 +68,7 @@ func renderFindingEducation(f models.Finding) template.HTML {
 	}
 
 	var b strings.Builder
-	b.WriteString(`<div class="education"><span class="edu-k">Background</span><div class="edu-cards">`)
+	b.WriteString(`<div class="education"><div class="edu-cards">`)
 	for _, blk := range blocks {
 		b.WriteString(blk)
 	}

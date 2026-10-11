@@ -167,106 +167,6 @@ func TestBuildHTMLDataReconPlumbsPrivescAnchor(t *testing.T) {
 	}
 }
 
-func TestBuildHTMLDataTOCEntries(t *testing.T) {
-	t.Parallel()
-
-	snapshot := models.NewSnapshot()
-	findings := []models.Finding{
-		// Two findings sharing one RuleID — the TOC must collapse them into one
-		// entry with Count=2 and pick the higher severity (Critical here).
-		{
-			ID:       "f1",
-			RuleID:   "KUBE-RBAC-1",
-			Severity: models.SeverityCritical,
-			Category: models.CategoryPrivilegeEscalation,
-			Title:    "Wildcard verb on wildcard resource",
-			Tags:     []string{"module:rbac"},
-		},
-		{
-			ID:       "f2",
-			RuleID:   "KUBE-RBAC-1",
-			Severity: models.SeverityHigh,
-			Category: models.CategoryPrivilegeEscalation,
-			Title:    "Wildcard verb on wildcard resource",
-			Tags:     []string{"module:rbac"},
-		},
-		// A second rule in the same module — lower severity so it sorts after the
-		// collapsed entry above.
-		{
-			ID:       "f3",
-			RuleID:   "KUBE-RBAC-2",
-			Severity: models.SeverityHigh,
-			Category: models.CategoryPrivilegeEscalation,
-			Title:    "Bind/escalate verb granted",
-			Tags:     []string{"module:rbac"},
-		},
-		// Different module + category — exercises the by-category bucketing.
-		{
-			ID:       "f4",
-			RuleID:   "KUBE-NETPOL-1",
-			Severity: models.SeverityMedium,
-			Category: models.CategoryLateralMovement,
-			Title:    "Open network",
-			Tags:     []string{"module:network_policy"},
-		},
-	}
-
-	data := BuildHTMLData(snapshot, findings)
-
-	// Locate the RBAC module section deterministically (order varies with severity sort).
-	var rbac *ModuleSection
-	for i := range data.Modules {
-		if data.Modules[i].ID == "rbac" {
-			rbac = &data.Modules[i]
-			break
-		}
-	}
-	if rbac == nil {
-		t.Fatalf("expected an RBAC module section, got modules: %#v", data.Modules)
-	}
-
-	if got := len(rbac.Entries); got != 2 {
-		t.Fatalf("RBAC TOC: expected 2 entries (one per RuleID), got %d: %#v", got, rbac.Entries)
-	}
-	first := rbac.Entries[0]
-	if first.RuleID != "KUBE-RBAC-1" {
-		t.Fatalf("RBAC TOC[0]: expected RuleID KUBE-RBAC-1 (highest severity), got %s", first.RuleID)
-	}
-	if first.Severity != models.SeverityCritical {
-		t.Fatalf("RBAC TOC[0]: expected severity to be raised to Critical, got %s", first.Severity)
-	}
-	if first.Count != 2 {
-		t.Fatalf("RBAC TOC[0]: expected Count=2 (collapsed instances), got %d", first.Count)
-	}
-	if first.Anchor != "finding-KUBE-RBAC-1" {
-		t.Fatalf("RBAC TOC[0]: expected Anchor=finding-KUBE-RBAC-1, got %q", first.Anchor)
-	}
-	if rbac.Entries[1].RuleID != "KUBE-RBAC-2" {
-		t.Fatalf("RBAC TOC[1]: expected RuleID KUBE-RBAC-2, got %s", rbac.Entries[1].RuleID)
-	}
-	if rbac.Entries[1].Count != 1 {
-		t.Fatalf("RBAC TOC[1]: expected Count=1, got %d", rbac.Entries[1].Count)
-	}
-
-	// By-category view — Privilege Escalation should hold both KUBE-RBAC-* rules.
-	var privesc *CategorySection
-	for i := range data.Categories {
-		if data.Categories[i].CSSKey == "privesc" {
-			privesc = &data.Categories[i]
-			break
-		}
-	}
-	if privesc == nil {
-		t.Fatalf("expected a Privilege Escalation category section, got: %#v", data.Categories)
-	}
-	if got := len(privesc.Entries); got != 2 {
-		t.Fatalf("Privesc category TOC: expected 2 entries, got %d: %#v", got, privesc.Entries)
-	}
-	if privesc.Entries[0].RuleID != "KUBE-RBAC-1" || privesc.Entries[0].Anchor != "finding-KUBE-RBAC-1" {
-		t.Fatalf("Privesc category TOC[0]: unexpected entry %#v", privesc.Entries[0])
-	}
-}
-
 func TestBuildHTMLDataRuleGroups(t *testing.T) {
 	t.Parallel()
 
@@ -428,6 +328,7 @@ func TestRenderInlineCodeMarkdown(t *testing.T) {
 		{"unmatched **still safe", "unmatched **still safe"},
 		{"<script>", "&lt;script&gt;"},
 		{"line one\nline two", "line one<br>line two"},
+		{"impersonate **`system:masters`** now", "impersonate <strong><code>system:masters</code></strong> now"},
 	}
 	for _, tc := range cases {
 		got := renderInlineCode(tc.in)
@@ -437,10 +338,12 @@ func TestRenderInlineCodeMarkdown(t *testing.T) {
 	}
 }
 
-// TestHTMLReportInteractiveGraph verifies the rendered HTML carries the markup the JS layer
-// requires (CSP allows scripts, JSON payload is embedded, nodes/edges have data IDs). It is a
-// smoke test for the contract between Go and the embedded interactivity, not a behaviour test.
-func TestHTMLReportInteractiveGraph(t *testing.T) {
+// TestHTMLReportPageContract verifies the rendered HTML carries the markup the inline
+// JS relies on: the CSP allows inline scripts, the tab buttons and panels pair up, the
+// findings carry the data attributes the filters read, and the glossary payload is
+// embedded. It is a smoke test for the contract between Go and the script, not a
+// behaviour test.
+func TestHTMLReportPageContract(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -470,21 +373,30 @@ func TestHTMLReportInteractiveGraph(t *testing.T) {
 
 	mustContain := []string{
 		`script-src 'unsafe-inline'`,
-		`<script type="application/json" id="kp-graph-data">`,
-		`data-node-id=`,
-		`data-edge-id=`,
-		`class="kp-filters"`,
-		`class="kp-detail"`,
-		`class="kp-tooltip"`,
-		`KUBE-PRIVESC-009`,
-		// Cluster-reconnaissance panel — collapsed by default but always rendered.
-		`class="recon-card"`,
+		`<script type="application/json" id="kp-glossary">`,
+		`id="tabbtn-summary"`,
+		`id="tab-summary"`,
+		`id="tabbtn-findings"`,
+		`id="tab-findings"`,
+		`id="findings-search-input"`,
+		`data-sev-toggle="crit"`,
+		`data-fl-target="severity:crit"`,
+		`id="finding-KUBE-PRIVESC-009"`,
+		`data-rule="KUBE-PRIVESC-009"`,
+		`data-subject="ServiceAccount/default/risky"`,
+		`data-glossary-key="ServiceAccount"`,
+		// Cluster-reconnaissance panel: collapsed by default but always rendered.
+		`class="card recon-card"`,
 		`Cluster reconnaissance`,
 	}
 	for _, needle := range mustContain {
 		if !strings.Contains(html, needle) {
 			t.Errorf("rendered HTML missing %q", needle)
 		}
+	}
+	// No privesc paths in this fixture, so no Attack paths tab.
+	if strings.Contains(html, `id="tab-paths"`) {
+		t.Error("Attack paths tab rendered without any privesc paths")
 	}
 }
 

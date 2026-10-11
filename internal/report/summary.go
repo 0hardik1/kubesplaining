@@ -1,6 +1,5 @@
-// Package report — summary, grouping, and hotspot helpers used to assemble the HTML
-// report's high-level views (severity tallies, module/category sections, top namespaces,
-// and the resource × category heatmap).
+// Package report: summary, grouping, and hotspot helpers used to assemble the HTML
+// report's high-level views (severity tallies, module/category sections, top namespaces).
 package report
 
 import (
@@ -35,7 +34,7 @@ func BuildSummary(findings []models.Finding) Summary {
 }
 
 // BuildHTMLData groups findings by module, category, namespace, subject, and resource, sorts each grouping by severity-weighted
-// importance, and computes the derived visualizations (risk index, heatmap, attack graph, narratives) used by the HTML report.
+// importance, and computes the derived views (risk index, narratives, per-target attack-path graphs) used by the HTML report.
 func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlReportData {
 	moduleOrder := make([]string, 0)
 	moduleMap := make(map[string][]models.Finding)
@@ -95,8 +94,7 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 	topResources := topHotspots(resourceMap)
 
 	summary := BuildSummary(findings)
-	risk, level, gaugeColor := computeRiskIndex(summary)
-	graph, graphPayload := buildAttackGraph(findings)
+	risk, level := computeRiskIndex(summary)
 	subjects := permissions.Aggregate(snapshot)
 	recon := buildRecon(snapshot, findings, subjects)
 
@@ -117,48 +115,33 @@ func BuildHTMLData(snapshot models.Snapshot, findings []models.Finding) htmlRepo
 		}
 	}
 
-	// Build the per-group TOC rows after AnchorByID is populated so each TOC row can
-	// link to the rule's representative anchor. We attach Entries directly onto the
-	// section structs the template already iterates.
+	// Build the rule groups after AnchorByID is populated so each group can carry its
+	// rule's representative anchor.
 	for i := range modules {
-		modules[i].Entries = buildTOCEntries(modules[i].Findings, anchorByID)
 		modules[i].RuleGroups = buildRuleGroups(modules[i].Findings, anchorByID)
-	}
-	for i := range categories {
-		categories[i].Entries = buildTOCEntries(categoryMap[models.RiskCategory(categories[i].Key)], anchorByID)
 	}
 
 	data := htmlReportData{
-		Snapshot:       snapshot,
-		Recon:          recon,
-		Summary:        summary,
-		Findings:       findings,
-		Modules:        modules,
-		Categories:     categories,
-		TopNamespaces:  topNamespaces,
-		TopSubjects:    topSubjects,
-		TopResources:   topResources,
-		RiskIndex:      risk,
-		RiskLevel:      level,
-		GaugeDash:      gaugeDash(risk),
-		GaugeColor:     gaugeColor,
-		HeatCats:       heatmapCategories(),
-		HeatRows:       buildHeatmap(resourceMap),
-		Narratives:     buildNarratives(findings),
-		Graph:          graph,
-		GraphJSON:      marshalGraphPayload(graphPayload),
-		GraphScript:    template.JS(kpGraphScript),
-		AnchorByID:     anchorByID,
-		LeastPrivilege: buildLeastPrivilegeSection(snapshot, findings, nil),
-		Compliance:     buildComplianceSection(findings),
-		// Wave 0 stubs for new report sections. Each builder returns nil today;
-		// the corresponding {{ if .HeroChains }} / {{ if .TopFixes }} / etc.
-		// template gates ensure no markup renders until Wave 1 populates them.
-		HeroChains:      buildHeroChains(findings),
+		Snapshot:        snapshot,
+		Recon:           recon,
+		Summary:         summary,
+		Findings:        findings,
+		Modules:         modules,
+		Categories:      categories,
+		TopNamespaces:   topNamespaces,
+		TopSubjects:     topSubjects,
+		TopResources:    topResources,
+		RiskIndex:       risk,
+		RiskLevel:       level,
+		Narratives:      buildNarratives(findings),
+		GlossaryJSON:    marshalGlossary(Glossary),
+		Script:          template.JS(reportScript),
+		AnchorByID:      anchorByID,
+		LeastPrivilege:  buildLeastPrivilegeSection(snapshot, findings, nil),
+		Compliance:      buildComplianceSection(findings),
 		TopFixes:        buildTopFixes(findings),
 		SubjectCapCards: buildPerSubjectCapabilities(snapshot, findings),
 		PrivescPaths:    buildPrivescPaths(findings),
-		EscalationGraph: buildEscalationGraphView(findings),
 	}
 	if len(findings) > 5 {
 		data.TopFindings = append([]models.Finding(nil), findings[:5]...)
@@ -238,10 +221,6 @@ func moduleLabel(key string) string {
 	}
 }
 
-// buildHeroChains lives in narratives.go alongside the related chain-detection /
-// headline helpers (W1 slot #4). The stub is intentionally absent here so the
-// implementation has a single home.
-
 // buildTopFixes is implemented in topfixes.go. The stub originally lived here;
 // the call site stays so the BuildHTMLData hot path keeps a single line per
 // section builder. See topfixes.go for the grouping + ranking algorithm.
@@ -301,7 +280,7 @@ func titleCaseWords(s string) string {
 	return strings.Join(parts, " ")
 }
 
-// categoryCSSKey maps a RiskCategory to the short CSS class suffix used by the heatmap cells and graph nodes.
+// categoryCSSKey maps a RiskCategory to the short key the findings filters match on.
 func categoryCSSKey(c models.RiskCategory) string {
 	switch c {
 	case models.CategoryPrivilegeEscalation:
@@ -376,94 +355,6 @@ func resourceDisplay(resource *models.ResourceRef) string {
 		return fmt.Sprintf("%s/%s", resource.Kind, resource.Name)
 	}
 	return fmt.Sprintf("%s/%s/%s", resource.Kind, resource.Namespace, resource.Name)
-}
-
-// heatmapCategories returns the fixed column order for the Resource × Category heatmap.
-func heatmapCategories() []HeatmapCategory {
-	return []HeatmapCategory{
-		{Key: "privesc", Label: "Priv. escalation"},
-		{Key: "lateral", Label: "Lateral movement"},
-		{Key: "exfil", Label: "Data exfil"},
-		{Key: "infra", Label: "Infra modification"},
-		{Key: "evasion", Label: "Defense evasion"},
-	}
-}
-
-// buildHeatmap computes a Resource × Category matrix for the top resources, showing how each
-// high-blast-radius object concentrates findings across attack categories.
-func buildHeatmap(resourceMap map[string][]models.Finding) []HeatmapRow {
-	keys := heatmapCategories()
-	type entry struct {
-		label    string
-		findings []models.Finding
-	}
-	entries := make([]entry, 0, len(resourceMap))
-	for label, fs := range resourceMap {
-		if label == "" || label == "-" {
-			continue
-		}
-		entries = append(entries, entry{label: label, findings: fs})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		a := BuildSummary(entries[i].findings)
-		b := BuildSummary(entries[j].findings)
-		return compareSummaries(a, b, entries[i].label, entries[j].label)
-	})
-	if len(entries) > 10 {
-		entries = entries[:10]
-	}
-
-	rows := make([]HeatmapRow, 0, len(entries))
-	for _, e := range entries {
-		row := HeatmapRow{Label: e.label, Total: len(e.findings)}
-		counts := map[string]int{}
-		top := models.SeverityInfo
-		for _, f := range e.findings {
-			counts[categoryCSSKey(f.Category)]++
-			if f.Severity.Rank() > top.Rank() {
-				top = f.Severity
-			}
-		}
-		for _, k := range keys {
-			n := counts[k.Key]
-			row.Cells = append(row.Cells, HeatmapCell{
-				Count:    n,
-				CatClass: k.Key,
-				Level:    heatLevel(n),
-				Resource: e.label,
-			})
-		}
-		switch top {
-		case models.SeverityCritical:
-			row.SevClass, row.SevLabel = "crit", "CRIT"
-		case models.SeverityHigh:
-			row.SevClass, row.SevLabel = "high", "HIGH"
-		case models.SeverityMedium:
-			row.SevClass, row.SevLabel = "med", "MED"
-		default:
-			row.SevClass, row.SevLabel = "low", "LOW"
-		}
-		rows = append(rows, row)
-	}
-	return rows
-}
-
-// heatLevel bins a cell count into a 0..5 intensity level for CSS-driven heat coloring.
-func heatLevel(n int) int {
-	switch {
-	case n <= 0:
-		return 0
-	case n == 1:
-		return 1
-	case n == 2:
-		return 2
-	case n == 3:
-		return 3
-	case n == 4:
-		return 4
-	default:
-		return 5
-	}
 }
 
 // buildRuleGroups collapses a slice of findings (already in render order) into one RuleGroup
@@ -564,67 +455,4 @@ func ruleTitleForGroup(f models.Finding) string {
 		}
 	}
 	return title
-}
-
-// buildTOCEntries collapses a slice of findings into one TOCEntry per RuleID, keeping the
-// highest severity seen and counting instances. Sort order: severity rank desc → count desc
-// → title asc — matches how the rest of the report orders findings, so the TOC reads top-down
-// by importance. Anchor comes from anchorByID, which is keyed on Finding.ID and only set on
-// the first occurrence of each rule across all modules; we look up via the first finding we
-// see for each RuleID in this group, falling back to "finding-<RuleID>" so the link still
-// works even if the lookup misses (defensive — should not happen in practice).
-func buildTOCEntries(findings []models.Finding, anchorByID map[string]string) []TOCEntry {
-	if len(findings) == 0 {
-		return nil
-	}
-	type acc struct {
-		title    string
-		severity models.Severity
-		anchor   string
-		count    int
-		order    int // first-seen order, used as a stable tiebreaker
-	}
-	byRule := make(map[string]*acc, len(findings))
-	order := 0
-	for _, f := range findings {
-		entry, ok := byRule[f.RuleID]
-		if !ok {
-			entry = &acc{title: f.Title, severity: f.Severity, order: order}
-			if a, found := anchorByID[f.ID]; found {
-				entry.anchor = a
-			} else {
-				entry.anchor = "finding-" + f.RuleID
-			}
-			byRule[f.RuleID] = entry
-			order++
-		} else if f.Severity.Rank() > entry.severity.Rank() {
-			entry.severity = f.Severity
-		}
-		entry.count++
-	}
-	entries := make([]TOCEntry, 0, len(byRule))
-	for ruleID, e := range byRule {
-		entries = append(entries, TOCEntry{
-			RuleID:   ruleID,
-			Title:    e.title,
-			Severity: e.severity,
-			Anchor:   e.anchor,
-			Count:    e.count,
-		})
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		ri := entries[i].Severity.Rank()
-		rj := entries[j].Severity.Rank()
-		if ri != rj {
-			return ri > rj
-		}
-		if entries[i].Count != entries[j].Count {
-			return entries[i].Count > entries[j].Count
-		}
-		if entries[i].Title != entries[j].Title {
-			return entries[i].Title < entries[j].Title
-		}
-		return entries[i].RuleID < entries[j].RuleID
-	})
-	return entries
 }

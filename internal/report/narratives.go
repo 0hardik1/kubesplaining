@@ -143,73 +143,6 @@ func buildNarratives(findings []models.Finding) []NarrativeCard {
 	return narratives
 }
 
-// buildHeroChains computes the 1-3 most severe attack chains to surface above-the-fold
-// in the HTML report (STRATEGY.md:151, plan slot W1 #4). It filters findings to the
-// privesc graph paths (RuleID prefix "KUBE-PRIVESC-PATH-"), ranks them so cluster-takeover
-// paths sit at the top, and renders each as a HeroChainCard with the full hop list inline
-// (no click-through). Returns nil when no privesc paths exist; the
-// `{{ if .HeroChains }}` template gate then suppresses the whole section.
-//
-// Ranking: sink-priority bucket (cluster_admin / system_masters first, then the other
-// sensitive sinks), then severity rank desc, then score desc, then hop count asc, then
-// stable on RuleID + source subject so two runs against the same snapshot produce the
-// same hero slate.
-func buildHeroChains(findings []models.Finding) []HeroChainCard {
-	const heroCap = 3
-	var paths []models.Finding
-	for _, f := range findings {
-		if !strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-") {
-			continue
-		}
-		paths = append(paths, f)
-	}
-	if len(paths) == 0 {
-		return nil
-	}
-	sort.SliceStable(paths, func(i, j int) bool {
-		pi := heroSinkPriority(heroSinkSlug(paths[i]))
-		pj := heroSinkPriority(heroSinkSlug(paths[j]))
-		if pi != pj {
-			return pi < pj
-		}
-		ri := paths[i].Severity.Rank()
-		rj := paths[j].Severity.Rank()
-		if ri != rj {
-			return ri > rj
-		}
-		if paths[i].Score != paths[j].Score {
-			return paths[i].Score > paths[j].Score
-		}
-		hi := len(paths[i].EscalationPath)
-		hj := len(paths[j].EscalationPath)
-		if hi != hj {
-			return hi < hj
-		}
-		if paths[i].RuleID != paths[j].RuleID {
-			return paths[i].RuleID < paths[j].RuleID
-		}
-		return paths[i].ID < paths[j].ID
-	})
-	if len(paths) > heroCap {
-		paths = paths[:heroCap]
-	}
-	out := make([]HeroChainCard, 0, len(paths))
-	for _, f := range paths {
-		sink := heroSinkSlug(f)
-		out = append(out, HeroChainCard{
-			Title:    f.Title,
-			Severity: f.Severity,
-			Score:    f.Score,
-			Sink:     sink,
-			Summary:  heroChainSummary(f, sink),
-			Hops:     f.EscalationPath,
-			RuleID:   f.RuleID,
-			Anchor:   "finding-" + f.RuleID,
-		})
-	}
-	return out
-}
-
 // heroSinkSlug pulls the "target:<sink>" tag (set by the privesc analyzer) off a finding,
 // falling back to the last hop's destination subject name when the tag is absent. The slug
 // stays in lower_snake form ("cluster_admin", "kube_system_secrets") so callers can switch
@@ -250,7 +183,7 @@ func heroSinkPriority(sink string) int {
 }
 
 // heroSinkLabel renders a sink slug as a human-readable phrase used inside the
-// one-line plain-English summary on each HeroChainCard.
+// one-line plain-English summary of an attack path.
 func heroSinkLabel(sink string) string {
 	switch sink {
 	case string(models.TargetClusterAdmin), "cluster_admin":

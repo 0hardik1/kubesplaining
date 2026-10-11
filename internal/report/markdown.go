@@ -29,29 +29,21 @@ func renderParagraphs(text string) string {
 	return b.String()
 }
 
-// stripMarkdown removes markdown markers (backticks, **bold**) so a string can be
-// rendered into a context that has no markup support — primarily SVG <text> elements
-// in the attack graph. Content stays intact; only the delimiter characters are dropped.
-func stripMarkdown(text string) string {
-	if text == "" {
-		return text
-	}
-	out := strings.ReplaceAll(text, "**", "")
-	out = strings.ReplaceAll(out, "`", "")
-	return out
-}
-
 // renderInlineCode HTML-escapes text and converts the small inline-markdown subset
 // analyzer-supplied finding text uses:
 //
 //	`code`   → <code>
 //	**bold** → <strong>
 //
-// Single newlines outside code spans become <br> for natural line breaks. Mirrors
-// the JS renderInlineHTML in graph_script.go so popup tooltips and the static
-// Findings tab render the same markdown.
+// Single newlines outside code spans become <br> for natural line breaks. Code
+// spans inside bold ("**`system:masters`**") render as code in bold.
 func renderInlineCode(text string) string {
-	escaped := template.HTMLEscapeString(text)
+	return renderInlineEscaped(template.HTMLEscapeString(text))
+}
+
+// renderInlineEscaped applies the inline-markdown subset to already-escaped text.
+// renderInlineCode calls it once, and again for the inside of a bold span.
+func renderInlineEscaped(escaped string) string {
 	var b strings.Builder
 	b.Grow(len(escaped) + 16)
 	for i := 0; i < len(escaped); {
@@ -76,7 +68,7 @@ func renderInlineCode(text string) string {
 				return b.String()
 			}
 			b.WriteString("<strong>")
-			b.WriteString(rest[:end])
+			b.WriteString(renderInlineEscaped(rest[:end]))
 			b.WriteString("</strong>")
 			i += 2 + end + 2
 			continue

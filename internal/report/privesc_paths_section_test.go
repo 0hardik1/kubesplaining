@@ -114,14 +114,17 @@ func TestHTMLReportRendersPrivescPathsTab(t *testing.T) {
 	html := string(htmlBytes)
 
 	mustContain := []string{
-		`data-tab="privesc"`,                              // tab button + section both carry this
-		`id="tabbtn-privesc"`,                             // the tab button
-		`id="tab-privesc"`,                                // the section
-		`Privilege-Escalation Paths`,                      // hero heading
-		`class="pp-card-source"`,                          // a path card rendered
-		`class="pp-card-summary"`,                         // card body rendered
-		`href="#finding-KUBE-PRIVESC-PATH-CLUSTER-ADMIN"`, // deep-link into Findings tab
-		`cluster-admin`,                                   // sink label
+		`data-tab="paths"`,                            // tab button + section both carry this
+		`id="tabbtn-paths"`,                           // the tab button
+		`id="tab-paths"`,                              // the section
+		`data-target="cluster_admin_equivalent"`,      // target picker button
+		`data-target-view="cluster_admin_equivalent"`, // the target's graph + list
+		`class="ap-svg"`,                              // the graph rendered
+		`class="path-row" data-path="0"`,              // a path row rendered
+		`<span class="chain-node" title="ServiceAccount/default/risky">risky</span>`,
+		`href="#finding-KUBE-PRIVESC-PATH-CLUSTER-ADMIN"`,   // deep-link into Findings tab
+		`href="#tab-paths?target=cluster_admin_equivalent"`, // Summary row links to the target
+		`cluster-admin`, // sink label
 	}
 	for _, needle := range mustContain {
 		if !strings.Contains(html, needle) {
@@ -157,7 +160,7 @@ func TestHTMLReportOmitsPrivescTabWhenNoPaths(t *testing.T) {
 	}
 	html := string(htmlBytes)
 
-	for _, needle := range []string{`id="tab-privesc"`, `id="tabbtn-privesc"`} {
+	for _, needle := range []string{`id="tab-paths"`, `id="tabbtn-paths"`} {
 		if strings.Contains(html, needle) {
 			t.Errorf("expected no privesc tab markup when there are no paths, but found %q", needle)
 		}

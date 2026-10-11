@@ -34,7 +34,6 @@ type ModuleSection struct {
 	Summary    Summary
 	Findings   []models.Finding
 	RuleGroups []RuleGroup
-	Entries    []TOCEntry // collapsed one-row-per-RuleID list for the Findings-tab TOC
 }
 
 // RuleGroup collapses all findings sharing a RuleID into a single rendering unit. Each group
@@ -59,25 +58,12 @@ type RuleGroup struct {
 }
 
 // CategorySection groups findings by RiskCategory for the "By Attack Theme" panel; it does not carry the findings themselves.
-// CSSKey is the short heatmap-style key (privesc | lateral | exfil | infra | evasion) used for filter matching.
+// CSSKey is the short key (privesc | lateral | exfil | infra | evasion) used for filter matching.
 type CategorySection struct {
 	Key     string
 	CSSKey  string
 	Label   string
 	Summary Summary
-	Entries []TOCEntry // collapsed one-row-per-RuleID list for the Findings-tab TOC
-}
-
-// TOCEntry is one row in the Findings-tab table-of-contents — a single rule, the highest
-// severity it fired at within its group, and the number of finding instances it produced.
-// Anchor points at the deterministic per-rule anchor (id="finding-<RuleID>") that the
-// first occurrence of each rule already carries on its <article> card.
-type TOCEntry struct {
-	RuleID   string
-	Title    string
-	Severity models.Severity
-	Anchor   string
-	Count    int
 }
 
 // NarrativeCard is an auto-detected attack chain — a short plain-English walkthrough of how specific
@@ -95,151 +81,6 @@ type NarrativeCard struct {
 type NarrativeStep struct {
 	Text  string
 	Items []string
-}
-
-// HeatmapCell is one cell of the Resource × Category heatmap. Level is 0..5 for CSS intensity class.
-// Resource is duplicated on every cell to keep the template flat — clicking a cell needs both the
-// row's resource and the column's category to set Findings-tab filter chips.
-type HeatmapCell struct {
-	Count    int
-	CatClass string // privesc | lateral | exfil | infra | evasion
-	Level    int    // 0..5
-	Resource string // resourceDisplay() of the row, copied for click-handler convenience
-}
-
-// HeatmapRow is one row of the Resource × Category heatmap.
-type HeatmapRow struct {
-	Label    string
-	SevClass string // crit | high | med  — derived from the highest-severity finding on this resource
-	SevLabel string // CRIT | HIGH | MED
-	Total    int
-	Cells    []HeatmapCell
-}
-
-// HeatmapCategory is a column header in the heatmap.
-type HeatmapCategory struct {
-	Key   string // privesc | lateral | exfil | infra | evasion
-	Label string
-}
-
-// AttackGraph is the 3-column flow diagram shown at the top of the report: entry points → abused capability → impact.
-// All coordinates are precomputed in Go so the template can emit SVG without any layout logic.
-type AttackGraph struct {
-	Width  int
-	Height int
-	Lanes  [3]GraphLane
-	Nodes  []GraphNode
-	Edges  []GraphEdge
-	// Truncated reports whether the capability set was clipped to fit MaxCaps; the template
-	// uses Shown / TotalCaps to render a notice above the diagram explaining the slate.
-	Truncated bool
-	Shown     int
-	TotalCaps int
-}
-
-// GraphLane labels one of the three columns at the top of the attack graph.
-// X is the lane's left edge (matches the X of nodes in that lane). LabelX/LabelW
-// position the centered header pill — they are pre-computed so the template can
-// emit `text-anchor=middle` and snug the pill width to its label.
-type GraphLane struct {
-	X      int
-	Label  string
-	LabelX int
-	LabelW int
-}
-
-// GraphNode is a rendered rectangle in the attack graph. Kind is "entry" | "capability" | "impact".
-// Text content lives in Lines so the template can emit pre-wrapped <text> elements without doing
-// any layout work — Height is grown to match the wrapped line count. AriaLabel is the per-node
-// accessible name announced by screen readers; without it every <g> would share a generic label
-// like "Entry point" / "Abused capability" / "Impact" and be indistinguishable while tabbing.
-//
-// External tags entry nodes whose Subject is a non-Kubernetes identity (a cloud-IAM
-// principal: AWS IAM role / user surfaced by the cloud analyzer or by Unit 4's privesc
-// graph external nodes). The template uses it to switch the stroke color and shape so
-// the AWS-origin attack-paths visually stand out from RBAC subjects; the JS payload
-// carries it forward as an attribute so the side-panel filter can scope by external.
-type GraphNode struct {
-	ID        string
-	Kind      string
-	X         int
-	Y         int
-	Width     int
-	Height    int
-	SevClass  string // crit | high | med
-	External  bool   // true when this entry node represents an external (cloud-IAM) identity
-	AriaLabel string
-	Lines     []GraphTextLine
-}
-
-// GraphTextLine is one rendered <text> baseline inside a node, positioned relative to the node origin.
-type GraphTextLine struct {
-	Class   string // CSS class: node-title | node-sub | node-meta | rule-id | impact-title
-	Text    string
-	OffsetX int
-	OffsetY int
-}
-
-// GraphEdge is a rendered bezier path in the attack graph.
-type GraphEdge struct {
-	ID    string // stable ID of the form "edge-<fromNodeID>-<toNodeID>" — used by the JS layer.
-	Class string // crit | high | med
-	D     string
-}
-
-// GraphPayload is the parallel detail-only payload that the inline JSON block embeds for the
-// JS interactivity layer. It is kept separate from AttackGraph (which stays cosmetic — only
-// what the SVG template needs) so multi-paragraph educational HTML doesn't bloat per-element
-// attributes.
-type GraphPayload struct {
-	Nodes      []GraphNodeDetail             `json:"Nodes"`
-	Edges      []GraphEdgeDetail             `json:"Edges"`
-	Glossary   map[string]GlossaryEntry      `json:"Glossary"`
-	Techniques map[string]TechniqueExplainer `json:"Techniques"`
-	Categories map[string]CategoryExplainer  `json:"Categories"`
-}
-
-// GraphNodeDetail is the per-node detail payload — title, severity, glossary key, rule
-// description, remediation, references, hop chain, and the IDs of edges this node connects
-// to. Wired up to the SVG <g data-node-id> elements client-side.
-type GraphNodeDetail struct {
-	ID           string    `json:"ID"`
-	Kind         string    `json:"Kind"`     // entry | capability | impact
-	Severity     string    `json:"Severity"` // crit | high | med
-	Title        string    `json:"Title"`
-	Subtitle     string    `json:"Subtitle,omitempty"`
-	GlossaryKey  string    `json:"GlossaryKey,omitempty"`  // entry nodes
-	RuleID       string    `json:"RuleID,omitempty"`       // capability nodes
-	TechniqueKey string    `json:"TechniqueKey,omitempty"` // capability nodes
-	Description  string    `json:"Description,omitempty"`  // capability nodes
-	Remediation  string    `json:"Remediation,omitempty"`  // capability nodes
-	References   []string  `json:"References,omitempty"`   // capability nodes
-	Hops         []HopView `json:"Hops,omitempty"`         // privesc-PATH capability nodes
-	EdgeIDs      []string  `json:"EdgeIDs,omitempty"`      // edges incident on this node
-	EntryKind    string    `json:"EntryKind,omitempty"`    // Subject | Resource (entry filter)
-	RiskCategory string    `json:"RiskCategory,omitempty"` // impact nodes
-}
-
-// GraphEdgeDetail describes one bezier edge for the JS layer.
-type GraphEdgeDetail struct {
-	ID           string `json:"ID"`
-	From         string `json:"From"`
-	To           string `json:"To"`
-	Class        string `json:"Class"` // crit | high | med
-	TechniqueKey string `json:"TechniqueKey,omitempty"`
-	ActionLabel  string `json:"ActionLabel,omitempty"` // human-readable verb (e.g., "abuses", "leads to")
-}
-
-// HopView is one walkthrough step for a privesc-PATH finding — pre-rendered so the JS does
-// no derivation. Step is 1-indexed for display.
-type HopView struct {
-	Step         int    `json:"Step"`
-	From         string `json:"From"`
-	To           string `json:"To"`
-	Action       string `json:"Action"`
-	TechniqueKey string `json:"TechniqueKey"`
-	Permission   string `json:"Permission,omitempty"`
-	Gains        string `json:"Gains,omitempty"`
 }
 
 // LeastPrivilegeSection feeds the "Least Privilege" HTML tab. It surfaces every finding
@@ -375,23 +216,6 @@ type ComplianceControlRow struct {
 	Findings    []models.Finding
 }
 
-// HeroChainCard is one above-the-fold "critical attack chain" entry rendered at the very
-// top of the HTML report (STRATEGY.md:151, plan slot W1 #4). Each card carries the chain's
-// originating Subject, the sink it reaches (cluster_admin, kube_system_secrets, ...), the
-// full hop list, and a one-line plain-English summary. Populated by buildHeroChains in
-// summary.go; the Wave 0 stub returns nil so the {{ if .HeroChains }} template gate keeps
-// the section absent until Wave 1 fills it in.
-type HeroChainCard struct {
-	Title    string
-	Severity models.Severity
-	Score    float64
-	Sink     string // e.g. "cluster_admin", "kube_system_secrets"
-	Summary  string // one-line plain-English narrative
-	Hops     []models.EscalationHop
-	RuleID   string
-	Anchor   string // anchor target inside the Findings tab
-}
-
 // TopFix is one "Top 5 fixes" row computed from finding count × score reduction
 // (STRATEGY.md:162, plan slot W1 #5). Wave 1 will group findings by Subject, sum
 // scores, and pick the highest-impact role / binding deletion. Populated by
@@ -444,10 +268,8 @@ type SubjectCapabilityCard struct {
 	HighestSeverity models.Severity
 }
 
-// PrivescPathsSection feeds the "Privilege-Escalation Paths" HTML tab — the
-// exhaustive complement to the above-the-fold hero chains (buildHeroChains caps
-// at 3) and the interactive Attack Graph (whose capability slate is capped to
-// fit the SVG). Every KUBE-PRIVESC-PATH-* finding the engine emits is listed
+// PrivescPathsSection feeds the "Attack paths" HTML tab and the Summary tab's
+// target table. Every KUBE-PRIVESC-PATH-* finding the engine emits is listed
 // here, grouped by the sink it reaches so an operator can read each chain end to
 // end. Populated by buildPrivescPaths in privesc_paths_section.go; the template
 // gates the whole tab on len(Groups) > 0.
@@ -463,11 +285,14 @@ type PrivescPathsSection struct {
 // header to the worst severity in the bucket. Cards are pre-sorted worst-first.
 type PrivescSinkGroup struct {
 	SinkSlug  string
-	SinkLabel string
+	SinkLabel string // phrase for prose ("the system:masters group")
+	SinkTitle string // short name for the target picker and graph ("system:masters")
+	Blurb     string // one sentence on what reaching the target gives an attacker
 	SevClass  string // crit | high | med | low | info
 	Count     int
 	Summary   Summary
 	Cards     []PrivescPathCard
+	Graph     SinkGraph // per-target diagram drawn above the cards
 }
 
 // PrivescPathCard is one KUBE-PRIVESC-PATH-* chain. Source is the originating
@@ -476,14 +301,22 @@ type PrivescSinkGroup struct {
 // static Findings tab uses, so the per-hop chain cards look identical. Anchor
 // deep-links into the Findings tab's rule card for the full remediation.
 type PrivescPathCard struct {
-	Source    string
-	SinkLabel string
-	Severity  models.Severity
-	SevClass  string // crit | high | med | low | info
-	Score     float64
-	HopCount  int
-	Summary   string
-	Hops      []models.EscalationHop
+	// Index is the card's position in its group. Graph nodes and edges list the
+	// indexes of the paths through them, so the JS can match a node to its rows.
+	Index int
+	Steps []PathStep // compact chain for the row header
+	// Terminal names the specific member of a family target the path ends at
+	// (the IAM role, the namespace); empty when the target is one thing.
+	Terminal     string
+	TerminalFull string
+	Source       string
+	SinkLabel    string
+	Severity     models.Severity
+	SevClass     string // crit | high | med | low | info
+	Score        float64
+	HopCount     int
+	Summary      string
+	Hops         []models.EscalationHop
 	// AltHops is a route to the same sink that survives cutting the binding named by
 	// Hops[0]. Empty means no such route was found within the searched depth, which is
 	// not the same as the cut being sufficient: a bounded search cannot establish that.
@@ -508,36 +341,30 @@ type htmlReportData struct {
 	LeastPrivilege LeastPrivilegeSection
 	Compliance     ComplianceSection
 	// DefaultTab is the data-active-tab attribute on <body> when the report loads.
-	// Empty preserves the legacy default (attack). --least-privilege-only sets
-	// "leastprivilege".
+	// Empty means the Summary tab. --least-privilege-only sets "leastprivilege".
 	DefaultTab string
 	// LeastPrivilegeOnly is set when the CLI ran with --least-privilege-only. The
-	// template uses it to hide the Attack Paths / Risk Overview / Findings tab
-	// buttons and the recon panel, leaving only the Least Privilege tab visible.
+	// template uses it to hide every tab except Least Privilege, plus the recon panel.
 	LeastPrivilegeOnly bool
 	// UsageInfo carries the audit-log window summary rendered into the Least
 	// Privilege tab header. nil when no --audit-log was supplied.
 	UsageInfo *UsageInfo
 	// MaxPrivescDepth is the --max-privesc-depth the scan ran with, from
-	// Options.MaxPrivescDepth. Zero hides the search-depth line on the
-	// Privilege-Escalation Paths tab, matching how the field's zero value is a no-op
-	// everywhere upstream of it.
+	// Options.MaxPrivescDepth. Zero hides the search-depth line on the Attack paths
+	// tab, matching how the field's zero value is a no-op everywhere upstream of it.
 	MaxPrivescDepth int
 
-	// Modern-dashboard fields — all derived from Findings so any cluster renders.
-	RiskIndex   int
-	RiskLevel   string        // LOW | MODERATE | HIGH | CRITICAL
-	GaugeDash   string        // "arcLen gapLen" for stroke-dasharray (circumference = 2π·56 ≈ 351.86)
-	GaugeColor  string        // hex for gauge stroke, severity-tinted
-	Headline    string        // data-driven h1 ("2 independent paths to full cluster takeover", etc.)
-	Summaries   template.HTML // short prose under the h1; pre-escaped by buildHeadline so template renders markup
-	Narratives  []NarrativeCard
-	HeatCats    []HeatmapCategory
-	HeatRows    []HeatmapRow
-	Graph       AttackGraph
-	GraphJSON   template.JS       // JSON-marshaled GraphPayload, rendered into <script type="application/json">
-	GraphScript template.JS       // Inline JS that powers the interactive graph (loaded from kpGraphScript const)
-	AnchorByID  map[string]string // Finding.ID → "finding-<RuleID>" for the first finding of each rule
+	// Dashboard fields, all derived from Findings so any cluster renders.
+	RiskIndex  int
+	RiskLevel  string        // LOW | MODERATE | HIGH | CRITICAL
+	Headline   string        // data-driven h1 ("2 independent paths to full cluster takeover", etc.)
+	Summaries  template.HTML // short prose under the h1; pre-escaped by buildHeadline so template renders markup
+	Narratives []NarrativeCard
+	// GlossaryJSON is the Title/Short half of the Glossary, embedded as JSON for the
+	// hover definitions on <code class="gloss"> terms.
+	GlossaryJSON template.JS
+	Script       template.JS       // inline JS for tabs, filters, the path graph, and glossary hovers
+	AnchorByID   map[string]string // Finding.ID → "finding-<RuleID>" for the first finding of each rule
 
 	// Admission carries the engine's admission-aware reweight summary. Empty Mode means
 	// no admission-aware step ran; the template gates the banner on Mode.
@@ -548,23 +375,12 @@ type htmlReportData struct {
 	// .Truncation.Truncated.
 	Truncation models.TruncationInfo
 
-	// Wave 0 stub fields for new report sections. Each is empty until Wave 1
-	// fills in the corresponding builder (see plan slots W1 #4, #5, #6, #7).
-	// The HTML template gates each section on its slice being non-empty, so
-	// reports stay byte-identical to pre-Wave 0 until the builders are wired.
-	HeroChains      []HeroChainCard         // "Critical attack chains" hero panel (W1 #4)
-	TopFixes        []TopFix                // "Top 5 fixes" panel (W1 #5)
-	SubjectCapCards []SubjectCapabilityCard // per-Subject capability cards (W1 #7)
+	TopFixes        []TopFix                // "Fix these first" list on the Summary tab
+	SubjectCapCards []SubjectCapabilityCard // per-subject capability cards on the Least Privilege tab
 
-	// PrivescPaths feeds the "Privilege-Escalation Paths" tab — every
-	// KUBE-PRIVESC-PATH-* chain grouped by sink. Zero-value (empty Groups) when
-	// the snapshot has no privesc paths; both the tab button and the section
-	// gate on len(.PrivescPaths.Groups) > 0.
+	// PrivescPaths feeds the "Attack paths" tab: every KUBE-PRIVESC-PATH-* chain
+	// grouped by the target it reaches, each group with its own laid-out graph.
+	// Zero-value (empty Groups) when the snapshot has no privesc paths; both the
+	// tab button and the section gate on len(.PrivescPaths.Groups) > 0.
 	PrivescPaths PrivescPathsSection
-
-	// EscalationGraph feeds the "Escalation graph" tab — the whole escalation
-	// graph (union of every KUBE-PRIVESC-PATH-* hop chain) as one interactive
-	// node-link diagram. Zero-value (empty Nodes) when the snapshot has no privesc
-	// paths; both the tab button and the section gate on len(.EscalationGraph.Nodes) > 0.
-	EscalationGraph EscalationGraphView
 }
