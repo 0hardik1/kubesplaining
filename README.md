@@ -8,11 +8,9 @@
 
 Kubesplaining is an open-source Kubernetes security assessment CLI that reads a live cluster or a captured snapshot and tells you exactly how an attacker can move through it. Unlike scanners that stop at "this resource is misconfigured," it builds a multi-hop RBAC privilege-escalation graph from every non-system subject to four cluster-takeover sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`) and renders each chain with the actual verbs, evidence, and remediation. Outputs are risk-prioritized HTML, JSON, CSV, and SARIF reports for human review, GitHub code scanning, or CI delta gates.
 
-<video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/b286b407-391a-4495-be52-2841a77a2b9a" controls width="100%"></video>
 
-![Attack paths tab: one graph per escalation target, hover to trace a chain](docs/media/attack-paths-demo.gif)
-
-*The Attack paths tab of the HTML report: select a target, then hover an identity or an arrow to trace its chain.*
+*A tour of the HTML report: the Summary tab, the Attack paths tab with hover tracing and pinning, and the Findings tab.*
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
