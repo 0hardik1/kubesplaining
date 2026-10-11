@@ -295,8 +295,13 @@
     .ap-elabel text { fill: var(--text); font-size: 10.5px; font-weight: 600; }
     /* Entrance: boxes slide in column by column each time a target is opened, edges fade in after them. */
     .js .target-view.is-active .ap-in { animation: ap-in 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-    .ap-node.c1 .ap-in { animation-delay: 90ms; } .ap-node.c2 .ap-in { animation-delay: 180ms; } .ap-node.c3 .ap-in { animation-delay: 270ms; }
-    .ap-node.c4 .ap-in { animation-delay: 360ms; } .ap-node.c5 .ap-in { animation-delay: 450ms; } .ap-node.c6 .ap-in { animation-delay: 540ms; }
+    /* The delays carry the same prefix as the shorthand above, which would otherwise reset them to 0s. */
+    .js .target-view.is-active .ap-node.c1 .ap-in { animation-delay: 90ms; }
+    .js .target-view.is-active .ap-node.c2 .ap-in { animation-delay: 180ms; }
+    .js .target-view.is-active .ap-node.c3 .ap-in { animation-delay: 270ms; }
+    .js .target-view.is-active .ap-node.c4 .ap-in { animation-delay: 360ms; }
+    .js .target-view.is-active .ap-node.c5 .ap-in { animation-delay: 450ms; }
+    .js .target-view.is-active .ap-node.c6 .ap-in { animation-delay: 540ms; }
     .js .target-view.is-active .ap-edges, .js .target-view.is-active .ap-labels { animation: ap-fade 0.6s 0.35s both; }
     @keyframes ap-in { from { opacity: 0; transform: translateX(-14px); } }
     @keyframes ap-fade { from { opacity: 0; } }
