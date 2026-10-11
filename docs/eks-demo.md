@@ -89,7 +89,7 @@ Verify any phase in the AWS Console: EKS for the cluster, IAM for the role, S3 f
 
 ## Reading the report
 
-After `make eks-demo-scan` finishes, open `.tmp/eks-demo-report/report.html` in a browser. The **Findings** tab lists all five rule IDs from the table above. The **Attack Graph** tab shows both chains; switch between them in the path dropdown.
+After `make eks-demo-scan` finishes, open `.tmp/eks-demo-report/report.html` in a browser. The **Findings** tab lists all five rule IDs from the table above. The **Attack paths** tab shows both chains. Each chain ends at a different target, so use the target buttons at the top of the tab: **Node root** shows chain A, and **AWS IAM role** and **system:masters** show chain B.
 
 Inspecting the JSON directly is often faster for spot-checking:
 

@@ -1,13 +1,12 @@
-// Package report — builder for the "Privilege-Escalation Paths" HTML tab.
+// Package report: builder for the "Attack paths" HTML tab.
 //
 // The privesc graph the engine computes already emits one KUBE-PRIVESC-PATH-*
 // finding per (source subject, sink) pair, each carrying the full ordered hop
-// chain on Finding.EscalationPath. buildHeroChains surfaces the worst 3 of these
-// above the fold and the interactive Attack Graph draws a capped capability
-// slate; this tab is the exhaustive, readable complement: every path, grouped by
-// the sink it reaches, sorted worst-first. The sink-priority and label helpers
-// (heroSinkSlug / heroSinkLabel / heroSinkPriority / heroChainSummary) are shared
-// with the hero panel so both views speak about sinks identically.
+// chain on Finding.EscalationPath. This tab groups every path by the target it
+// reaches, sorted worst-first, and gives each target one graph (attack_paths.go)
+// plus a list of its paths. The Summary tab's "What an attacker can reach" table
+// reads the same groups. The sink-priority and label helpers (heroSinkSlug /
+// heroSinkLabel / heroSinkPriority / heroChainSummary) live in narratives.go.
 package report
 
 import (
@@ -64,19 +63,24 @@ func buildPrivescPaths(findings []models.Finding) PrivescPathsSection {
 		})
 
 		cards := make([]PrivescPathCard, 0, len(group))
-		for _, f := range group {
+		for i, f := range group {
+			terminal, terminalFull := pathTerminal(sink, f)
 			cards = append(cards, PrivescPathCard{
-				Source:    subjectDisplay(f.Subject),
-				SinkLabel: heroSinkLabel(sink),
-				Severity:  f.Severity,
-				SevClass:  severityClass(f.Severity),
-				Score:     f.Score,
-				HopCount:  len(f.EscalationPath),
-				Summary:   heroChainSummary(f, sink),
-				Hops:      f.EscalationPath,
-				AltHops:   f.AlternateEscalationPath,
-				RuleID:    f.RuleID,
-				Anchor:    "finding-" + f.RuleID,
+				Index:        i,
+				Steps:        buildPathSteps(f.EscalationPath),
+				Terminal:     terminal,
+				TerminalFull: terminalFull,
+				Source:       subjectDisplay(f.Subject),
+				SinkLabel:    heroSinkLabel(sink),
+				Severity:     f.Severity,
+				SevClass:     severityClass(f.Severity),
+				Score:        f.Score,
+				HopCount:     len(f.EscalationPath),
+				Summary:      heroChainSummary(f, sink),
+				Hops:         f.EscalationPath,
+				AltHops:      f.AlternateEscalationPath,
+				RuleID:       f.RuleID,
+				Anchor:       "finding-" + f.RuleID,
 			})
 		}
 
@@ -89,10 +93,13 @@ func buildPrivescPaths(findings []models.Finding) PrivescPathsSection {
 		groups = append(groups, PrivescSinkGroup{
 			SinkSlug:  sink,
 			SinkLabel: heroSinkLabel(sink),
+			SinkTitle: sinkTitle(sink),
+			Blurb:     sinkBlurb(sink),
 			SevClass:  sevClass,
 			Count:     len(group),
 			Summary:   BuildSummary(group),
 			Cards:     cards,
+			Graph:     buildSinkGraph(sink, sinkTitle(sink), group),
 		})
 	}
 

@@ -9,9 +9,10 @@ import _ "embed"
 //go:embed assets/report.html.tmpl
 var htmlTemplate string
 
-// kpGraphScript is the JavaScript that powers the interactive attack graph in the HTML
-// report. Kept in a sibling .js file for editor support; injected via template.JS in
-// BuildHTMLData so the report stays self-contained.
+// reportScript is the JavaScript for the HTML report: tab routing, findings filters,
+// the attack-path graph highlights, and glossary hovers. Kept in a sibling .js file for
+// editor support; injected via template.JS in BuildHTMLData so the report stays
+// self-contained.
 //
-//go:embed assets/graph.js
-var kpGraphScript string
+//go:embed assets/report.js
+var reportScript string

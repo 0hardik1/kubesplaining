@@ -321,7 +321,7 @@ The module is **opt-in via `--audit-log`**. A plain `kubesplaining scan` (no aud
 | --- | --- | --- |
 | `kubesplaining scan` / `make scan` | No | Same behavior as before; module silently no-ops. |
 | `scan --audit-log <path>` | Used if supplied | LP findings appear alongside the regular findings. |
-| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Attack Paths / Risk Overview / Findings tabs are hidden. |
+| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Summary / Attack paths / Findings / Compliance tabs are hidden. |
 | `make scan-lp AUDIT_LOG=<path>` | **Yes** (Makefile errors if missing) | Same as the focused mode above; convenience target. |
 
 ### Quick start
