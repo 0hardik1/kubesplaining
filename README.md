@@ -10,9 +10,7 @@ Kubesplaining is an open-source Kubernetes security assessment CLI that reads a 
 
 <video src="https://github.com/user-attachments/assets/b32aa71e-4220-437d-8676-2a58a466a5e1" controls width="100%"></video>
 
-![Attack paths tab: one graph per escalation target, hover to trace a chain](docs/media/attack-paths-demo.gif)
-
-*The Attack paths tab of the HTML report: select a target, then hover an identity or an arrow to trace its chain.*
+*A tour of the HTML report: the Summary tab, the Attack paths tab with hover tracing and pinning, and the Findings tab.*
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
