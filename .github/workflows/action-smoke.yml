@@ -37,10 +37,10 @@ jobs:
         uses: actions/checkout@v7
 
       # Build the container image locally from the in-tree Dockerfile and tag
-      # it as the `:main` reference the action expects. Lets the smoke test
-      # exercise the action end-to-end before a tagged release has pushed the
-      # image to GHCR (the action's pull step skips when the image already
-      # exists locally).
+      # it `:main`. The registry carries release tags and `latest` only, so
+      # this tag can only resolve to the local build: the smoke test then
+      # exercises the code in this checkout, not a released image (the
+      # action's pull step skips when the image already exists locally).
       - name: Build kubesplaining image (local)
         shell: bash
         run: |
@@ -59,8 +59,8 @@ jobs:
         # released tag.
         uses: ./
         with:
-          # Pinned to `main` until slot #1 (.goreleaser image push) lands and
-          # we can bump to `:v1` or `:latest`.
+          # Select the image built in the step above. The action default is
+          # `latest`, which would pull the last release instead.
           version: main
           input-file: testdata/snapshots/minimal-risky.json
           severity-threshold: low
@@ -93,6 +93,28 @@ jobs:
             fi
           done
           echo "All expected artifacts present."
+
+      # README.md documents a plain `docker run` form: the caller's uid, and
+      # the working directory mounted to receive the report. Run that form
+      # against the fixture, so a change to the image user or entrypoint
+      # cannot break the documented command without a red check. The
+      # kubeconfig mount is not exercised because the fixture needs no cluster.
+      - name: Run the documented docker form against the fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/work" -w /work \
+            ghcr.io/0hardik1/kubesplaining:main \
+            scan --input-file testdata/snapshots/minimal-risky.json \
+            --output-dir ./kubesplaining-docker-report
+          for f in report.html findings.json; do
+            if [ ! -s "./kubesplaining-docker-report/${f}" ]; then
+              echo "::error::documented docker form wrote no ${f}"
+              exit 1
+            fi
+          done
 
       - name: Upload smoke-test report as workflow artifact
         if: always()

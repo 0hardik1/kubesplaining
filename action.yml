@@ -6,10 +6,10 @@
 # `docker run`: every flag the underlying CLI accepts can still be passed
 # through `--input-file`, kubeconfig, or per-input mappings below.
 #
-# Pinning policy: `version` defaults to `latest` once images are published, but
-# while slot #1 (.goreleaser image push) is still in flight we recommend pinning
-# to `main` (or a Git SHA) so callers don't surprise-update. After v1.0.0 ships,
-# bump the README snippet to `:v1`.
+# Pinning policy: `version` is a GHCR image tag and defaults to `latest`, which
+# the release pipeline moves on every release. Image tags carry no `v` prefix
+# (`1.3.0`, not `v1.3.0`). Pin `version` to a release tag when you need a scan
+# that does not change between runs.
 name: kubesplaining
 description: >-
   Kubernetes security assessment with multi-hop RBAC privilege-escalation
@@ -24,10 +24,10 @@ branding:
 inputs:
   version:
     description: >-
-      GHCR image tag to pull. Defaults to `main` while the release pipeline is
-      bootstrapping; switch to `latest` or a pinned `vX.Y.Z` after v1.0.0.
+      GHCR image tag to pull. Defaults to `latest`. To pin a release, use the
+      bare version with no `v` prefix, for example `1.3.0`.
     required: false
-    default: main
+    default: latest
   kubeconfig:
     description: >-
       Base64-encoded kubeconfig for live-cluster scans. Leave empty when using
@@ -65,7 +65,7 @@ inputs:
   upload-sarif:
     description: >-
       When true, the SARIF result is uploaded to GitHub code scanning via
-      `github/codeql-action/upload-sarif@v3`. Requires the calling workflow to
+      `github/codeql-action/upload-sarif@v4`. Requires the calling workflow to
       grant `security-events: write` permission.
     required: false
     default: 'true'
@@ -111,8 +111,8 @@ runs:
     # are limited to scan logic (and so the pull is logged separately, which
     # is easier to debug than an opaque `docker run` failure). If the image
     # already exists locally (for instance, the smoke workflow builds it from
-    # the in-tree Dockerfile so the action can be exercised before a release
-    # has published the registry tag) we skip the pull.
+    # the in-tree Dockerfile and tags it `main`, a tag the registry does not
+    # carry) we skip the pull.
     - name: Pull kubesplaining image
       shell: bash
       run: |
