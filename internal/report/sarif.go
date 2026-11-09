@@ -171,6 +171,16 @@ func sarifResults(findings []models.Finding) []sarifResult {
 			}
 			result.Properties["mitre_attack"] = ids
 		}
+		// The hop chain of an attack path. Without it a SARIF consumer sees
+		// only the title ("X can reach cluster-admin in 3 hops") and not the
+		// route. The keys follow the snake_case of the other properties and
+		// of findings.json.
+		if len(finding.EscalationPath) > 0 {
+			result.Properties["escalation_path"] = finding.EscalationPath
+		}
+		if len(finding.AlternateEscalationPath) > 0 {
+			result.Properties["alternate_escalation_path"] = finding.AlternateEscalationPath
+		}
 		if finding.RemediationHint != nil {
 			result.Properties["remediation_hint"] = finding.RemediationHint
 		}

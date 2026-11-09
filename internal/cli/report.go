@@ -82,7 +82,9 @@ func NewReportCmd() *cobra.Command {
 			}
 			filtered = applyComplianceFilter(filtered, complianceSlugs)
 
-			filtered, truncation := report.Truncate(filtered, maxFindings, allFindings)
+			// As in scan: the cap shortens report.html only, and the other
+			// formats get every finding that passed the filters above.
+			listed, truncation := report.SelectForHTML(filtered, maxFindings, allFindings)
 
 			snapshot := models.NewSnapshot()
 			snapshot.Metadata.ClusterName = "report-regeneration"
@@ -115,13 +117,15 @@ func NewReportCmd() *cobra.Command {
 				}
 			}
 
-			written, err := report.WriteWithAdmission(outputDir, outputFormats, snapshot, filtered, admissionSummary, truncation)
+			warnIfSampledFindings(cmd.ErrOrStderr(), inputFile)
+
+			written, err := report.WriteWithOptions(outputDir, outputFormats, snapshot, filtered, admissionSummary, truncation, report.Options{HTMLFindings: listed})
 			if err != nil {
 				return err
 			}
 
 			summary := report.BuildSummary(filtered)
-			if err := printScanResults(cmd.OutOrStdout(), written, summary); err != nil {
+			if err := printScanResults(cmd.OutOrStdout(), written, summary, report.AttackPathOverviews(filtered)); err != nil {
 				return err
 			}
 			printTruncationNotice(cmd.ErrOrStderr(), truncation)
@@ -137,8 +141,8 @@ func NewReportCmd() *cobra.Command {
 	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
 	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringVar(&metadataFile, "metadata-file", "", "Optional path to scan metadata JSON")
-	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the regenerated report to the top N findings by severity/score; 0 disables.")
-	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the regenerated report; overrides --max-findings")
+	cmd.Flags().IntVar(&maxFindings, "max-findings", 0, "Shorten the regenerated report.html: list every attack path plus the top N of the other findings by severity/score. 0, the default, lists every finding. JSON, CSV, and SARIF output always get every finding.")
+	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "List every finding in the regenerated report.html. This is the default; the flag overrides --max-findings and stays for scripts that pass it.")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
 	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Preserve structured remediation hints in the regenerated report. Off by default; pass the flag when regenerating a scan that was run with --remediation-patches.")
 

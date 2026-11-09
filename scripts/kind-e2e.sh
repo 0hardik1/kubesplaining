@@ -152,49 +152,144 @@ cat > "${AUDIT_LOG}" <<EOF
 EOF
 ok "wrote ${AUDIT_LOG} (3 events)"
 
-step "Running kubesplaining scan (default --max-findings=20)"
+step "Running kubesplaining scan (default flags)"
 # Use the default "standard" exclusions preset so the e2e mirrors how users run
 # the tool: built-in kube-system / system:* / kubeadm:* noise is suppressed.
-# This invocation uses default flags so the e2e demonstrates the user-facing
-# default truncation behavior. Rule-ID coverage assertions further down run
-# against a separate --all-findings scan into .tmp/e2e-report-full.
+# This invocation uses default flags so the e2e demonstrates what a first run
+# gives a user. Rule-ID coverage assertions further down run against a separate
+# scan into .tmp/e2e-report-full.
 SCAN_LOG="${ROOT_DIR}/.tmp/e2e-scan.log"
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --audit-log "${AUDIT_LOG}" \
   --output-dir "${ROOT_DIR}/.tmp/e2e-report" \
-  --output-format html,json,csv | tee "${SCAN_LOG}" | prefix_ok
+  --output-format html,json,csv,sarif | tee "${SCAN_LOG}" | prefix_ok
 
-step "Verifying default truncation behavior"
-# The fixture deliberately produces > 20 findings, so the default cap must fire.
-TRUNC_SIDECAR="${ROOT_DIR}/.tmp/e2e-report/truncation-info.json"
-if [[ ! -f "${TRUNC_SIDECAR}" ]]; then
-  echo "missing: truncation-info.json should exist when default --max-findings=20 cap fires" >&2
+step "Verifying the default run cuts nothing"
+# --max-findings defaults to 0, so a first run lists every finding in every
+# output, report.html included, and writes no truncation-info.json. The fixture
+# deliberately produces far more than 20 findings, so a default that cuts again
+# shows up here.
+DEFAULT_DIR="${ROOT_DIR}/.tmp/e2e-report"
+if [[ -f "${DEFAULT_DIR}/truncation-info.json" ]]; then
+  echo "a default run must not write truncation-info.json: $(cat "${DEFAULT_DIR}/truncation-info.json")" >&2
   exit 1
 fi
-if ! rg -q '"truncated":\s*true' "${TRUNC_SIDECAR}"; then
+DEFAULT_TOTAL="$(sed -n 's/^findings: total=\([0-9][0-9]*\) .*/\1/p' "${SCAN_LOG}" | head -n1)"
+if [[ -z "${DEFAULT_TOTAL}" || "${DEFAULT_TOTAL}" -le 20 ]]; then
+  echo "expected the counts line to report more than 20 findings, got: $(grep -m1 '^findings:' "${SCAN_LOG}")" >&2
+  exit 1
+fi
+DEFAULT_FINDING_COUNT="$(jq 'length' "${DEFAULT_DIR}/findings.json")"
+if [[ "${DEFAULT_FINDING_COUNT}" != "${DEFAULT_TOTAL}" ]]; then
+  echo "expected findings.json to hold all ${DEFAULT_TOTAL} findings, got ${DEFAULT_FINDING_COUNT}" >&2
+  exit 1
+fi
+DEFAULT_SARIF_COUNT="$(jq '.runs[0].results | length' "${DEFAULT_DIR}/findings.sarif")"
+if [[ "${DEFAULT_SARIF_COUNT}" != "${DEFAULT_TOTAL}" ]]; then
+  echo "expected findings.sarif to hold all ${DEFAULT_TOTAL} findings, got ${DEFAULT_SARIF_COUNT}" >&2
+  exit 1
+fi
+DEFAULT_PATH_COUNT="$(jq '[.[] | select(.rule_id | startswith("KUBE-PRIVESC-PATH-"))] | length' "${DEFAULT_DIR}/findings.json")"
+if [[ "${DEFAULT_PATH_COUNT}" -lt 1 ]]; then
+  echo "expected the fixture to produce attack paths, findings.json has ${DEFAULT_PATH_COUNT}" >&2
+  exit 1
+fi
+if ! grep -q "^attack paths: total=${DEFAULT_PATH_COUNT} " "${SCAN_LOG}"; then
+  echo "expected the scan output to list all ${DEFAULT_PATH_COUNT} attack paths, got: $(grep -m1 '^attack paths:' "${SCAN_LOG}")" >&2
+  exit 1
+fi
+if rg -q 'class="truncation-banner"' "${DEFAULT_DIR}/report.html"; then
+  echo "the default HTML report lists every finding and must not render the truncation-banner div" >&2
+  exit 1
+fi
+if ! rg -q 'id="tabbtn-paths"' "${DEFAULT_DIR}/report.html"; then
+  echo "expected the default HTML report to show the Attack paths tab" >&2
+  exit 1
+fi
+ok "default run: report.html, JSON, and SARIF hold all ${DEFAULT_TOTAL} findings (${DEFAULT_PATH_COUNT} attack paths)"
+
+step "Running kubesplaining scan --max-findings 20 (short HTML report)"
+CAPPED_DIR="${ROOT_DIR}/.tmp/e2e-report-capped"
+CAPPED_LOG="${ROOT_DIR}/.tmp/e2e-scan-capped.log"
+"${ROOT_DIR}/bin/kubesplaining" scan \
+  --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
+  --audit-log "${AUDIT_LOG}" \
+  --output-dir "${CAPPED_DIR}" \
+  --max-findings 20 \
+  --output-format html,json,sarif | tee "${CAPPED_LOG}" | prefix_ok
+
+step "Verifying --max-findings shortens report.html only"
+# The cap is a display choice for report.html: it lists every attack path plus
+# the top 20 of the other findings. Every machine-readable output, and the
+# counts line, must still carry every finding. A regression here means a
+# program that reads findings.json or the SARIF file (a CI gate, a baseline
+# comparison, an agent) works from a sample again.
+TRUNC_SIDECAR="${CAPPED_DIR}/truncation-info.json"
+if [[ ! -f "${TRUNC_SIDECAR}" ]]; then
+  echo "missing: truncation-info.json should exist when the --max-findings 20 cap fires" >&2
+  exit 1
+fi
+if [[ "$(jq -r '.truncated' "${TRUNC_SIDECAR}")" != "true" ]]; then
   echo "expected truncation-info.json to record truncated=true" >&2
   exit 1
 fi
-if ! rg -q '"shown":\s*20' "${TRUNC_SIDECAR}"; then
-  echo "expected truncation-info.json to record shown=20" >&2
+if [[ "$(jq -r '.scope' "${TRUNC_SIDECAR}")" != "html" ]]; then
+  echo "expected truncation-info.json to record scope=html (only report.html is shortened)" >&2
   exit 1
 fi
-DEFAULT_FINDING_COUNT=$(rg -c '"rule_id"' "${ROOT_DIR}/.tmp/e2e-report/findings.json" || echo 0)
-if [[ "${DEFAULT_FINDING_COUNT}" != "20" ]]; then
-  echo "expected exactly 20 findings under default cap, got ${DEFAULT_FINDING_COUNT}" >&2
+TRUNC_ORIGINAL="$(jq -r '.original' "${TRUNC_SIDECAR}")"
+TRUNC_SHOWN="$(jq -r '.shown' "${TRUNC_SIDECAR}")"
+TRUNC_PATHS="$(jq -r '.attack_paths // 0' "${TRUNC_SIDECAR}")"
+if [[ "${TRUNC_PATHS}" -lt 1 ]]; then
+  echo "expected the fixture to produce attack paths, truncation-info.json records ${TRUNC_PATHS}" >&2
   exit 1
 fi
-if ! rg -q 'class="truncation-banner"' "${ROOT_DIR}/.tmp/e2e-report/report.html"; then
+if [[ "${TRUNC_SHOWN}" != "$((TRUNC_PATHS + 20))" ]]; then
+  echo "expected report.html to list every attack path (${TRUNC_PATHS}) plus 20 other findings, got shown=${TRUNC_SHOWN}" >&2
+  exit 1
+fi
+CAPPED_FINDING_COUNT="$(jq 'length' "${CAPPED_DIR}/findings.json")"
+if [[ "${CAPPED_FINDING_COUNT}" != "${TRUNC_ORIGINAL}" ]]; then
+  echo "expected findings.json to hold all ${TRUNC_ORIGINAL} findings under --max-findings 20, got ${CAPPED_FINDING_COUNT}" >&2
+  exit 1
+fi
+CAPPED_PATH_COUNT="$(jq '[.[] | select(.rule_id | startswith("KUBE-PRIVESC-PATH-"))] | length' "${CAPPED_DIR}/findings.json")"
+if [[ "${CAPPED_PATH_COUNT}" != "${TRUNC_PATHS}" ]]; then
+  echo "expected findings.json to hold ${TRUNC_PATHS} attack paths, got ${CAPPED_PATH_COUNT}" >&2
+  exit 1
+fi
+CAPPED_SARIF_COUNT="$(jq '.runs[0].results | length' "${CAPPED_DIR}/findings.sarif")"
+if [[ "${CAPPED_SARIF_COUNT}" != "${TRUNC_ORIGINAL}" ]]; then
+  echo "expected findings.sarif to hold all ${TRUNC_ORIGINAL} findings under --max-findings 20, got ${CAPPED_SARIF_COUNT}" >&2
+  exit 1
+fi
+if [[ "$(jq '.runs[0].properties.truncation // null' "${CAPPED_DIR}/findings.sarif")" != "null" ]]; then
+  echo "findings.sarif is complete and must not carry a truncation property" >&2
+  exit 1
+fi
+if ! grep -q "^findings: total=${TRUNC_ORIGINAL} " "${CAPPED_LOG}"; then
+  echo "expected the counts line to report all ${TRUNC_ORIGINAL} findings, got: $(grep -m1 '^findings:' "${CAPPED_LOG}")" >&2
+  exit 1
+fi
+if ! grep -q "^attack paths: total=${TRUNC_PATHS} " "${CAPPED_LOG}"; then
+  echo "expected the scan output to list all ${TRUNC_PATHS} attack paths, got: $(grep -m1 '^attack paths:' "${CAPPED_LOG}")" >&2
+  exit 1
+fi
+if ! rg -q 'class="truncation-banner"' "${CAPPED_DIR}/report.html"; then
   echo "expected HTML report to render the truncation-banner div" >&2
   exit 1
 fi
-ok "default cap produced 20 findings, sidecar + HTML banner present"
+if ! rg -q 'id="tabbtn-paths"' "${CAPPED_DIR}/report.html"; then
+  echo "expected the short HTML report to show the Attack paths tab" >&2
+  exit 1
+fi
+ok "--max-findings 20: report.html lists ${TRUNC_SHOWN} of ${TRUNC_ORIGINAL} (all ${TRUNC_PATHS} attack paths), JSON and SARIF hold all ${TRUNC_ORIGINAL}"
 
 step "Running kubesplaining scan --all-findings (assertion coverage)"
-# All rule-ID assertions and regression checks below run against the full,
-# uncapped findings list so we can verify every expected rule fired. The
-# default-cap scan above already covers the user-visible banner UX.
+# All rule-ID assertions and regression checks below read this directory.
+# --all-findings is what a default run does now. The flag stays in this
+# invocation so the e2e proves that scripts which pass it still work.
 "${ROOT_DIR}/bin/kubesplaining" scan \
   --input-file "${ROOT_DIR}/.tmp/e2e-snapshot.json" \
   --audit-log "${AUDIT_LOG}" \
@@ -640,11 +735,11 @@ if [[ -n "${SUMMARY_LINE}" ]]; then
 fi
 printf "%s%s%s\n\n" "${C_BOLD}${C_GREEN}" "${RULE}" "${C_RESET}"
 
-printf "  %sOpen the HTML report (default top-20 cap)%s\n" "${C_BOLD}" "${C_RESET}"
+printf "  %sOpen the HTML report (default flags, every finding)%s\n" "${C_BOLD}" "${C_RESET}"
 printf "    %s%s%s\n" "${C_BLUE}" "${REPORT_URL}" "${C_RESET}"
 printf "    %sopen %s%s\n\n" "${C_DIM}" "${REPORT_REL}" "${C_RESET}"
 
-printf "  %sOpen the full report (uncapped, includes Least Privilege tab)%s\n" "${C_BOLD}" "${C_RESET}"
+printf "  %sOpen the report that the assertions read (--all-findings, same content)%s\n" "${C_BOLD}" "${C_RESET}"
 printf "    %s%s%s\n" "${C_BLUE}" "${REPORT_FULL_URL}" "${C_RESET}"
 printf "    %sopen %s%s\n\n" "${C_DIM}" "${REPORT_FULL_REL}" "${C_RESET}"
 
