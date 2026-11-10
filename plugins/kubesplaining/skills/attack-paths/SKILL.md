@@ -2,7 +2,7 @@
 name: attack-paths
 description: Find, explain, and fix Kubernetes RBAC privilege-escalation paths with the kubesplaining CLI. Use when the user asks who can reach cluster-admin, what a ServiceAccount, user, or group can escalate to, how an identity could take over a node or read kube-system Secrets, how to tighten Kubernetes RBAC or reach least privilege, or for a security review of a cluster, a namespace, or RBAC manifests.
 license: Apache-2.0
-compatibility: Requires the kubesplaining CLI on PATH (a release after v1.3.0, which adds the paths command). Cluster access is optional. A snapshot file is sufficient.
+compatibility: Requires the kubesplaining CLI v1.4.0 or later on PATH (the first release with the paths command). Cluster access is optional. A snapshot file is sufficient.
 metadata:
   author: 0hardik1
   homepage: https://github.com/0hardik1/kubesplaining
