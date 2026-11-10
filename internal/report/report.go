@@ -36,6 +36,12 @@ func WriteWithAdmission(outputDir string, formats []string, snapshot models.Snap
 // WriteWithOptions extends WriteWithAdmission with Options that control which HTML tab
 // loads by default (used by --least-privilege-only) and the audit-log window summary
 // rendered into the Least Privilege tab header.
+//
+// When opts.HTMLFindings is set, findings is the complete list and the cap in
+// truncation applies to the HTML report only: findings.json, the CSV, and the
+// SARIF file carry every finding, and report.html lists opts.HTMLFindings. A
+// program that reads the machine outputs then never works from a sample. See
+// SelectForHTML for how the HTML subset is chosen.
 func WriteWithOptions(outputDir string, formats []string, snapshot models.Snapshot, findings []models.Finding, admission models.AdmissionSummary, truncation models.TruncationInfo, opts Options) ([]string, error) {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create output directory: %w", err)
@@ -62,6 +68,8 @@ func WriteWithOptions(outputDir string, formats []string, snapshot models.Snapsh
 			return written, err
 		}
 		written = append(written, truncPath)
+	} else if err := removeStaleTruncationInfo(outputDir); err != nil {
+		return written, err
 	}
 
 	for _, format := range dedupeFormats(formats) {
@@ -74,7 +82,11 @@ func WriteWithOptions(outputDir string, formats []string, snapshot models.Snapsh
 			written = append(written, path)
 		case "html":
 			path := filepath.Join(outputDir, "report.html")
-			if err := writeHTMLWithOptions(path, snapshot, findings, admission, truncation, opts); err != nil {
+			listed := findings
+			if opts.HTMLFindings != nil {
+				listed = opts.HTMLFindings
+			}
+			if err := writeHTMLWithOptions(path, snapshot, listed, admission, truncation, opts); err != nil {
 				return written, err
 			}
 			written = append(written, path)
@@ -86,7 +98,13 @@ func WriteWithOptions(outputDir string, formats []string, snapshot models.Snapsh
 			written = append(written, path)
 		case "sarif":
 			path := filepath.Join(outputDir, "findings.sarif")
-			if err := writeSARIF(path, findings, admission, truncation); err != nil {
+			// A cap that shortened only the HTML report leaves the SARIF file
+			// complete, so it must not be described as truncated there.
+			sarifTruncation := truncation
+			if truncation.Scope == models.TruncationScopeHTML {
+				sarifTruncation = models.TruncationInfo{}
+			}
+			if err := writeSARIF(path, findings, admission, sarifTruncation); err != nil {
 				return written, err
 			}
 			written = append(written, path)
@@ -96,6 +114,79 @@ func WriteWithOptions(outputDir string, formats []string, snapshot models.Snapsh
 	}
 
 	return written, nil
+}
+
+// IsAttackPath reports whether a finding is an attack path: a chain of hops
+// from one identity to a sink such as cluster-admin, emitted by the privesc
+// module under a KUBE-PRIVESC-PATH-* rule ID. These are the findings that the
+// HTML Attack paths tab draws and that the terminal summary counts, and this
+// function is the one definition both use, so the numbers always agree.
+//
+// A KUBE-CONFUSED-DEPUTY-001 finding also carries hops, but it is listed with
+// the flat findings and is not drawn on the Attack paths tab, so it is not an
+// attack path here.
+func IsAttackPath(f models.Finding) bool {
+	return strings.HasPrefix(f.RuleID, "KUBE-PRIVESC-PATH-")
+}
+
+// SelectForHTML picks the findings that report.html lists under the
+// --max-findings cap: every attack path, plus the top `limit` of the other
+// findings chosen with the same category-balanced draw as Truncate. The input
+// order (the engine's severity, score, rule ID order) is kept.
+//
+// Attack paths are exempt from the cap for two reasons. They are the result
+// that the other findings only hint at, and they rank below the flat findings
+// that amplify them, so a plain top-N drops them first: on a dense cluster a
+// top-20 draw holds no attack path at all. The report's tabs also link into
+// each other (a path card opens its finding for the fix), so a path that is
+// drawn must also be listed.
+//
+// The cap is for the HTML report only. Callers pass the complete list to the
+// machine-readable writers; see WriteWithOptions. The returned info has
+// Scope TruncationScopeHTML so a reader of truncation-info.json can tell that
+// findings.json beside it is complete.
+//
+// When allFindings is true, limit <= 0, or the cap does not remove anything,
+// the input is returned unchanged with a zero-value info.
+func SelectForHTML(findings []models.Finding, limit int, allFindings bool) ([]models.Finding, models.TruncationInfo) {
+	if allFindings || limit <= 0 {
+		return findings, models.TruncationInfo{}
+	}
+
+	rest := make([]models.Finding, 0, len(findings))
+	restPos := make([]int, 0, len(findings))
+	keep := make([]bool, len(findings))
+	paths := 0
+	for i := range findings {
+		if IsAttackPath(findings[i]) {
+			keep[i] = true
+			paths++
+			continue
+		}
+		rest = append(rest, findings[i])
+		restPos = append(restPos, i)
+	}
+	if len(rest) <= limit {
+		return findings, models.TruncationInfo{}
+	}
+
+	for _, p := range diverseTopNPositions(rest, limit) {
+		keep[restPos[p]] = true
+	}
+	listed := make([]models.Finding, 0, paths+limit)
+	for i := range findings {
+		if keep[i] {
+			listed = append(listed, findings[i])
+		}
+	}
+	return listed, models.TruncationInfo{
+		Truncated:   true,
+		Original:    len(findings),
+		Shown:       len(listed),
+		Limit:       limit,
+		Scope:       models.TruncationScopeHTML,
+		AttackPaths: paths,
+	}
 }
 
 // Truncate caps an already-sorted findings slice to the top `limit` entries
@@ -146,26 +237,76 @@ func diverseTopN(findings []models.Finding, limit int) []models.Finding {
 		return findings
 	}
 
-	// Group findings by category. order tracks first-seen category order so
+	// With one category there is nothing to diversify across, and the input
+	// is already in priority order: return the prefix untouched.
+	oneCategory := true
+	for i := range findings {
+		if findings[i].Category != findings[0].Category {
+			oneCategory = false
+			break
+		}
+	}
+	if oneCategory {
+		return findings[:limit]
+	}
+
+	positions := diverseTopNPositions(findings, limit)
+	result := make([]models.Finding, 0, len(positions))
+	for _, p := range positions {
+		result = append(result, findings[p])
+	}
+
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Severity.Rank() != result[j].Severity.Rank() {
+			return result[i].Severity.Rank() > result[j].Severity.Rank()
+		}
+		if result[i].Score != result[j].Score {
+			return result[i].Score > result[j].Score
+		}
+		if result[i].RuleID != result[j].RuleID {
+			return result[i].RuleID < result[j].RuleID
+		}
+		return result[i].Title < result[j].Title
+	})
+
+	return result
+}
+
+// diverseTopNPositions is the draw behind diverseTopN: it returns the
+// positions in findings of the up-to-limit selection, in pick order. Callers
+// that must keep the input order (SelectForHTML) use the positions as a set;
+// diverseTopN re-sorts the picked findings by the global priority comparator.
+func diverseTopNPositions(findings []models.Finding, limit int) []int {
+	if limit <= 0 {
+		return nil
+	}
+	if len(findings) <= limit {
+		limit = len(findings)
+	}
+
+	// Group positions by category. order tracks first-seen category order so
 	// the highest-priority category (whose first finding is the global top-1)
-	// gets the first round-robin pick — keeping the absolute top finding at
-	// the head of the output.
-	groups := make(map[models.RiskCategory][]models.Finding)
+	// gets the first round-robin pick, which keeps the absolute top finding in
+	// the selection.
+	groups := make(map[models.RiskCategory][]int)
 	var order []models.RiskCategory
 	for i := range findings {
 		cat := findings[i].Category
 		if _, ok := groups[cat]; !ok {
 			order = append(order, cat)
 		}
-		groups[cat] = append(groups[cat], findings[i])
+		groups[cat] = append(groups[cat], i)
 	}
 
+	result := make([]int, 0, limit)
 	if len(order) <= 1 {
 		// Nothing to diversify across.
-		return findings[:limit]
+		for i := 0; i < limit; i++ {
+			result = append(result, i)
+		}
+		return result
 	}
 
-	result := make([]models.Finding, 0, limit)
 	indices := make(map[models.RiskCategory]int, len(order))
 	for len(result) < limit {
 		progress := false
@@ -185,20 +326,6 @@ func diverseTopN(findings []models.Finding, limit int) []models.Finding {
 			break
 		}
 	}
-
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Severity.Rank() != result[j].Severity.Rank() {
-			return result[i].Severity.Rank() > result[j].Severity.Rank()
-		}
-		if result[i].Score != result[j].Score {
-			return result[i].Score > result[j].Score
-		}
-		if result[i].RuleID != result[j].RuleID {
-			return result[i].RuleID < result[j].RuleID
-		}
-		return result[i].Title < result[j].Title
-	})
-
 	return result
 }
 

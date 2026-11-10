@@ -27,6 +27,7 @@ func main() {
 
 	if err := cli.NewRootCmd(info).Execute(); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		// 2 for a --ci-mode gate result, 1 for every other error.
+		os.Exit(cli.ExitCode(err))
 	}
 }

@@ -2,7 +2,9 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -136,6 +138,20 @@ func WriteTruncationInfo(outputDir string, info models.TruncationInfo) (string, 
 	}
 
 	return path, nil
+}
+
+// removeStaleTruncationInfo deletes a truncation-info.json that an earlier run
+// left in outputDir. A run that cuts nothing writes no sidecar, so one that is
+// still there describes files that this run has just replaced. An older version
+// cut findings.json by default, and its sidecar beside a new, complete
+// findings.json would make `scan --baseline`, `diff`, and `report` warn that
+// the file is a sample.
+func removeStaleTruncationInfo(outputDir string) error {
+	err := os.Remove(filepath.Join(outputDir, "truncation-info.json"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove stale truncation info: %w", err)
+	}
+	return nil
 }
 
 // ReadTruncationInfo decodes a truncation-info.json file. Missing-file errors propagate;

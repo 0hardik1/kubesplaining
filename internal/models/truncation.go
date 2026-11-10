@@ -1,10 +1,9 @@
 package models
 
-// TruncationInfo records that the report's findings list was capped before
-// being written. It is rendered as a banner in the HTML report, surfaced as a
-// one-line stderr notice during scans, embedded in the SARIF run properties,
-// and persisted as truncation-info.json so `kubesplaining report` can
-// re-render the banner without re-running analysis.
+// TruncationInfo records that the --max-findings cap shortened a findings
+// list. It is rendered as a banner in the HTML report, surfaced as a one-line
+// stderr notice during scans, and persisted as truncation-info.json so a
+// reader of the output directory can tell what was shortened (see Scope).
 //
 // Truncated is the gate flag: when false (the zero value), the struct carries
 // no information and downstream renderers treat it as "no cap was applied."
@@ -20,4 +19,19 @@ type TruncationInfo struct {
 	// Limit is the --max-findings value that produced this state. Zero when
 	// --all-findings was passed.
 	Limit int `json:"limit"`
+	// Scope says which outputs the cap shortened. TruncationScopeHTML means
+	// only report.html lists a subset: findings.json, the CSV, and the SARIF
+	// file beside it hold every finding. Empty is the older behavior, where
+	// every output in the directory was cut to the same subset. A reader that
+	// compares two findings files must treat an empty scope on a truncated
+	// file as "this file is a sample".
+	Scope string `json:"scope,omitempty"`
+	// AttackPaths is how many of the Shown findings are attack paths that are
+	// listed no matter what the cap is. Zero when the selection does not
+	// treat attack paths in a special way.
+	AttackPaths int `json:"attack_paths,omitempty"`
 }
+
+// TruncationScopeHTML is the TruncationInfo.Scope value for a cap that
+// shortened the HTML report only.
+const TruncationScopeHTML = "html"

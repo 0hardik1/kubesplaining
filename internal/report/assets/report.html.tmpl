@@ -632,8 +632,10 @@
 
       {{ if .Truncation.Truncated }}
       <div class="truncation-banner" role="status">
-        <strong>Showing top {{ .Truncation.Shown }} of {{ .Truncation.Original }} findings.</strong>
-        Re-run with <code>kubesplaining scan --all-findings</code> to include the full list, or raise the cap with <code>--max-findings={{ .Truncation.Original }}</code>.
+        <strong>This report lists {{ .Truncation.Shown }} of {{ .Truncation.Original }} findings.</strong>
+        {{ if .Truncation.AttackPaths }}It has every attack path ({{ .Truncation.AttackPaths }}) and the top {{ .Truncation.Limit }} of the other findings.{{ else }}It has the top {{ .Truncation.Limit }}.{{ end }}
+        The counts on this page cover the listed findings only.{{ if eq .Truncation.Scope "html" }} <code>findings.json</code> holds all {{ .Truncation.Original }}.{{ end }}
+        Run <code>kubesplaining scan</code> again without <code>--max-findings</code> to list them all here.
       </div>
       {{ end }}
 

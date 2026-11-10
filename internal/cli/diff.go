@@ -59,6 +59,9 @@ func NewDiffCmd() *cobra.Command {
 				return fmt.Errorf("read new findings %s: %w", args[1], err)
 			}
 
+			warnIfSampledFindings(cmd.ErrOrStderr(), args[0])
+			warnIfSampledFindings(cmd.ErrOrStderr(), args[1])
+
 			result := baseline.Diff(oldFindings, newFindings)
 
 			if outputDir != "" {

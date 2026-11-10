@@ -600,11 +600,40 @@ func TestHTMLReportRendersTruncationBanner(t *testing.T) {
 	if !strings.Contains(html, `<div class="truncation-banner"`) {
 		t.Errorf("expected .truncation-banner div in HTML output")
 	}
-	if !strings.Contains(html, "Showing top 20 of 147 findings") {
+	if !strings.Contains(html, "This report lists 20 of 147 findings") {
 		t.Errorf("expected banner copy with shown/original counts in HTML output")
 	}
-	if !strings.Contains(html, "kubesplaining scan --all-findings") {
-		t.Errorf("expected banner to include the --all-findings rerun command")
+	if !strings.Contains(html, "again without <code>--max-findings</code>") {
+		t.Errorf("expected banner to say how to list every finding")
+	}
+}
+
+// A run that cuts nothing must not leave the sidecar of an earlier, cut run in
+// the output directory. An older version cut findings.json by default, and its
+// sidecar beside a new, complete findings.json would make the baseline
+// commands warn that the file is a sample.
+func TestUncutRunRemovesAStaleTruncationSidecar(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	snapshot := models.NewSnapshot()
+	findings := []models.Finding{{ID: "finding-1", RuleID: "KUBE-TEST-003", Severity: models.SeverityLow, Title: "Stale sidecar fixture"}}
+
+	if _, err := WriteWithAdmission(tmpDir, []string{"json"}, snapshot, findings,
+		models.AdmissionSummary{}, models.TruncationInfo{Truncated: true, Original: 50, Shown: 20, Limit: 20}); err != nil {
+		t.Fatalf("cut run: %v", err)
+	}
+	sidecar := filepath.Join(tmpDir, "truncation-info.json")
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Fatalf("the cut run must write the sidecar: %v", err)
+	}
+
+	if _, err := WriteWithAdmission(tmpDir, []string{"json"}, snapshot, findings,
+		models.AdmissionSummary{}, models.TruncationInfo{}); err != nil {
+		t.Fatalf("uncut run: %v", err)
+	}
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Errorf("the uncut run left the stale sidecar in place (stat error: %v)", err)
 	}
 }
 
@@ -646,7 +675,7 @@ func TestHTMLReportOmitsTruncationBannerWhenNotTruncated(t *testing.T) {
 	if strings.Contains(html, `<div class="truncation-banner"`) {
 		t.Errorf("did not expect .truncation-banner div in HTML when not truncated")
 	}
-	if strings.Contains(html, "Showing top") {
+	if strings.Contains(html, "This report lists") {
 		t.Errorf("did not expect banner copy in HTML when not truncated")
 	}
 }

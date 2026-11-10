@@ -223,7 +223,7 @@ What the output actually looks like. Each rule produces a `Finding` with stable 
 }
 ```
 
-The HTML report renders this as a hop-by-hop card with technique explainers per edge; the SARIF output keeps the chain in the `properties.escalationPath` field for IDE integration.
+The HTML report renders this as a hop-by-hop card with technique explainers per edge; the SARIF output keeps the chain in the `properties.escalation_path` field of each result for IDE integration.
 
 </details>
 
@@ -385,7 +385,7 @@ On any other CI system, call the CLI and fail the build on findings over budget 
 kubesplaining scan --ci-mode --ci-max-critical 0 --ci-max-high 0
 ```
 
-`--ci-mode` exits non-zero when the count of critical / high findings crosses the configured thresholds; combine with `--severity-threshold` to scope what counts.
+`--ci-mode` exits with code 2 when the count of critical / high findings crosses the configured thresholds; combine with `--severity-threshold` to scope what counts. Any other failure (bad flags, unreachable cluster) exits with code 1, so a pipeline can tell "over budget" from "the scan did not run". The gate counts every finding: `--max-findings` shortens the HTML report only.
 
 ## Exclusions
 
@@ -436,8 +436,9 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--audit-window-days` | `30` | How many days of audit history to consider. Widen for monthly cron jobs. |
 | `--max-privesc-depth` | `5` | BFS depth cap for the escalation graph. |
 | `--eks-access-entries` | (none) | Path to an EKS access-entries export from `scripts/eks-access-entries.sh <cluster>`. Access entries live in the EKS API, not the cluster, so without it an EKS scan reports `KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001` rather than silently skipping the IAM-to-RBAC class. See [docs/findings.md](docs/findings.md#cloud-provider-integration-eks-internalanalyzercloudeks). |
-| `--ci-mode` | off | Exit non-zero when over thresholds. |
+| `--ci-mode` | off | Exit with code 2 when over thresholds. Counts every finding. |
 | `--ci-max-critical` / `--ci-max-high` | `0` / `0` | Max findings allowed at each severity in CI mode. |
+| `--max-findings` / `--all-findings` | `0` / off | `--max-findings N` shortens `report.html` to every attack path plus the top N of the other findings. The default, `0`, lists every finding. `--all-findings` overrides the cap and stays for scripts that pass it. JSON, CSV, and SARIF always hold every finding. |
 | `--exclusions-preset` | `standard` | `standard` / `minimal` / `none`. |
 | `--exclusions-file` | (none) | User-supplied YAML, merged on top of the preset. |
 | `--input-file` | (none) | Use a snapshot JSON instead of live collection. |

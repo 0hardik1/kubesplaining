@@ -181,7 +181,11 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 			findings = applyComplianceFilter(findings, complianceSlugs)
 
-			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
+			// --max-findings shortens the HTML report only. findings stays the
+			// complete list: the JSON, CSV, and SARIF writers, the counts line,
+			// the baseline comparison, and the CI gate below all read it, so none
+			// of them works from a sample.
+			listed, truncation := report.SelectForHTML(findings, maxFindings, allFindings)
 
 			if outputDir == "" {
 				outputDir = filepath.Join(".", "kubesplaining-report")
@@ -192,6 +196,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				LeastPrivilegeOnly: leastPrivilegeOnly,
 				UsageInfo:          report.UsageInfoFrom(usageIdx),
 				MaxPrivescDepth:    maxPrivescDepth,
+				HTMLFindings:       listed,
 			}
 
 			written, err := report.WriteWithOptions(outputDir, outputFormats, snapshot, findings, result.Admission, truncation, reportOpts)
@@ -200,7 +205,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 			}
 
 			summary := report.BuildSummary(findings)
-			if err := printScanResults(cmd.OutOrStdout(), written, summary); err != nil {
+			if err := printScanResults(cmd.OutOrStdout(), written, summary, report.AttackPathOverviews(findings)); err != nil {
 				return err
 			}
 			printTruncationNotice(cmd.ErrOrStderr(), truncation)
@@ -220,6 +225,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("load baseline %s: %w", baselineFile, err)
 				}
+				warnIfSampledFindings(cmd.ErrOrStderr(), baselineFile)
 				r := baseline.Diff(oldFindings, findings)
 				diffResult = &r
 
@@ -251,7 +257,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 							":fire: regression: %d new critical findings vs baseline (max %d). Run `kubesplaining diff` for the per-finding breakdown.\n",
 							crit, ciMaxCritical)
 					}
-					return fmt.Errorf("%s: critical findings %d > %d", gateLabel, crit, ciMaxCritical)
+					return asGateError(fmt.Errorf("%s: critical findings %d > %d", gateLabel, crit, ciMaxCritical))
 				}
 				if high > ciMaxHigh {
 					if diffResult != nil {
@@ -259,7 +265,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 							":fire: regression: %d new high findings vs baseline (max %d). Run `kubesplaining diff` for the per-finding breakdown.\n",
 							high, ciMaxHigh)
 					}
-					return fmt.Errorf("%s: high findings %d > %d", gateLabel, high, ciMaxHigh)
+					return asGateError(fmt.Errorf("%s: high findings %d > %d", gateLabel, high, ciMaxHigh))
 				}
 			}
 
@@ -280,13 +286,13 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().IntVar(&parallelism, "parallelism", 10, "Maximum parallel API requests for live scans")
 	cmd.Flags().StringSliceVar(&onlyModules, "only-modules", nil, "Run only specific modules")
 	cmd.Flags().StringSliceVar(&skipModules, "skip-modules", nil, "Skip specific modules")
-	cmd.Flags().BoolVar(&ciMode, "ci-mode", false, "Exit non-zero when thresholds are exceeded")
+	cmd.Flags().BoolVar(&ciMode, "ci-mode", false, "Exit with code 2 when the critical or high finding counts are over the --ci-max-* budgets. Every finding counts, whatever --max-findings is.")
 	cmd.Flags().IntVar(&ciMaxCritical, "ci-max-critical", 0, "Maximum critical findings allowed in CI mode")
 	cmd.Flags().IntVar(&ciMaxHigh, "ci-max-high", 0, "Maximum high findings allowed in CI mode")
 	cmd.Flags().IntVar(&maxPrivescDepth, "max-privesc-depth", 5, "Maximum depth for privilege escalation path search")
 	cmd.Flags().StringVar(&admissionMode, "admission-mode", string(analyzer.AdmissionModeSuppress), "How to react to namespace PSA labels: off|attenuate|suppress")
-	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the report to the top N findings by severity/score; 0 disables. CI thresholds evaluate against the truncated list — pass --all-findings in CI mode to evaluate all.")
-	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding in the report; overrides --max-findings")
+	cmd.Flags().IntVar(&maxFindings, "max-findings", 0, "Shorten report.html: list every attack path plus the top N of the other findings by severity/score. 0, the default, lists every finding. JSON, CSV, and SARIF output, the --baseline comparison, and the --ci-mode gate always use every finding.")
+	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "List every finding in report.html. This is the default; the flag overrides --max-findings and stays for scripts that pass it.")
 	cmd.Flags().StringSliceVar(&auditLogPaths, "audit-log", nil, "Path to a kube-apiserver audit log file or directory (repeatable). See docs/audit-logs.md for how to obtain one.")
 	cmd.Flags().StringVar(&auditSource, "audit-source", "native", "Audit-log format: native (kube-apiserver JSON-lines) or eks (CloudWatch export from filter-log-events)")
 	cmd.Flags().IntVar(&auditWindowDays, "audit-window-days", 30, "How many days of audit history to consider when computing unused-permission findings")

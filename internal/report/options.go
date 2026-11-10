@@ -7,6 +7,7 @@ package report
 import (
 	"time"
 
+	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/usage"
 )
 
@@ -41,6 +42,13 @@ type Options struct {
 	// comment on models.EscalationPath for why that number matters to reading an empty
 	// alternate correctly.
 	MaxPrivescDepth int
+
+	// HTMLFindings is the subset of findings that report.html lists when the
+	// --max-findings cap removed some. nil means the HTML report lists every
+	// finding passed to the writer. When it is set, the findings argument of
+	// WriteWithOptions is the complete list and goes to the JSON, CSV, and SARIF
+	// writers unchanged. Build it with SelectForHTML.
+	HTMLFindings []models.Finding
 }
 
 // UsageInfo carries the audit-log window summary into the report layer. We don't pass

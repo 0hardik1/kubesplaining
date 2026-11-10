@@ -67,12 +67,17 @@ func NewScanResourceCmd() *cobra.Command {
 			}
 			findings = applyComplianceFilter(findings, complianceSlugs)
 
-			findings, truncation := report.Truncate(findings, maxFindings, allFindings)
+			// The cap is for the table, which a person reads. JSON output is
+			// for a program and always carries every finding.
+			shown, truncation := report.Truncate(findings, maxFindings, allFindings)
 
-			if err := writeScanResourceOutput(cmd, findings, outputFormats); err != nil {
+			tableUsed, err := writeScanResourceOutput(cmd, findings, shown, outputFormats)
+			if err != nil {
 				return err
 			}
-			printTruncationNotice(cmd.ErrOrStderr(), truncation)
+			if tableUsed {
+				printTruncationNotice(cmd.ErrOrStderr(), truncation)
+			}
 			return nil
 		},
 	}
@@ -82,8 +87,8 @@ func NewScanResourceCmd() *cobra.Command {
 	cmd.Flags().StringVar(&exclusionsFile, "exclusions-file", "", "Path to a user-supplied exclusions YAML file (merged on top of --exclusions-preset)")
 	cmd.Flags().StringVar(&exclusionsPreset, "exclusions-preset", "standard", "Built-in exclusions preset: standard|minimal|strict|none")
 	cmd.Flags().StringSliceVar(&outputFormats, "output-format", []string{"table"}, "Output formats: table,json")
-	cmd.Flags().IntVar(&maxFindings, "max-findings", 20, "Cap the output to the top N findings by severity/score; 0 disables.")
-	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Include every finding; overrides --max-findings")
+	cmd.Flags().IntVar(&maxFindings, "max-findings", 0, "Cap the table to the top N findings by severity/score. 0, the default, shows every finding. JSON output always carries every finding.")
+	cmd.Flags().BoolVar(&allFindings, "all-findings", false, "Show every finding in the table. This is the default; the flag overrides --max-findings and stays for scripts that pass it.")
 	cmd.Flags().StringSliceVar(&complianceFilters, "compliance", nil, "Filter findings to those mapped to one or more frameworks (repeatable / comma-separated). Supported: cis, nsa.")
 	cmd.Flags().StringVar(&customRulesDir, "custom-rules", "", "Directory of user-supplied *.cel.yaml rules to evaluate alongside the built-in modules. See examples/custom-rules/ for the wire format.")
 	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Attach structured remediation hints (kubectl patch, Kyverno / Gatekeeper policy, RBAC diff) to every finding. Off by default.")
@@ -92,7 +97,9 @@ func NewScanResourceCmd() *cobra.Command {
 }
 
 // writeScanResourceOutput renders the manifest scan findings in each requested format (table or JSON) to the command's output streams.
-func writeScanResourceOutput(cmd *cobra.Command, findings []models.Finding, formats []string) error {
+// JSON gets all, the complete list; the table gets shown, the subset left by --max-findings. It reports whether the table format was
+// written, so the caller prints the "showing top N" notice only when a capped view was in fact printed.
+func writeScanResourceOutput(cmd *cobra.Command, all []models.Finding, shown []models.Finding, formats []string) (bool, error) {
 	normalized := make([]string, 0, len(formats))
 	seen := map[string]struct{}{}
 	for _, format := range formats {
@@ -107,46 +114,48 @@ func writeScanResourceOutput(cmd *cobra.Command, findings []models.Finding, form
 		normalized = append(normalized, format)
 	}
 
+	tableUsed := false
 	for _, format := range normalized {
 		switch format {
 		case "json":
 			encoder := json.NewEncoder(cmd.OutOrStdout())
 			encoder.SetIndent("", "  ")
-			if err := encoder.Encode(findings); err != nil {
-				return err
+			if err := encoder.Encode(all); err != nil {
+				return tableUsed, err
 			}
 		case "table":
+			tableUsed = true
 			writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			if _, err := fmt.Fprintln(writer, "SEVERITY\tRULE ID\tRESOURCE\tTITLE"); err != nil {
-				return err
+				return tableUsed, err
 			}
-			for _, finding := range findings {
+			for _, finding := range shown {
 				resource := "-"
 				if finding.Resource != nil {
 					resource = finding.Resource.Kind + "/" + finding.Resource.Name
 				}
 				if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", finding.Severity, finding.RuleID, resource, finding.Title); err != nil {
-					return err
+					return tableUsed, err
 				}
 			}
-			if len(findings) == 0 {
+			if len(shown) == 0 {
 				if _, err := fmt.Fprintln(writer, "INFO\t-\t-\tNo findings"); err != nil {
-					return err
+					return tableUsed, err
 				}
 			}
 			if err := writer.Flush(); err != nil {
-				return err
+				return tableUsed, err
 			}
 		default:
-			return fmt.Errorf("unsupported scan-resource output format %q", format)
+			return tableUsed, fmt.Errorf("unsupported scan-resource output format %q", format)
 		}
 	}
 
-	if len(findings) > 0 {
-		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "findings: %d\n", len(findings))
-		return err
+	if len(all) > 0 {
+		_, err := fmt.Fprintf(cmd.ErrOrStderr(), "findings: %d\n", len(all))
+		return tableUsed, err
 	}
 
 	_, err := fmt.Fprintln(os.Stderr, "findings: 0")
-	return err
+	return tableUsed, err
 }
