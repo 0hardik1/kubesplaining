@@ -441,7 +441,7 @@ For other agents: the skill uses only the fields of the open [Agent Skills](http
 
 What to know before you use it:
 
-- The skill needs the `kubesplaining` binary on your `PATH`, from a release that has the `paths` command (later than v1.3.0). It does not install the binary for you.
+- The skill needs the `kubesplaining` binary on your `PATH`, from v1.4.0 or later, the first release that has the `paths` command. It does not install the binary for you.
 - The agent runs the binary with your kubeconfig, so it can read what you can read. `kubesplaining` only reads.
 - The agent sees the output of `paths`: the names of identities, bindings, and roles. The skill tells it to keep the snapshot file out of the repository and not to send the file to a different service.
 
