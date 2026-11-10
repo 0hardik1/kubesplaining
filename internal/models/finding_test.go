@@ -154,3 +154,57 @@ func TestNewSnapshotSeedsTimestampAndProvider(t *testing.T) {
 		t.Errorf("SnapshotTimestamp %v should fall within [%v, %v]", ts, before, after)
 	}
 }
+
+func TestParseSubjectRefRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	refs := []SubjectRef{
+		{Kind: "ServiceAccount", Namespace: "dev", Name: "ci"},
+		{Kind: "User", Name: "alice"},
+		{Kind: "User", Name: "arn:aws:iam::123456789012:role/Admin"},
+		{Kind: "User", Name: "system:serviceaccount:dev:ci"},
+		{Kind: "Group", Name: "system:authenticated"},
+		{Kind: "Group", Name: "oidc:team/platform"},
+	}
+	for _, want := range refs {
+		got, err := ParseSubjectRef(want.Key())
+		if err != nil {
+			t.Errorf("ParseSubjectRef(%q): %v", want.Key(), err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseSubjectRef(%q) = %+v, want %+v", want.Key(), got, want)
+		}
+	}
+}
+
+func TestParseSubjectRefForms(t *testing.T) {
+	t.Parallel()
+
+	sa := SubjectRef{Kind: "ServiceAccount", Namespace: "dev", Name: "ci"}
+	for _, value := range []string{"ServiceAccount/dev/ci", "serviceaccount/dev/ci", "sa/dev/ci", "SA/dev/ci", "  sa/dev/ci  "} {
+		got, err := ParseSubjectRef(value)
+		if err != nil || got != sa {
+			t.Errorf("ParseSubjectRef(%q) = %+v, %v; want %+v", value, got, err, sa)
+		}
+	}
+	if got, err := ParseSubjectRef("group/devs"); err != nil || got != (SubjectRef{Kind: "Group", Name: "devs"}) {
+		t.Errorf("ParseSubjectRef(group/devs) = %+v, %v", got, err)
+	}
+
+	for _, value := range []string{
+		"",                     // empty
+		"ci",                   // no kind
+		"ServiceAccount/ci",    // a ServiceAccount needs a namespace
+		"ServiceAccount/dev/",  // empty name
+		"ServiceAccount//ci",   // empty namespace
+		"ServiceAccount/a/b/c", // a ServiceAccount name has no slash
+		"User/",                // empty name
+		"Pod/dev/web",          // not an RBAC subject kind
+		"ClusterRole/cluster-admin",
+	} {
+		if got, err := ParseSubjectRef(value); err == nil {
+			t.Errorf("ParseSubjectRef(%q) = %+v, want an error", value, got)
+		}
+	}
+}

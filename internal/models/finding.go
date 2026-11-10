@@ -286,6 +286,38 @@ func (s SubjectRef) Key() string {
 	return fmt.Sprintf("%s/%s/%s", s.Kind, s.Namespace, s.Name)
 }
 
+// ParseSubjectRef reads the "Kind/[Namespace/]Name" form that Key prints, so a
+// subject copied from a finding ID, the CSV, or the HTML report can be given
+// back to the tool. For a ServiceAccount, User, or Group, ParseSubjectRef(s.Key())
+// returns s.
+//
+// The kind is not case-sensitive, and "sa" is a short form of ServiceAccount. A
+// ServiceAccount needs a namespace. A User or a Group has none, and its name is
+// everything after the first slash, because such a name can hold slashes (an IAM
+// role ARN, an OIDC subject).
+func ParseSubjectRef(value string) (SubjectRef, error) {
+	const forms = "use ServiceAccount/<namespace>/<name>, User/<name>, or Group/<name>"
+	value = strings.TrimSpace(value)
+	kind, rest, found := strings.Cut(value, "/")
+	if !found || rest == "" {
+		return SubjectRef{}, fmt.Errorf("invalid subject %q: %s", value, forms)
+	}
+	switch strings.ToLower(kind) {
+	case "serviceaccount", "sa":
+		namespace, name, found := strings.Cut(rest, "/")
+		if !found || namespace == "" || name == "" || strings.Contains(name, "/") {
+			return SubjectRef{}, fmt.Errorf("invalid subject %q: a ServiceAccount is ServiceAccount/<namespace>/<name>", value)
+		}
+		return SubjectRef{Kind: "ServiceAccount", Namespace: namespace, Name: name}, nil
+	case "user":
+		return SubjectRef{Kind: "User", Name: rest}, nil
+	case "group":
+		return SubjectRef{Kind: "Group", Name: rest}, nil
+	default:
+		return SubjectRef{}, fmt.Errorf("invalid subject %q: unknown kind %q, %s", value, kind, forms)
+	}
+}
+
 // ResourceRef identifies a Kubernetes object by kind, name, and optional namespace/APIGroup.
 type ResourceRef struct {
 	Kind      string `json:"kind"`

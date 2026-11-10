@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/0hardik1/kubesplaining/internal/models"
-	"github.com/0hardik1/kubesplaining/internal/remediation"
 )
 
 // DefaultMaxDepth is the fallback BFS depth used when no explicit MaxDepth is configured.
@@ -44,20 +43,7 @@ func (a *Analyzer) Analyze(_ context.Context, snapshot models.Snapshot) ([]model
 	}
 
 	graph := BuildGraph(snapshot)
-	paths := FindPaths(graph, depth)
-
-	findings := make([]models.Finding, 0, len(paths))
-	seen := map[string]struct{}{}
-	for _, path := range paths {
-		finding := findingFromPath(path)
-		if _, ok := seen[finding.ID]; ok {
-			continue
-		}
-		finding.RemediationHint = remediation.ForPrivescPath(finding, snapshot)
-		seen[finding.ID] = struct{}{}
-		findings = append(findings, finding)
-	}
-	return findings, nil
+	return FindingsFromPaths(FindPaths(graph, depth), snapshot), nil
 }
 
 // findingFromPath converts an EscalationPath into a Finding describing the chain, its target, and scoring.
@@ -122,7 +108,7 @@ func findingFromPath(path models.EscalationPath) models.Finding {
 	}
 
 	subject := path.Source
-	tags := []string{"module:privesc", "target:" + string(target)}
+	tags := []string{"module:privesc", targetTagPrefix + string(target)}
 	remediation := content.Remediation
 	if len(path.AlternateHops) > 0 {
 		// The recommended fix cuts hop 1's binding, and this path reaches the same
