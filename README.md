@@ -349,6 +349,37 @@ Three behaviors to know:
 - `--from` ignores the exclusions, and it accepts an identity that `scan` does not use as a starting point: a built-in `system:` identity, a control-plane ServiceAccount, or a group such as `Group/system:authenticated` ("what can every authenticated user reach?").
 - An identity that is not in the cluster is an error, not an empty answer. An empty answer for a mistyped name would look like "this identity is safe".
 
+## Use with an AI agent
+
+The repository ships an [Agent Skill](https://agentskills.io) named `attack-paths`. A skill is a Markdown file that tells a coding agent when and how to use a tool. With the skill installed, you can ask in plain words:
+
+- "Who can reach cluster-admin in this cluster?"
+- "What can the `ci` ServiceAccount in `dev` escalate to? Give me the smallest fix."
+- "Review the RBAC in this cluster and show me the three worst paths."
+
+The agent captures a snapshot with `kubesplaining download`, gets the answer from `kubesplaining paths` as JSON, explains each hop, and proposes the change to the binding. The skill tells the agent not to change the cluster: you get a command or a patch, and you apply it.
+
+In Claude Code:
+
+```text
+/plugin install kubesplaining --marketplace 0hardik1/kubesplaining
+```
+
+Or from a shell:
+
+```bash
+claude plugin marketplace add 0hardik1/kubesplaining
+claude plugin install kubesplaining@kubesplaining
+```
+
+For other agents: the skill uses only the fields of the open [Agent Skills](https://agentskills.io) format, so an agent that reads `SKILL.md` files can use it. Copy [`plugins/kubesplaining/skills/attack-paths/`](plugins/kubesplaining/skills/attack-paths/) into the skills directory of your agent.
+
+What to know before you use it:
+
+- The skill needs the `kubesplaining` binary on your `PATH`, from a release that has the `paths` command (later than v1.3.0). It does not install the binary for you.
+- The agent runs the binary with your kubeconfig, so it can read what you can read. `kubesplaining` only reads.
+- The agent sees the output of `paths`: the names of identities, bindings, and roles. The skill tells it to keep the snapshot file out of the repository and not to send the file to a different service.
+
 ## Offline analysis
 
 The collector and the analyzer are decoupled: the snapshot is a plain JSON file. Capture once, analyze repeatedly, in environments where credentials shouldn't sit on the analyst's machine:

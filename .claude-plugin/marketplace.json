@@ -1,0 +1,16 @@
+{
+  "name": "kubesplaining",
+  "owner": {
+    "name": "0hardik1"
+  },
+  "metadata": {
+    "description": "Agent skills for kubesplaining, the Kubernetes RBAC privilege-escalation scanner."
+  },
+  "plugins": [
+    {
+      "name": "kubesplaining",
+      "source": "./plugins/kubesplaining",
+      "description": "Find, explain, and fix Kubernetes RBAC privilege-escalation paths with the kubesplaining CLI."
+    }
+  ]
+}
