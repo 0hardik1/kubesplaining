@@ -6,7 +6,7 @@
 [![CI](https://github.com/0hardik1/kubesplaining/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/0hardik1/kubesplaining/actions/workflows/lint.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/0hardik1/kubesplaining)](go.mod)
 
-Kubesplaining is an open-source Kubernetes security assessment CLI that reads a live cluster or a captured snapshot and tells you exactly how an attacker can move through it. Unlike scanners that stop at "this resource is misconfigured," it builds a multi-hop RBAC privilege-escalation graph from every non-system subject to four cluster-takeover sinks (`cluster-admin`, `system:masters`, `node-escape`, `kube-system-secrets`) and renders each chain with the actual verbs, evidence, and remediation. Outputs are risk-prioritized HTML, JSON, CSV, and SARIF reports for human review, GitHub code scanning, or CI delta gates.
+Kubesplaining is an open-source Kubernetes security assessment CLI that reads a live cluster or a captured snapshot and tells you exactly how an attacker can move through it. Unlike scanners that stop at "this resource is misconfigured," it builds a multi-hop RBAC privilege-escalation graph from every non-system subject to nine sinks (among them `cluster-admin`, `system:masters`, `node-escape`, and `kube-system-secrets`) and renders each chain with the actual verbs, evidence, and remediation. Outputs are risk-prioritized HTML, JSON, CSV, and SARIF reports for human review, GitHub code scanning, or CI delta gates.
 
 <video src="https://github.com/user-attachments/assets/b286b407-391a-4495-be52-2841a77a2b9a" controls width="100%"></video>
 
@@ -128,7 +128,25 @@ sudo install kubesplaining /usr/local/bin/
 ### Docker
 
 ```bash
-docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:latest scan
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -v "$HOME/.kube/config:/kubeconfig:ro" -e KUBECONFIG=/kubeconfig \
+  -v "$PWD:/work" -w /work \
+  ghcr.io/0hardik1/kubesplaining:latest scan
+```
+
+The report is written to `./kubesplaining-report/` in the current directory. `--user` makes the container run as you, so it can read your kubeconfig and write the report with your ownership.
+
+The image holds only the `kubesplaining` binary. Two kinds of kubeconfig do not work from inside it:
+
+- A kubeconfig that calls a helper program for credentials (EKS with `aws eks get-token`, GKE with `gke-gcloud-auth-plugin`).
+- A kubeconfig that points at `127.0.0.1` (kind, minikube, Docker Desktop).
+
+For those clusters, use the binary. You can also capture a snapshot with the binary and analyze it in the container, which needs no kubeconfig:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+  ghcr.io/0hardik1/kubesplaining:latest scan --input-file snapshot.json
 ```
 
 ## What it checks
@@ -137,7 +155,7 @@ docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:late
 
 | Module | Rules | Focus |
 | --- | --- | --- |
-| **rbac** | 23 | wildcard / impersonate / bind-escalate / secret-read / pod-create / nodes-proxy / token-create, the two-verb pairs the API server actually enforces (CSR create + approve, signer control, mutating-policy write + bind), and a version-gated CVE rule: write on both `statefulsets` and `controllerrevisions` steers kube-controller-manager into cross-namespace pod creation (CVE-2026-2270), reported only when the server version is unpatched |
+| **rbac** | 33 | wildcard / impersonate / bind-escalate / secret-read / pod-create / nodes-proxy / token-create, the two-verb pairs the API server actually enforces (CSR create + approve, signer control, mutating-policy write + bind), and a version-gated CVE rule: write on both `statefulsets` and `controllerrevisions` steers kube-controller-manager into cross-namespace pod creation (CVE-2026-2270), reported only when the server version is unpatched |
 | **podsec** | 19 | privileged, host namespaces, hostPath, container sockets, runAsRoot, dangerous capabilities, seccomp / procMount, PSA namespace labels, mutable tags |
 | **containersec** | 4 | missing limits, missing probes, lifecycle exec hooks, images not digest-pinned |
 | **network** | 7 | namespaces missing NetworkPolicy, broad-internet and IMDS egress, cross-namespace bridges, unselected workloads |
@@ -145,8 +163,8 @@ docker run --rm -v "$HOME/.kube:/root/.kube" ghcr.io/0hardik1/kubesplaining:late
 | **secrets** | 8 | legacy SA token secrets, credential-like ConfigMap keys, CoreDNS tampering, cross-namespace Secret reach, TLS expiry, stale Secrets |
 | **serviceaccount** | 4 | privileged SAs, default-SA RBAC, DaemonSet token blast-radius |
 | **certificates** | 2 | CertificateSigningRequest objects: a workload ServiceAccount asking for a client cert, or a request against the `legacy-unknown` signer |
-| **privesc** | 9 sinks | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets / namespace-admin / token-mint / aws-iam-role / traffic-intercept / node-identity. Hops are not only direct grants: workload controllers, catalogued operators steered as confused deputies (Flux, Argo CD, cert-manager, ...), and the CVE-2026-2270 StatefulSet-controller edge all appear as controller-mediated hops, and every path says whether its own recommended cut actually closes the route |
-| **cloud** (EKS) | 10 | aws-auth and EKS Access Entry mappings to system:masters or admin-equivalent roles, IRSA admin roles, IMDS node-role pivot |
+| **privesc** | 10 (9 sinks) | graph chains to cluster-admin / system:masters / node-escape / kube-system-secrets / namespace-admin / token-mint / aws-iam-role / traffic-intercept / node-identity. Hops are not only direct grants: workload controllers, catalogued operators steered as confused deputies (Flux, Argo CD, cert-manager, ...), and the CVE-2026-2270 StatefulSet-controller edge all appear as controller-mediated hops, and every path says whether its own recommended cut actually closes the route |
+| **cloud** (EKS) | 9 | aws-auth and EKS Access Entry mappings to system:masters or admin-equivalent roles, IRSA admin roles, IMDS node-role pivot |
 | **leastprivilege** | 4 | granted-but-unused RBAC verbs from audit-log diff; opt-in via `--audit-log`. See [docs/audit-logs.md](docs/audit-logs.md) for setup and the [Least-Privilege analyzer section](#least-privilege-analyzer-audit-log-driven) for the behavior matrix |
 
 Every finding is tagged with a `RiskCategory` (`privilege_escalation`, `data_exfiltration`, `lateral_movement`, `infrastructure_modification`, `defense_evasion`) so the HTML report can group by impact lane.
@@ -359,32 +377,9 @@ When the audit log contains non-ServiceAccount callers (humans, groups, kubelets
 
 ## CI integration
 
-The SARIF output integrates with [GitHub code scanning](https://docs.github.com/en/code-security/code-scanning) so findings appear as PR annotations. Until the dedicated GitHub Action ships (post-release fast-follow), the `docker run` form works directly:
+The SARIF output integrates with [GitHub code scanning](https://docs.github.com/en/code-security/code-scanning) so findings appear as PR annotations. On GitHub Actions, the [GitHub Action](#use-the-github-action) runs the scan and uploads `findings.sarif` in one step.
 
-```yaml
-# .github/workflows/kubesplaining.yml
-name: Kubesplaining
-on: [push, pull_request]
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-    steps:
-      - uses: actions/checkout@v6
-      - name: Scan manifests
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/work" -w /work \
-            ghcr.io/0hardik1/kubesplaining:latest \
-            scan-resource --input-file manifests/ --output-format sarif \
-            --output-dir /work/kubesplaining-report
-      - uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: kubesplaining-report/results.sarif
-```
-
-Or fail the build on findings over budget with `--ci-mode`:
+On any other CI system, call the CLI and fail the build on findings over budget with `--ci-mode`:
 
 ```bash
 kubesplaining scan --ci-mode --ci-max-critical 0 --ci-max-high 0
@@ -513,9 +508,6 @@ jobs:
       - name: Scan offline snapshot
         uses: 0hardik1/kubesplaining@main
         with:
-          # Pin to a released tag (e.g. v1) once v1.0.0 ships. `main` tracks
-          # the development image and is fine for early adopters.
-          version: main
           input-file: testdata/snapshots/minimal-risky.json
           severity-threshold: medium
           fail-on-critical: 'true'
@@ -536,14 +528,16 @@ Inputs (all optional unless noted):
 
 | Input | Default | Notes |
 | --- | --- | --- |
-| `version` | `main` | GHCR image tag. Bump to `v1` (or `latest`) once a release tag is published. |
+| `version` | `latest` | GHCR image tag. To pin a release, use the bare version with no `v` prefix, for example `1.3.0`. |
 | `kubeconfig` | (none) | Base64-encoded kubeconfig for live scans. Omit when using `input-file`. |
 | `input-file` | (none) | Path (relative to the checkout) to a `kubesplaining download` snapshot JSON. |
 | `severity-threshold` | `medium` | `critical` / `high` / `medium` / `low` / `info`. |
 | `output-dir` | `./kubesplaining-report` | Created if missing. Holds `report.html`, `findings.json`, `findings.sarif`. |
 | `fail-on-critical` | `true` | Adds `--ci-mode --ci-max-critical 0`; flip to `false` to surface findings without failing the build. |
-| `upload-sarif` | `true` | Uploads `findings.sarif` via `github/codeql-action/upload-sarif@v3`. Requires `security-events: write`. |
+| `upload-sarif` | `true` | Uploads `findings.sarif` via `github/codeql-action/upload-sarif@v4`. Requires `security-events: write`. |
 | `compliance` | (none) | Optional filter: `cis` or `nsa`. |
+
+The ref after `@` selects the action definition, and `version` selects the container image that it runs. The action definitions in releases v1.1.0 to v1.3.0 default `version` to `main`, an image tag that was never published. If you pin the action to one of those releases, set `version` too, for example `uses: 0hardik1/kubesplaining@v1.3.0` with `version: 1.3.0`.
 
 Outputs: `report-dir` (absolute path to the report directory) and `sarif-file` (absolute path to `findings.sarif`, when emitted). The `.github/workflows/action-smoke.yml` workflow in this repo exercises the action against `testdata/snapshots/minimal-risky.json` on every PR that touches it.
 
