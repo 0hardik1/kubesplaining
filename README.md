@@ -73,6 +73,15 @@ kubesplaining scan                          # writes ./kubesplaining-report/
 open kubesplaining-report/report.html       # macOS; xdg-open on Linux
 ```
 
+To ask one question in the terminal, with no report to open:
+
+```bash
+kubesplaining paths --to cluster-admin              # who can reach cluster-admin?
+kubesplaining paths --from ServiceAccount/dev/ci    # what can this identity reach?
+```
+
+See [Ask a question](#ask-a-question) for the output and the other filters.
+
 Already cloned the repo? `make scan` builds the binary (Hermit auto-downloads the pinned Go toolchain) and runs it against your current `kubectl` context in one step, no separate install needed. Pass extra flags via `ARGS`, e.g. `make scan ARGS="--severity-threshold high --only-modules privesc"`.
 
 For air-gapped or audit workflows, capture a snapshot first and analyze it offline:
@@ -274,6 +283,72 @@ The HTML report renders this as a hop-by-hop card with technique explainers per 
 
 For the full rule catalog (severity, detection, remediation per rule): [docs/findings.md](docs/findings.md).
 
+## Ask a question
+
+`scan` writes a full report. `paths` answers one question in the terminal. It searches the same graph, so each path has the same ID, score, and hops as the finding in the report.
+
+**Who can reach a target?** `--to` keeps the paths that end at one target:
+
+```console
+$ kubesplaining paths --to cluster-admin
+SEVERITY  SCORE  SOURCE                                TARGET         HOPS  CHAIN
+CRITICAL  9.65   ServiceAccount/dashboard/admin-sa     cluster-admin  1     bound_to_cluster_admin
+CRITICAL  9.25   ServiceAccount/monitoring/prometheus  cluster-admin  2     pod_create_token_theft > bound_to_cluster_admin
+
+2 attack paths.
+```
+
+**What can one identity reach?** `--from` starts the search at that identity. Add `--verbose` to see each hop, the binding that grants it, and the fix:
+
+```console
+$ kubesplaining paths --from ServiceAccount/monitoring/prometheus --to cluster-admin --verbose
+ServiceAccount/monitoring/prometheus -> cluster-admin
+  severity: CRITICAL (score 9.25)   hops: 2
+  id: KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/monitoring/prometheus:cluster_admin_equivalent
+
+  1. pod_create_token_theft (moderate)
+     from:       ServiceAccount/monitoring/prometheus
+     to:         ServiceAccount/dashboard/admin-sa
+     permission: create pods
+     granted by: ClusterRoleBinding prometheus-reader (role prometheus-reader)
+     result:     can create pods that mount ServiceAccount dashboard/admin-sa
+  2. bound_to_cluster_admin (easy)
+     from:       ServiceAccount/dashboard/admin-sa
+     to:         cluster-admin
+     permission: cluster-admin
+     granted by: ClusterRoleBinding dashboard-admin (role cluster-admin)
+     result:     bound to cluster-admin via dashboard-admin
+
+  fix: Break the chain at the weakest hop: remove the create pods capability that enables hop 1 (ServiceAccount/monitoring/prometheus → ServiceAccount/dashboard/admin-sa).
+    # Edit the binding and remove the offending subject from subjects:.
+    kubectl edit clusterrolebinding prometheus-reader
+```
+
+The real output ends with a diff of that binding, left out here.
+
+`paths` reads the live cluster by default. Each run collects the cluster again, so for more than one question capture the cluster one time and ask offline. An answer from a snapshot takes less than a second and needs no cluster access:
+
+```bash
+kubesplaining download --output-file snapshot.json
+kubesplaining paths --input-file snapshot.json --to node-escape
+kubesplaining paths --input-file snapshot.json --from ServiceAccount/dev/ci --output-format json
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--to <target>` | Keep the paths that end at one target: `cluster-admin`, `system-masters`, `kube-system-secrets`, `node-escape`, `namespace-admin[:<namespace>]`, `token-mint`, `aws-iam-role[:<arn>]`, `traffic-intercept`, `node-identity`. The names in `findings.json` (`kube_system_secrets`) also work. |
+| `--from <identity>` | Start at one identity: `ServiceAccount/<namespace>/<name>` (or `sa/<namespace>/<name>`), `User/<name>`, `Group/<name>`. This is the form that the reports print, so you can paste it. `system:serviceaccount:<namespace>:<name>` also works. |
+| `--id <finding-id>` | Keep the one path that has this finding ID. |
+| `--verbose` | Show each hop with its binding and role, then the fix. |
+| `--output-format json` | Print `{"total", "returned", "paths": [...]}`. Each path is a short record (source, target, severity, score, hops) without the explanatory prose of a full finding, so the output stays small for a script or an AI agent. |
+| `--limit <n>` | List only the first N paths, highest severity and score first. `total` still counts all matches. |
+
+Three behaviors to know:
+
+- With no `--from`, `paths` lists the attack paths that `scan` reports, and the same exclusions apply. The output says how many paths the exclusions hide.
+- `--from` ignores the exclusions, and it accepts an identity that `scan` does not use as a starting point: a built-in `system:` identity, a control-plane ServiceAccount, or a group such as `Group/system:authenticated` ("what can every authenticated user reach?").
+- An identity that is not in the cluster is an error, not an empty answer. An empty answer for a mistyped name would look like "this identity is safe".
+
 ## Offline analysis
 
 The collector and the analyzer are decoupled: the snapshot is a plain JSON file. Capture once, analyze repeatedly, in environments where credentials shouldn't sit on the analyst's machine:
@@ -416,6 +491,7 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | Command | Purpose |
 | --- | --- |
 | `kubesplaining scan` | Analyze (live or `--input-file`) and write reports. |
+| `kubesplaining paths` | Answer one question in the terminal: who can reach a target (`--to`), what an identity can reach (`--from`). |
 | `kubesplaining download` | Capture a `snapshot.json` from a live cluster. Read-only. |
 | `kubesplaining scan-resource` | Scan a single resource manifest for quick checks. |
 | `kubesplaining report` | Re-render reports from an existing findings JSON. |

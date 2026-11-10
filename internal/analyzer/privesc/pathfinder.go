@@ -19,10 +19,7 @@ type pathStep struct {
 // by its first hop, i.e. the fix remediation prints. Non-empty means that fix does not close the route on its own.
 // See alternatesForSource. Alternates attach as a field, never as extra returned paths.
 func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationPath {
-	adj := map[string][]*models.EscalationEdge{}
-	for _, edge := range graph.Edges {
-		adj[edge.From] = append(adj[edge.From], edge)
-	}
+	adj := adjacency(graph)
 
 	var sources []string
 	for id, node := range graph.Nodes {
@@ -54,24 +51,50 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 
 	var paths []models.EscalationPath
 	for _, sourceID := range sources {
-		sourceNode := graph.Nodes[sourceID]
-		if sourceNode == nil {
-			continue
-		}
-		found := bfsToSinks(graph, adj, sourceID, maxDepth, nil)
-		alternates := alternatesForSource(graph, adj, sourceID, maxDepth, found)
-		for targetID, chain := range found {
-			targetNode := graph.Nodes[targetID]
-			path := buildPath(graph, sourceNode.Subject, targetNode.Target, chain)
-			path.TargetNamespace = targetNode.TargetNamespace
-			path.TargetID = targetID
-			if alt, ok := alternates[targetID]; ok {
-				path.AlternateHops = buildPath(graph, sourceNode.Subject, targetNode.Target, alt).Hops
-			}
-			paths = append(paths, path)
-		}
+		paths = append(paths, pathsFromSource(graph, adj, sourceID, maxDepth)...)
 	}
+	sortPaths(paths)
+	return paths
+}
 
+// adjacency indexes the graph's edges by the node they leave.
+func adjacency(graph *models.EscalationGraph) map[string][]*models.EscalationEdge {
+	adj := map[string][]*models.EscalationEdge{}
+	for _, edge := range graph.Edges {
+		adj[edge.From] = append(adj[edge.From], edge)
+	}
+	return adj
+}
+
+// pathsFromSource returns one path for each sink that sourceID reaches, with the
+// alternate route attached where one survives the first-hop fix. The order is not
+// defined: the caller sorts. FindPaths (every seeded source) and PathsFrom (one
+// source that a user named) both run this, so the two give the same paths for
+// the same source.
+func pathsFromSource(graph *models.EscalationGraph, adj map[string][]*models.EscalationEdge, sourceID string, maxDepth int) []models.EscalationPath {
+	sourceNode := graph.Nodes[sourceID]
+	if sourceNode == nil {
+		return nil
+	}
+	found := bfsToSinks(graph, adj, sourceID, maxDepth, nil)
+	alternates := alternatesForSource(graph, adj, sourceID, maxDepth, found)
+	paths := make([]models.EscalationPath, 0, len(found))
+	for targetID, chain := range found {
+		targetNode := graph.Nodes[targetID]
+		path := buildPath(graph, sourceNode.Subject, targetNode.Target, chain)
+		path.TargetNamespace = targetNode.TargetNamespace
+		path.TargetID = targetID
+		if alt, ok := alternates[targetID]; ok {
+			path.AlternateHops = buildPath(graph, sourceNode.Subject, targetNode.Target, alt).Hops
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+// sortPaths orders paths by source key, target, target namespace, hop count, and
+// last by the sink's node ID, which makes the order total.
+func sortPaths(paths []models.EscalationPath) {
 	sort.Slice(paths, func(i, j int) bool {
 		if paths[i].Source.Key() != paths[j].Source.Key() {
 			return paths[i].Source.Key() < paths[j].Source.Key()
@@ -95,8 +118,6 @@ func FindPaths(graph *models.EscalationGraph, maxDepth int) []models.EscalationP
 		// relative order depends on map iteration, which Go re-randomizes per run.
 		return paths[i].TargetID < paths[j].TargetID
 	})
-
-	return paths
 }
 
 // footholdAll is every foothold at once. Path search seeds each source with it: a

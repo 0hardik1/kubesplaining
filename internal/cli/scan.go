@@ -11,7 +11,6 @@ import (
 	"github.com/0hardik1/kubesplaining/internal/baseline"
 	"github.com/0hardik1/kubesplaining/internal/collector"
 	"github.com/0hardik1/kubesplaining/internal/connection"
-	"github.com/0hardik1/kubesplaining/internal/eksaccess"
 	"github.com/0hardik1/kubesplaining/internal/exclusions"
 	"github.com/0hardik1/kubesplaining/internal/models"
 	"github.com/0hardik1/kubesplaining/internal/report"
@@ -96,42 +95,18 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				onlyModules = []string{"rbac", "leastprivilege"}
 			}
 
-			snapshot, err := loadOrCollectSnapshot(cmd, build, connFlags, inputFile, namespaces, excludeNamespaces, includeManagedFields, parallelism)
+			snapshot, err := snapshotSource{
+				conn:                 connFlags,
+				inputFile:            inputFile,
+				namespaces:           namespaces,
+				excludeNamespaces:    excludeNamespaces,
+				includeManagedFields: includeManagedFields,
+				parallelism:          parallelism,
+				cloudProvider:        cloudProvider,
+				eksAccessEntriesFile: eksAccessEntriesFile,
+			}.load(cmd, build)
 			if err != nil {
 				return err
-			}
-
-			// --cloud-provider overrides the collector / manifest auto-detection.
-			// "auto" keeps whatever was detected; "none" forces detectors off; the
-			// concrete provider names pin detection so an operator can opt in even
-			// when the snapshot lacks the usual heuristic signals (e.g. an EKS
-			// cluster without aws-auth in kube-system).
-			// --eks-access-entries loads the AWS-side half of EKS authentication,
-			// which no Kubernetes API call can return. Supplying it is also a
-			// strong provider signal, so under "auto" it promotes an undetected
-			// snapshot to eks (an API-mode cluster has no aws-auth ConfigMap to
-			// detect from).
-			if eksAccessEntriesFile != "" {
-				state, warnings, err := eksaccess.Load(eksAccessEntriesFile)
-				if err != nil {
-					return err
-				}
-				snapshot.Cloud.EKS = state
-				snapshot.Metadata.CollectionWarnings = append(snapshot.Metadata.CollectionWarnings, warnings...)
-				if cloudProvider == "auto" && (snapshot.Metadata.CloudProvider == "" || snapshot.Metadata.CloudProvider == "none") {
-					snapshot.Metadata.CloudProvider = "eks"
-				}
-			}
-
-			switch cloudProvider {
-			case "auto":
-				// keep whatever the collector / manifest loader populated
-			case "none":
-				snapshot.Metadata.CloudProvider = "none"
-			case "eks", "gke", "aks":
-				snapshot.Metadata.CloudProvider = cloudProvider
-			default:
-				return fmt.Errorf("invalid --cloud-provider %q (must be auto, eks, gke, aks, or none)", cloudProvider)
 			}
 
 			usageIdx, usageWarnings, err := usage.LoadAuditLog(
