@@ -349,6 +349,71 @@ Three behaviors to know:
 - `--from` ignores the exclusions, and it accepts an identity that `scan` does not use as a starting point: a built-in `system:` identity, a control-plane ServiceAccount, or a group such as `Group/system:authenticated` ("what can every authenticated user reach?").
 - An identity that is not in the cluster is an error, not an empty answer. An empty answer for a mistyped name would look like "this identity is safe".
 
+### Check a change before you apply it
+
+`--overlay` applies manifests on top of a snapshot in memory. `--overlay-delete` removes one object. `--diff` then lists the attack paths that the change adds, removes, and changes. Nothing touches the cluster, so you can ask "does this RoleBinding open a path?" in a pull request, or "does this fix close the path?" before you run `kubectl`.
+
+A new binding that looks harmless in review:
+
+```console
+$ kubesplaining paths --input-file snapshot.json --overlay ci-deployer-admin.yaml --diff
+ADDED (2)
+SEVERITY  SCORE  SOURCE                         TARGET         HOPS  CHAIN
+CRITICAL  9.65   ServiceAccount/ci/deployer     cluster-admin  1     bound_to_cluster_admin
+CRITICAL  9.25   ServiceAccount/default/reader  cluster-admin  2     pod_create_token_theft > bound_to_cluster_admin
+
+The change adds 2 attack paths, removes 0, and changes 0. 2 stay the same.
+$ echo $?
+2
+```
+
+The first path is in the manifest. The second is not: `default/reader` can create pods, so it can now start a pod that runs as the new admin ServiceAccount.
+
+A fix, checked before it is applied:
+
+```console
+$ kubesplaining paths --input-file snapshot.json --overlay-delete ClusterRoleBinding/reader-role --diff
+REMOVED (2)
+SEVERITY  SCORE  SOURCE                         TARGET               HOPS  CHAIN
+CRITICAL  9.0    ServiceAccount/default/reader  node-escape          1     pod_create_privileged_escape
+HIGH      8.45   ServiceAccount/default/reader  kube-system-secrets  1     read_secrets
+
+The change adds 0 attack paths, removes 2, and changes 0. 0 stay the same.
+```
+
+A path that stays open by a second route is not listed as removed. It is listed under `CHANGED`, with the binding behind each route, so a fix that is not sufficient does not look like a fix:
+
+```console
+$ kubesplaining paths --input-file snapshot.json --to cluster-admin --overlay-delete ClusterRoleBinding/reader-admin-a --diff
+CHANGED (1): still open, by a different route
+ServiceAccount/default/reader -> cluster-admin
+  before: bound_to_cluster_admin [ClusterRoleBinding reader-admin-a (role cluster-admin)]
+          also: bound_to_cluster_admin [ClusterRoleBinding reader-admin-b (role cluster-admin)]
+  after:  bound_to_cluster_admin [ClusterRoleBinding reader-admin-b (role cluster-admin)]
+
+The change adds 0 attack paths, removes 0, and changes 1. 0 stay the same.
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--overlay <file\|dir\|->` | Apply the manifests in a file, in a directory (read recursively), or from standard input. An object replaces the one with the same kind, namespace, and name, or is added. Repeatable. |
+| `--overlay-delete <object>` | Remove one object: `ClusterRoleBinding/<name>`, `ClusterRole/<name>`, `RoleBinding/<namespace>/<name>`, `Role/<namespace>/<name>`, `ServiceAccount/<namespace>/<name>`, `Pod/<namespace>/<name>`. An object that is not in the snapshot is an error. Repeatable. |
+| `--overlay-namespace <ns>` | The namespace for a manifest that has no `metadata.namespace`, as with `kubectl apply -n`. Without it, such a manifest is an error. |
+| `--diff` | Compare before and after. Exit code 2 when the change adds a path, 0 when it does not, 1 when the command fails. |
+
+For a Helm chart or a Kustomize directory, render first and pipe the result in:
+
+```bash
+helm template my-release ./chart | kubesplaining paths --input-file snapshot.json --overlay - --diff
+```
+
+What the overlay does and does not model:
+
+- It applies `Role`, `ClusterRole`, `RoleBinding`, `ClusterRoleBinding`, `ServiceAccount`, `Namespace`, and `Pod`. It skips other kinds and says so. A `Deployment` in the overlay adds no pod, because no controller runs. To model a new workload, overlay a `Pod` with the same pod spec.
+- After a change to a ClusterRole, it derives the rules of the aggregated ClusterRoles (`admin`, `edit`, `view`, and your own) again, so a new role with an `aggregate-to-*` label has its effect.
+- `--diff` does not apply the default exclusions, so a path that the change adds is never hidden. Pass an exclusions flag to apply them.
+- `scan` takes the same three `--overlay` flags and writes a full report of the state after the change. The report says that it includes an overlay.
+
 ## Use with an AI agent
 
 The repository ships an [Agent Skill](https://agentskills.io) named `attack-paths`. A skill is a Markdown file that tells a coding agent when and how to use a tool. With the skill installed, you can ask in plain words:
@@ -357,7 +422,7 @@ The repository ships an [Agent Skill](https://agentskills.io) named `attack-path
 - "What can the `ci` ServiceAccount in `dev` escalate to? Give me the smallest fix."
 - "Review the RBAC in this cluster and show me the three worst paths."
 
-The agent captures a snapshot with `kubesplaining download`, gets the answer from `kubesplaining paths` as JSON, explains each hop, and proposes the change to the binding. The skill tells the agent not to change the cluster: you get a command or a patch, and you apply it.
+The agent captures a snapshot with `kubesplaining download`, gets the answer from `kubesplaining paths` as JSON, explains each hop, proposes the change to the binding, and checks that change offline with `--overlay` and `--diff` before it shows it to you. The skill tells the agent not to change the cluster: you get a command or a patch, and you apply it.
 
 In Claude Code:
 

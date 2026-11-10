@@ -93,6 +93,7 @@ list: the output has `total`, so you always know how many paths match.
 | What can every authenticated identity reach? | `--from Group/system:authenticated` |
 | Can X reach Y? Show me how. | `--from <X> --to <Y> --verbose --output-format json` |
 | What are the worst paths in the cluster? | `kubesplaining paths --input-file "$SNAPSHOT" --output-format json --limit 20` |
+| Is this RBAC change safe? | Step 6: `--overlay <file> --diff` |
 | Give me the full report. | `kubesplaining scan --input-file "$SNAPSHOT" --output-dir <dir>` then point the user to `<dir>/report.html` |
 
 Targets for `--to`: `cluster-admin`, `system-masters`, `kube-system-secrets`,
@@ -189,10 +190,46 @@ Get the chain with `--verbose`, then find the smallest change that breaks it.
 5. Give the change as a command or a patch that the user applies. Do not apply
    it.
 
-To confirm a fix after the user applies it, capture a new snapshot and run the
-same query again.
+## Step 6: Check the change before you give it
 
-## Step 6: Report
+Do not give the user a fix that you did not check. `--overlay` and
+`--overlay-delete` apply a change to the snapshot in memory, and `--diff` lists
+what the change does to the attack paths. Nothing touches the cluster.
+
+| The change | Command |
+| --- | --- |
+| Remove a binding | `kubesplaining paths --input-file "$SNAPSHOT" --overlay-delete ClusterRoleBinding/<name> --diff --output-format json` (for a RoleBinding: `RoleBinding/<namespace>/<name>`) |
+| Change an object (remove one subject, narrow a rule) | Write the complete new object to a file, then `--overlay <file> --diff`. An overlay object replaces the whole object with the same kind, namespace, and name. |
+| Add RBAC (a new binding, a new role) | `--overlay <file-or-directory> --diff` |
+| A Helm chart or a Kustomize directory | Render it first: `helm template <chart> \| kubesplaining paths --input-file "$SNAPSHOT" --overlay - --diff` |
+
+Use the same `--from` and `--to` as in the question to keep the diff small. Use
+no filter to see each effect of the change.
+
+How to read the diff:
+
+- `removed`: paths that the change closes. The path you set out to fix must be
+  in this list.
+- `changed`: the path is still there, by a different route. `after.hops` is the
+  route that is left. The fix is not sufficient: cut that route too.
+- `added`: paths that the change opens. The command exits with code 2. Tell the
+  user about these before anything else. A new binding can open a path for an
+  identity that the manifest does not name.
+- `unchanged`: the count of paths that stay the same.
+- `notes`: the overlay skips kinds it cannot model (a Deployment adds no pod,
+  because no controller runs), and it says so here.
+
+Exit code 2 means "the change adds a path". It is a result, not a failure. Exit
+code 1 is a failure: a bad flag, a file that cannot be read, an object to
+delete that is not in the snapshot.
+
+The same check answers "is this RBAC change safe?" when the user shows you a
+manifest or a pull request: overlay the new manifests and read `added`.
+
+After the user applies a fix, capture a new snapshot and run the question again
+to confirm it on the real cluster.
+
+## Step 7: Report
 
 Give the answer first, then the evidence. A good report has:
 
@@ -200,6 +237,7 @@ Give the answer first, then the evidence. A good report has:
   cluster-admin").
 - The paths that matter, one line each: source, target, and the chain of
   actions. Explain a hop in plain words when its name is not clear.
-- The fix, as a command or a patch, and what it can break.
+- The fix, as a command or a patch, what it can break, and what the check in
+  Step 6 showed.
 - The limits: a cut list, hidden paths, a lower bound, or an alternate route
   that the fix does not close.

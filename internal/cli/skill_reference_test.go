@@ -125,7 +125,7 @@ func TestSkillFileFollowsTheFormat(t *testing.T) {
 	}
 	// Each flag that the skill uses with paths must exist on the command.
 	paths := NewPathsCmd(BuildInfo{})
-	for _, flag := range []string{"input-file", "from", "to", "verbose", "output-format", "limit"} {
+	for _, flag := range []string{"input-file", "from", "to", "verbose", "output-format", "limit", "overlay", "overlay-delete", "diff"} {
 		if !strings.Contains(body, "--"+flag) {
 			t.Errorf("SKILL.md no longer mentions --%s", flag)
 		}

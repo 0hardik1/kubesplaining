@@ -1,7 +1,7 @@
 {
   "name": "kubesplaining",
   "description": "Find, explain, and fix Kubernetes RBAC privilege-escalation paths with the kubesplaining CLI.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "0hardik1"
   },
