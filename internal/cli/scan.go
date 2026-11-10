@@ -53,6 +53,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 		remediationPatches   bool
 		cloudProvider        string
 		eksAccessEntriesFile string
+		overlaySource        snapshotSource
 	)
 
 	cmd := &cobra.Command{
@@ -104,6 +105,9 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 				parallelism:          parallelism,
 				cloudProvider:        cloudProvider,
 				eksAccessEntriesFile: eksAccessEntriesFile,
+				overlayPaths:         overlaySource.overlayPaths,
+				overlayDeletes:       overlaySource.overlayDeletes,
+				overlayNamespace:     overlaySource.overlayNamespace,
 			}.load(cmd, build)
 			if err != nil {
 				return err
@@ -279,6 +283,7 @@ func NewScanCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().BoolVar(&remediationPatches, "remediation-patches", false, "Attach structured remediation hints (kubectl patch, Kyverno / Gatekeeper policy, RBAC diff) to every finding. Adds to JSON/SARIF output and the 'Structured remediation' section in HTML. Off by default.")
 	cmd.Flags().StringVar(&eksAccessEntriesFile, "eks-access-entries", "", "Path to an EKS access-entries export produced by scripts/eks-access-entries.sh. Enables the KUBE-CLOUD-ACCESSENTRY-* rules; without it an EKS scan reports KUBE-CLOUD-ACCESSENTRY-NOT-EVALUATED-001 because access entries live in the EKS API, not the cluster.")
 	cmd.Flags().StringVar(&cloudProvider, "cloud-provider", "auto", "Cloud provider hint for cloud-aware detectors: auto|eks|gke|aks|none. 'auto' keeps the collector / manifest-loader auto-detection; the concrete names override it; 'none' forces detectors off.")
+	bindOverlayFlags(cmd, &overlaySource)
 
 	return cmd
 }

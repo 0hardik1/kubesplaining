@@ -119,3 +119,13 @@ No admission webhooks, CRDs, or agent pods are installed. The tool is safe to po
 Exclusions are applied **after** analysis. `exclusions.Apply` walks each finding through the matcher; on a hit, the finding is dropped from the slice the report writer sees. The `standard` preset is auto-applied even without `--exclusions-file` so control-plane noise (kube-system, `system:*`, `kubeadm:*`) doesn't bury actionable findings; pass `--exclusions-preset=none` to opt out. User-supplied YAML loaded with `--exclusions-file` is merged on top of the preset rather than replacing it.
 
 The full schema — `global` / `rbac` / `pod_security` / `network_policy` sections, glob semantics, evaluation order — is in [docs/exclusions.md](exclusions.md).
+
+## What-if overlay ([internal/overlay/](../internal/overlay/))
+
+`--overlay` and `--overlay-delete` change the snapshot in memory, between Stage 2 and Stage 3. `overlay.Apply` returns a copy of the snapshot with the manifests applied and the named objects removed, and the analyzers then run on that copy as they do on a collected snapshot. `paths --diff` runs the same query on the base snapshot and on the copy, and compares the two answers by finding ID.
+
+Three properties matter for a correct answer:
+
+- An overlay object replaces the whole object with the same kind, namespace, and name. It is not a merge. This is the state after `kubectl apply` of a complete manifest.
+- The overlay applies only the kinds that the privilege-escalation graph reads directly (the four RBAC kinds, ServiceAccount, Namespace, Pod). It skips other kinds with a warning, because no controller runs to turn a Deployment into pods.
+- A snapshot holds the rules that the API server copied into each aggregated ClusterRole (`admin`, `edit`, `view`). After a change to a ClusterRole, the overlay derives those rules again. It does this only for an aggregated role whose rules it can reproduce from the base snapshot. Each other aggregated role keeps its rules, and a warning names it, so a partial snapshot cannot make a path seem to close.

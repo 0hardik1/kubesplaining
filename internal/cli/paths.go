@@ -2,9 +2,11 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,7 +69,13 @@ const pathsExample = `  # Who can reach cluster-admin?
 
   # Capture the cluster one time, then ask offline and get JSON
   kubesplaining download --output-file snapshot.json
-  kubesplaining paths --input-file snapshot.json --to node-escape --output-format json --limit 10`
+  kubesplaining paths --input-file snapshot.json --to node-escape --output-format json --limit 10
+
+  # Does this manifest open a path? Nothing is applied to the cluster.
+  kubesplaining paths --input-file snapshot.json --overlay new-binding.yaml --diff
+
+  # Does this fix close the path?
+  kubesplaining paths --input-file snapshot.json --overlay-delete ClusterRoleBinding/ci-admin --diff`
 
 // NewPathsCmd returns the "paths" subcommand. It answers one question about the
 // privilege-escalation graph in the terminal, where `scan` writes a full report.
@@ -83,6 +91,7 @@ func NewPathsCmd(build BuildInfo) *cobra.Command {
 		maxPrivescDepth  int
 		exclusionsFile   string
 		exclusionsPreset string
+		diff             bool
 	)
 
 	cmd := &cobra.Command{
@@ -122,53 +131,81 @@ func NewPathsCmd(build BuildInfo) *cobra.Command {
 			if depth <= 0 {
 				depth = privesc.DefaultMaxDepth
 			}
-
-			snapshot, err := src.load(cmd, build)
-			if err != nil {
-				return err
+			if diff && !src.hasOverlay() {
+				return fmt.Errorf("--diff compares the cluster before and after a change, so it needs --overlay or --overlay-delete")
 			}
-			graph := privesc.BuildGraph(snapshot)
-
-			var (
-				notes []string
-				paths []models.EscalationPath
-			)
-			if source != nil {
-				notes, err = resolveSource(graph, *source)
-				if err != nil {
-					return err
-				}
-				paths, _ = privesc.PathsFrom(graph, *source, depth)
-			} else {
-				paths = privesc.FindPaths(graph, depth)
+			if diff && limit > 0 {
+				return fmt.Errorf("--limit cannot be used with --diff: a diff that is cut can hide an added path")
 			}
-			findings := privesc.FindingsFromPaths(paths, snapshot)
-			findings = filterPathFindings(findings, target, id)
 
+			query := pathQuery{source: source, target: target, id: id, depth: depth}
 			// The exclusions keep the default listing equal to what scan reports. A
-			// path that the user asked for by source or by ID is never hidden.
-			if source == nil && id == "" {
+			// path that the user asked for by source or by ID is never hidden. A diff
+			// hides nothing unless the user asks: paths that do not change cancel out,
+			// and a hidden path that the change adds would make the check pass.
+			exclusionsChosen := cmd.Flags().Changed("exclusions-preset") || cmd.Flags().Changed("exclusions-file")
+			if source == nil && id == "" && (!diff || exclusionsChosen) {
 				cfg, err := loadExclusions(exclusionsPreset, exclusionsFile)
 				if err != nil {
 					return err
 				}
-				var hidden int
-				findings, hidden = exclusions.Apply(cfg, findings)
-				if hidden > 0 {
-					hint := "add --exclusions-preset none"
-					if exclusionsFile != "" {
-						hint += " and remove --exclusions-file"
-					}
-					notes = append(notes, fmt.Sprintf("The exclusions hide %d attack %s that %s this question. To list all, %s.",
-						hidden, pluralize(hidden, "path", "paths"), pluralize(hidden, "matches", "match"), hint))
-				}
+				query.exclusions = &cfg
 			}
+
+			base, err := src.loadBase(cmd, build)
+			if err != nil {
+				return err
+			}
+			snapshot := base
+			var notes []string
+			if src.hasOverlay() {
+				changed, result, err := src.applyOverlay(cmd, base)
+				if err != nil {
+					return err
+				}
+				snapshot = changed
+				notes = append(notes, overlayNotes(result)...)
+			}
+
+			if diff {
+				delta, diffNotes, err := query.diff(base, snapshot)
+				if err != nil {
+					return err
+				}
+				notes = append(notes, diffNotes...)
+				if format == "json" {
+					err = writePathsDiffJSON(cmd.OutOrStdout(), delta, notes, verbose)
+				} else {
+					err = writePathsDiffText(cmd.OutOrStdout(), cmd.ErrOrStderr(), delta, notes, verbose)
+				}
+				if err != nil {
+					return err
+				}
+				if n := len(delta.added); n > 0 {
+					return asGateError(fmt.Errorf("the change adds %d attack %s", n, pluralize(n, "path", "paths")))
+				}
+				return nil
+			}
+
+			answer, err := query.run(snapshot)
+			if err != nil {
+				return err
+			}
+			notes = append(notes, answer.notes...)
+			if answer.hidden > 0 {
+				hint := "add --exclusions-preset none"
+				if exclusionsFile != "" {
+					hint += " and remove --exclusions-file"
+				}
+				notes = append(notes, fmt.Sprintf("The exclusions hide %d attack %s that %s this question. To list all, %s.",
+					answer.hidden, pluralize(answer.hidden, "path", "paths"), pluralize(answer.hidden, "matches", "match"), hint))
+			}
+			findings := answer.findings
 
 			if id != "" && len(findings) == 0 {
 				return fmt.Errorf("no attack path has the ID %q (list the IDs with --output-format json)", id)
 			}
 
-			sortPathFindings(findings)
 			total := len(findings)
 			if limit > 0 && total > limit {
 				findings = findings[:limit]
@@ -203,6 +240,8 @@ func NewPathsCmd(build BuildInfo) *cobra.Command {
 	cmd.Flags().IntVar(&src.parallelism, "parallelism", 10, "Maximum parallel API requests when the command reads the live cluster")
 	cmd.Flags().StringVar(&src.eksAccessEntriesFile, "eks-access-entries", "", "Path to an EKS access-entries export produced by scripts/eks-access-entries.sh")
 	cmd.Flags().StringVar(&src.cloudProvider, "cloud-provider", "auto", "Cloud provider hint: auto|eks|gke|aks|none")
+	bindOverlayFlags(cmd, &src)
+	cmd.Flags().BoolVar(&diff, "diff", false, "With --overlay or --overlay-delete: list the paths that the change adds, removes, and changes. Exits with code 2 when the change adds a path.")
 
 	return cmd
 }
@@ -365,7 +404,248 @@ func unknownSubjectError(graph *models.EscalationGraph, ref models.SubjectRef) e
 	if _, ok := privesc.SubjectNode(graph, authenticated); ok && ref.Kind != "ServiceAccount" {
 		fmt.Fprintf(&msg, ". To see what each authenticated identity can reach, use --from %s", authenticated.Key())
 	}
-	return fmt.Errorf("%s", msg.String())
+	return subjectNotFoundError{message: msg.String()}
+}
+
+// subjectNotFoundError says that --from names a subject that the cluster does
+// not have. `paths --diff` reads it as "no paths on this side" when the subject
+// is in the cluster on the other side of the change.
+type subjectNotFoundError struct{ message string }
+
+func (e subjectNotFoundError) Error() string { return e.message }
+
+// pathQuery is one question: the filters and the search depth.
+type pathQuery struct {
+	source *models.SubjectRef
+	target *targetSelector
+	id     string
+	depth  int
+	// exclusions is nil when the exclusions do not apply to this question.
+	exclusions *exclusions.Config
+}
+
+// pathAnswer is the paths that match a question on one snapshot, ordered for
+// output, plus the notes the answer needs and the count of matching paths that
+// the exclusions hid.
+type pathAnswer struct {
+	findings []models.Finding
+	notes    []string
+	hidden   int
+}
+
+// run answers the question on one snapshot.
+func (q pathQuery) run(snapshot models.Snapshot) (pathAnswer, error) {
+	graph := privesc.BuildGraph(snapshot)
+
+	var (
+		answer pathAnswer
+		paths  []models.EscalationPath
+	)
+	if q.source != nil {
+		notes, err := resolveSource(graph, *q.source)
+		if err != nil {
+			return pathAnswer{}, err
+		}
+		answer.notes = notes
+		paths, _ = privesc.PathsFrom(graph, *q.source, q.depth)
+	} else {
+		paths = privesc.FindPaths(graph, q.depth)
+	}
+
+	findings := filterPathFindings(privesc.FindingsFromPaths(paths, snapshot), q.target, q.id)
+	if q.exclusions != nil {
+		findings, answer.hidden = exclusions.Apply(*q.exclusions, findings)
+	}
+	sortPathFindings(findings)
+	answer.findings = findings
+	return answer, nil
+}
+
+// pathChange is one path that exists before and after a change, with a
+// different chain or a different alternate route.
+type pathChange struct {
+	before models.Finding
+	after  models.Finding
+}
+
+// pathsDelta is what a change does to the answer of one question.
+type pathsDelta struct {
+	added     []models.Finding
+	removed   []models.Finding
+	changed   []pathChange
+	unchanged int
+}
+
+// diff answers the question before and after a change and compares the two
+// answers by path ID. An ID names the source and the target, so a path whose
+// route moves keeps its ID and is reported as changed, not as removed. That is
+// the case that matters for a fix: the binding is gone, and a second route to the
+// same target is still there.
+func (q pathQuery) diff(before, after models.Snapshot) (pathsDelta, []string, error) {
+	beforeAnswer, beforeErr := q.run(before)
+	afterAnswer, afterErr := q.run(after)
+	// A --from subject can be on one side only: the change adds a ServiceAccount,
+	// or deletes the last binding that names a user. That side has its paths, and
+	// the other side has none. A subject on neither side is an error.
+	var notFound subjectNotFoundError
+	switch {
+	case beforeErr != nil && afterErr != nil:
+		return pathsDelta{}, nil, afterErr
+	case beforeErr != nil && !errors.As(beforeErr, &notFound):
+		return pathsDelta{}, nil, beforeErr
+	case afterErr != nil && !errors.As(afterErr, &notFound):
+		return pathsDelta{}, nil, afterErr
+	}
+
+	beforeByID := map[string]models.Finding{}
+	for _, finding := range beforeAnswer.findings {
+		beforeByID[finding.ID] = finding
+	}
+	var delta pathsDelta
+	seen := map[string]bool{}
+	for _, finding := range afterAnswer.findings {
+		seen[finding.ID] = true
+		old, existed := beforeByID[finding.ID]
+		switch {
+		case !existed:
+			delta.added = append(delta.added, finding)
+		case !reflect.DeepEqual(old.EscalationPath, finding.EscalationPath) ||
+			!reflect.DeepEqual(old.AlternateEscalationPath, finding.AlternateEscalationPath):
+			delta.changed = append(delta.changed, pathChange{before: old, after: finding})
+		default:
+			delta.unchanged++
+		}
+	}
+	for _, finding := range beforeAnswer.findings {
+		if !seen[finding.ID] {
+			delta.removed = append(delta.removed, finding)
+		}
+	}
+
+	notes := afterAnswer.notes
+	if beforeErr != nil {
+		notes = append(notes, q.source.Key()+" is not in the cluster before the change.")
+	}
+	if afterErr != nil {
+		notes = append(notes, q.source.Key()+" is not in the cluster after the change.")
+	}
+	return delta, notes, nil
+}
+
+// pathsDiffOutput is the JSON form of a diff.
+type pathsDiffOutput struct {
+	Added     []pathRecord       `json:"added"`
+	Removed   []pathRecord       `json:"removed"`
+	Changed   []pathChangeRecord `json:"changed"`
+	Unchanged int                `json:"unchanged"`
+	Notes     []string           `json:"notes,omitempty"`
+}
+
+type pathChangeRecord struct {
+	Before pathRecord `json:"before"`
+	After  pathRecord `json:"after"`
+}
+
+func writePathsDiffJSON(w io.Writer, delta pathsDelta, notes []string, verbose bool) error {
+	out := pathsDiffOutput{
+		Added:     make([]pathRecord, 0, len(delta.added)),
+		Removed:   make([]pathRecord, 0, len(delta.removed)),
+		Changed:   make([]pathChangeRecord, 0, len(delta.changed)),
+		Unchanged: delta.unchanged,
+		Notes:     notes,
+	}
+	for _, finding := range delta.added {
+		out.Added = append(out.Added, newPathRecord(finding, verbose))
+	}
+	for _, finding := range delta.removed {
+		out.Removed = append(out.Removed, newPathRecord(finding, verbose))
+	}
+	for _, change := range delta.changed {
+		out.Changed = append(out.Changed, pathChangeRecord{Before: newPathRecord(change.before, verbose), After: newPathRecord(change.after, verbose)})
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(out)
+}
+
+// writePathsDiffText prints one section for each kind of difference on stdout,
+// then the counts and the notes on stderr.
+func writePathsDiffText(stdout, stderr io.Writer, delta pathsDelta, notes []string, verbose bool) error {
+	list := writePathsTable
+	if verbose {
+		list = writePathsVerbose
+	}
+	var b strings.Builder
+	section := func(title string, findings []models.Finding) error {
+		if len(findings) == 0 {
+			return nil
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "%s (%d)\n", title, len(findings))
+		return list(&b, findings)
+	}
+	if err := section("ADDED", delta.added); err != nil {
+		return err
+	}
+	if err := section("REMOVED", delta.removed); err != nil {
+		return err
+	}
+	if len(delta.changed) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		// A changed path is the one result that a reader can take for a fix that
+		// worked, so each route names the binding behind each hop. Two routes with
+		// the same actions differ only in that.
+		fmt.Fprintf(&b, "CHANGED (%d): still open, by a different route\n", len(delta.changed))
+		for _, change := range delta.changed {
+			target, detail, _ := privesc.FindingTarget(change.after)
+			fmt.Fprintf(&b, "%s -> %s\n", subjectKey(change.after.Subject), targetLabel(target, detail))
+			writeRoutes(&b, "before", change.before)
+			writeRoutes(&b, "after", change.after)
+		}
+	}
+	if _, err := io.WriteString(stdout, b.String()); err != nil {
+		return err
+	}
+
+	var footer strings.Builder
+	if b.Len() > 0 {
+		footer.WriteString("\n")
+	}
+	fmt.Fprintf(&footer, "The change adds %d attack %s, removes %d, and changes %d. %d %s the same.\n",
+		len(delta.added), pluralize(len(delta.added), "path", "paths"), len(delta.removed), len(delta.changed),
+		delta.unchanged, pluralize(delta.unchanged, "stays", "stay"))
+	for _, note := range notes {
+		fmt.Fprintf(&footer, "note: %s\n", note)
+	}
+	_, err := io.WriteString(stderr, footer.String())
+	return err
+}
+
+// writeRoutes prints the chain of a path under label, and its alternate route
+// when it has one.
+func writeRoutes(b *strings.Builder, label string, finding models.Finding) {
+	fmt.Fprintf(b, "  %-7s %s\n", label+":", routeWithGrants(finding.EscalationPath))
+	if len(finding.AlternateEscalationPath) > 0 {
+		fmt.Fprintf(b, "  %-7s also: %s\n", "", routeWithGrants(finding.AlternateEscalationPath))
+	}
+}
+
+// routeWithGrants prints a chain as its actions, each with the binding that
+// grants it when RBAC grants it.
+func routeWithGrants(hops []models.EscalationHop) string {
+	parts := make([]string, 0, len(hops))
+	for _, hop := range hops {
+		part := hop.Action
+		if granted := grantedBy(hop); granted != "" {
+			part += " [" + granted + "]"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, " > ")
 }
 
 // filterPathFindings keeps the findings that match --to and --id. A nil target
