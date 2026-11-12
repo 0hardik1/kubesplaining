@@ -8,9 +8,9 @@
 
 Kubesplaining is an open-source Kubernetes security assessment CLI that reads a live cluster or a captured snapshot and tells you exactly how an attacker can move through it. Unlike scanners that stop at "this resource is misconfigured," it builds a multi-hop RBAC privilege-escalation graph from every non-system subject to nine sinks (among them `cluster-admin`, `system:masters`, `node-escape`, and `kube-system-secrets`) and renders each chain with the actual verbs, evidence, and remediation. Outputs are risk-prioritized HTML, JSON, CSV, and SARIF reports for human review, GitHub code scanning, or CI delta gates.
 
-<video src="https://github.com/user-attachments/assets/b286b407-391a-4495-be52-2841a77a2b9a" controls width="100%"></video>
+[![The Attack paths tab of the HTML report: a graph of the identities that can reach cluster-admin, in columns by the number of hops](docs/assets/attack-paths.png)](https://0hardik1.github.io/kubesplaining/#tab-paths)
 
-*A tour of the HTML report: the Summary tab, the Attack paths tab with hover tracing and pinning, and the Findings tab.*
+*The Attack paths tab of the HTML report. Each box is an identity and each arrow is one hop. The columns show how many hops an identity is from the target. Here, 23 paths end at `cluster-admin`, and the longest has three hops.*
 
 * [Live example report](https://0hardik1.github.io/kubesplaining/)
 
@@ -37,7 +37,7 @@ Most scanners overlap on "is this pod privileged?" The differentiator is whether
 | Capability | kubesplaining | kubescape | trivy | polaris |
 | --- | --- | --- | --- | --- |
 | Multi-hop RBAC privesc graph | Yes (BFS over RBAC + pod state to 9 sinks, full hop chain) | No (per-binding flags only) | No | No |
-| Per-finding remediation (patch / Kyverno / Gatekeeper) | Yes (prose + kubectl patch + policy YAML, per rule) | Partial (control description) | Partial (text only) | Partial (text only) |
+| Per-finding remediation (patch / Kyverno / Gatekeeper) | Yes (prose per rule; kubectl patch + policy YAML with `--remediation-patches`) | Partial (control description) | Partial (text only) | Partial (text only) |
 | Snapshot diff for CI delta gates | Yes (`scan --baseline old.json`, fail only on *new* findings) | No | No | No |
 
 Inspired by [Kinnaird McQuade](https://www.linkedin.com/in/kmcquade3/) at [BeyondTrust Phantom Labs](https://www.linkedin.com/company/beyondtrust-phantom-labs/) and his [Cloudsplaining](https://github.com/salesforce/cloudsplaining), which does the same job for AWS IAM. Kubesplaining reads a live cluster or a previously captured snapshot, analyzes it against a library of techniques, and produces a prioritized list of findings: explanation, not just detection.
@@ -198,84 +198,117 @@ For the per-stage walkthrough, the privesc graph mechanics, the data model, and 
 
 ## Sample finding
 
-What the output actually looks like. Each rule produces a `Finding` with stable `RuleID`, severity, evidence, and remediation; the privesc rules additionally carry an `EscalationPath` array.
+What the output looks like. Each rule produces a finding with a stable `rule_id`, a severity, evidence, and a remediation. A privesc path finding also has an `escalation_path` array.
+
+The three samples below come from the [`findings.json`](https://0hardik1.github.io/kubesplaining/findings.json) of the live example report. Each sample is abridged: the long text fields (`description`, `impact`, `attack_scenario`, `remediation_steps`, `references`, `learn_more`) and the `namespace`, `scope`, `tags`, `mitre_techniques`, and `frameworks` fields are left out.
 
 <details>
 <summary><strong>KUBE-PRIVESC-PATH-CLUSTER-ADMIN</strong>: service account reaches cluster-admin in 2 hops</summary>
 
 ```json
 {
-  "id": "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:foo:builder-bot",
+  "id": "KUBE-PRIVESC-PATH-CLUSTER-ADMIN:ServiceAccount/rbac-fixtures/sa-pod-create:cluster_admin_equivalent",
   "rule_id": "KUBE-PRIVESC-PATH-CLUSTER-ADMIN",
   "severity": "CRITICAL",
-  "score": 9.3,
+  "score": 9.25,
   "category": "privilege_escalation",
-  "subject": { "kind": "ServiceAccount", "namespace": "foo", "name": "builder-bot" },
-  "title": "ServiceAccount foo/builder-bot can reach cluster-admin equivalent in 2 hop(s)",
+  "title": "`ServiceAccount/rbac-fixtures/sa-pod-create` can reach **cluster-admin equivalent** in 2 hop(s)",
+  "subject": { "kind": "ServiceAccount", "name": "sa-pod-create", "namespace": "rbac-fixtures" },
+  "evidence": {
+    "chain_summary": [
+      "1. pod_create_token_theft [create pods]",
+      "2. wildcard_permission [*:*:*]"
+    ],
+    "first_action": "pod_create_token_theft",
+    "hop_count": 2,
+    "target": "cluster_admin_equivalent",
+    "target_namespace": "",
+    "techniques": [
+      "pod_create_token_theft",
+      "wildcard_permission"
+    ]
+  },
   "escalation_path": [
     {
-      "from_subject": "ServiceAccount/foo/builder-bot",
-      "to_subject":   "ServiceAccount/kube-system/replicaset-controller",
-      "action":       "pod_create",
-      "permission":   "create on pods",
-      "gains":        "run a pod that mounts the kube-system replicaset-controller token"
+      "step": 1,
+      "action": "pod_create_token_theft",
+      "technique": "KUBE-PRIVESC-001",
+      "difficulty": "moderate",
+      "from_subject": { "kind": "ServiceAccount", "name": "sa-pod-create", "namespace": "rbac-fixtures" },
+      "to_subject": { "kind": "ServiceAccount", "name": "cert-manager", "namespace": "cert-manager" },
+      "permission": "create pods",
+      "gains": "can create pods that mount ServiceAccount cert-manager/cert-manager",
+      "source_binding": "crb-pod-create",
+      "source_role": "cr-pod-create"
     },
     {
-      "from_subject": "ServiceAccount/kube-system/replicaset-controller",
-      "to_subject":   "ClusterRole/cluster-admin",
-      "action":       "wildcard_holder",
-      "permission":   "*/*/*",
-      "gains":        "this SA already holds cluster-admin equivalence"
+      "step": 2,
+      "action": "wildcard_permission",
+      "technique": "KUBE-PRIVESC-017",
+      "difficulty": "easy",
+      "from_subject": { "kind": "ServiceAccount", "name": "cert-manager", "namespace": "cert-manager" },
+      "to_subject": { "kind": "", "name": "" },
+      "permission": "*:*:*",
+      "gains": "wildcard verbs on wildcard resources in wildcard API groups",
+      "source_binding": "cutres-deputy-cm-admin",
+      "source_role": "cluster-admin"
     }
   ],
-  "remediation": "Drop `create pods` from foo/builder-bot's role, OR move that workload off kube-system."
+  "remediation": "Break the chain at the weakest hop: remove the `create pods` capability that enables hop 1 (`ServiceAccount/rbac-fixtures/sa-pod-create` → `ServiceAccount/cert-manager/cert-manager`)."
 }
 ```
 
-The HTML report renders this as a hop-by-hop card with technique explainers per edge; the SARIF output keeps the chain in the `properties.escalation_path` field of each result for IDE integration.
+The last hop ends at the target, not at an identity, so its `to_subject` is empty. `evidence.target` names the target.
+
+The HTML report draws this path in the graph of its target on the Attack paths tab, and lists it as a row that opens to show each hop. The SARIF output keeps the chain in the `properties.escalation_path` field of each result for IDE integration.
 
 </details>
 
 <details>
-<summary><strong>KUBE-ESCAPE-001</strong>: privileged container with hostPath mount</summary>
+<summary><strong>KUBE-ESCAPE-001</strong>: privileged container</summary>
 
 ```json
 {
-  "id": "KUBE-ESCAPE-001:default:debug-shell",
+  "id": "KUBE-ESCAPE-001:Deployment:vulnerable:risky-app:app",
   "rule_id": "KUBE-ESCAPE-001",
   "severity": "CRITICAL",
-  "score": 9.5,
+  "score": 9.9,
   "category": "privilege_escalation",
-  "resource": { "kind": "Pod", "namespace": "default", "name": "debug-shell" },
-  "title": "Privileged container in default/debug-shell",
-  "evidence": {
-    "container": "debug",
-    "securityContext": { "privileged": true },
-    "volumeMounts": [{ "name": "host-root", "mountPath": "/host", "hostPath": "/" }]
-  },
-  "remediation": "Drop `privileged: true`; replace hostPath `/` with the specific files via ConfigMap / Secret / CSI."
+  "title": "Privileged container `app` in `Deployment/vulnerable/risky-app`",
+  "resource": { "kind": "Deployment", "name": "risky-app", "namespace": "vulnerable", "api_group": "apps" },
+  "evidence": { "container": "app" },
+  "remediation": "Remove `privileged: true` and explicitly grant only the Linux capabilities the workload actually needs."
 }
 ```
 
 </details>
 
 <details>
-<summary><strong>KUBE-RBAC-OVERBROAD-001</strong>: group bound directly to cluster-admin</summary>
+<summary><strong>KUBE-RBAC-OVERBROAD-001</strong>: ServiceAccount bound directly to cluster-admin</summary>
 
 ```json
 {
-  "id": "KUBE-RBAC-OVERBROAD-001::ops-team-admin",
+  "id": "KUBE-RBAC-OVERBROAD-001:ServiceAccount/rbac-fixtures/sa-cluster-admin::",
   "rule_id": "KUBE-RBAC-OVERBROAD-001",
   "severity": "CRITICAL",
-  "score": 9.0,
+  "score": 10,
   "category": "privilege_escalation",
-  "subject": { "kind": "Group", "name": "ops-team" },
-  "title": "Group ops-team is bound to cluster-admin",
+  "title": "Non-system subject `ServiceAccount/rbac-fixtures/sa-cluster-admin` directly bound to `cluster-admin`",
+  "subject": { "kind": "ServiceAccount", "name": "sa-cluster-admin", "namespace": "rbac-fixtures" },
+  "resource": { "kind": "RBACRule", "name": "cluster-admin", "api_group": "rbac.authorization.k8s.io" },
   "evidence": {
-    "clusterRoleBinding": "ops-team-admin",
-    "roleRef": "cluster-admin"
+    "api_groups": null,
+    "namespace": "",
+    "resource_names": null,
+    "resources": null,
+    "scope": "cluster",
+    "source_binding": "crb-cluster-admin",
+    "source_binding_kind": "ClusterRoleBinding",
+    "source_role": "cluster-admin",
+    "source_role_kind": "ClusterRole",
+    "verbs": null
   },
-  "remediation": "Replace cluster-admin with a least-privilege role scoped to what ops-team actually needs."
+  "remediation": "Replace `cluster-admin` with a custom least-privilege ClusterRole, or scope the binding to a dedicated short-lived admin group reachable only via JIT/break-glass procedures."
 }
 ```
 
@@ -502,7 +535,7 @@ It emits four rule IDs:
 - `KUBE-RBAC-UNUSED-VERB-001`: Some verbs in a Role rule are unused; suggests a narrower verb list.
 - `KUBE-RBAC-WILDCARD-USED-PARTIAL-001`: `verbs: ["*"]` is granted but the SA only used a subset.
 
-The pre-existing `KUBE-RBAC-STALE-*` rules surface alongside in the Least Privilege HTML tab so dangling-binding cleanup and verb-level narrowing live in one view. Cluster-admin grants live in their own "Subjects bound to cluster-admin" inventory table on the same tab: directly bound subjects are listed for review rather than each one being flagged CRITICAL, because cluster-admin has legitimate uses (`system:masters`, break-glass groups) that vary by cluster. The standalone `KUBE-RBAC-OVERBROAD-001` finding still fires from the rbac module and shows up in the main Findings tab (and in JSON/CSV/SARIF output) for operators who want the per-binding alert.
+The pre-existing `KUBE-RBAC-STALE-*` rules surface alongside in the Least privilege HTML tab so dangling-binding cleanup and verb-level narrowing live in one view. Cluster-admin grants live in their own "Subjects bound to cluster-admin" inventory table on the same tab: directly bound subjects are listed for review rather than each one being flagged CRITICAL, because cluster-admin has legitimate uses (`system:masters`, break-glass groups) that vary by cluster. The standalone `KUBE-RBAC-OVERBROAD-001` finding still fires from the rbac module and shows up in the main Findings tab (and in JSON/CSV/SARIF output) for operators who want the per-binding alert.
 
 ### When does it fire?
 
@@ -512,7 +545,7 @@ The module is **opt-in via `--audit-log`**. A plain `kubesplaining scan` (no aud
 | --- | --- | --- |
 | `kubesplaining scan` / `make scan` | No | Same behavior as before; module silently no-ops. |
 | `scan --audit-log <path>` | Used if supplied | LP findings appear alongside the regular findings. |
-| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least Privilege tab; Summary / Attack paths / Findings / Compliance tabs are hidden. |
+| `scan --least-privilege-only --audit-log <path>` | **Yes** (CLI pre-flight errors if missing) | Only LP findings; HTML report opens on the Least privilege tab; Summary / Attack paths / Findings / Compliance tabs are hidden. |
 | `make scan-lp AUDIT_LOG=<path>` | **Yes** (Makefile errors if missing) | Same as the focused mode above; convenience target. |
 
 ### Quick start
@@ -535,10 +568,10 @@ kubesplaining scan \
 
 ### What's in the report
 
-The Least Privilege tab carries two summary tables on top, each row spelling out the exact action:
+The Least privilege tab carries two summary tables on top, each row spelling out the exact action:
 
-- **Unused RBAC resources**: Roles/ClusterRoles/Bindings that look like delete candidates. Each row names the binding to remove (e.g. `Delete ClusterRoleBinding/dashboard-admin (scope down to a narrower ClusterRole)`).
-- **Role to verb activity**: Verb-level narrowing opportunities with side-by-side **Used** vs **Unused** verb lists grouped by verb (`get: deployments|pods`), plus a "what to do" action and the suggested narrower-Role YAML on the per-finding card below.
+- **Unused RBAC objects**: Roles/ClusterRoles/Bindings that look like delete candidates. Each row names the object to remove (e.g. `Delete RoleBinding/billing/cleanup-cron (target Role missing)`).
+- **Verbs to remove**: Verb-level narrowing opportunities with side-by-side **Used** vs **Unused** verb lists grouped by verb (`get: deployments|pods`), plus a "What to do" action and the suggested narrower-Role YAML on the per-finding card below.
 
 When the audit log contains non-ServiceAccount callers (humans, groups, kubelets), the tab shows a one-line note explaining they're out of scope: kubesplaining only correlates ServiceAccount-bound RBAC, and human users belong in IdP / SSO group review.
 
@@ -560,7 +593,7 @@ kubesplaining scan --ci-mode --ci-max-critical 0 --ci-max-high 0
 
 ## Exclusions
 
-`scan`, `scan-resource`, and `report` **auto-apply the `standard` exclusions preset by default**, so findings about built-in Kubernetes plumbing are suppressed up front. That covers kube-system / kube-public / kube-node-lease namespaces, kube-controller-manager service accounts (`clusterrole-aggregation-controller`, `generic-garbage-collector`, …), `system:*` users / groups / roles, and `kubeadm:*` groups and bootstrap roles. None of it is something an operator can change without breaking their cluster, so showing it as risk just buries the things that are actionable.
+`scan`, `scan-resource`, and `report` **auto-apply the `standard` exclusions preset by default**, so findings about built-in Kubernetes plumbing are suppressed up front. That covers kube-system / kube-public / kube-node-lease / gatekeeper-system namespaces, kube-controller-manager service accounts (`clusterrole-aggregation-controller`, `generic-garbage-collector`, …), `system:*` users / groups / roles, and `kubeadm:*` groups and bootstrap roles. None of it is something an operator can change without breaking their cluster, so showing it as risk just buries the things that are actionable.
 
 Pick a different baseline with `--exclusions-preset`:
 
@@ -591,6 +624,7 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `kubesplaining download` | Capture a `snapshot.json` from a live cluster. Read-only. |
 | `kubesplaining scan-resource` | Scan a single resource manifest for quick checks. |
 | `kubesplaining report` | Re-render reports from an existing findings JSON. |
+| `kubesplaining diff` | Compare two findings JSON files and list the findings that were added, resolved, or unchanged. |
 | `kubesplaining create-exclusions-file` | Emit a starter exclusions YAML. |
 | `kubesplaining version` | Print build info. |
 
@@ -601,8 +635,8 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 | `--severity-threshold` | `low` | Hide findings below this severity (`critical` / `high` / `medium` / `low` / `info`). |
 | `--output-format` | `html,json` | Comma-separated list: `html`, `json`, `csv`, `sarif`. |
 | `--output-dir` | `./kubesplaining-report` | Where reports are written. |
-| `--only-modules` / `--skip-modules` | (none) | Scope analyzers (`rbac`, `podsec`, `network`, `admission`, `secrets`, `serviceaccount`, `privesc`, `leastprivilege`, `certificates`). |
-| `--least-privilege-only` | `false` | Focus mode: hide everything except RBAC tightening opportunities and land on the **Least Privilege** tab. Requires `--audit-log`. |
+| `--only-modules` / `--skip-modules` | (none) | Scope analyzers (`rbac`, `podsec`, `containersec`, `network`, `admission`, `secrets`, `serviceaccount`, `certificates`, `privesc`, `cloud`, `leastprivilege`). |
+| `--least-privilege-only` | `false` | Focus mode: hide everything except RBAC tightening opportunities and land on the **Least privilege** tab. Requires `--audit-log`. |
 | `--audit-log` | (none) | Path to a kube-apiserver audit log (file or directory; repeatable). Opt-in: without it the `leastprivilege` module is a no-op. See [docs/audit-logs.md](docs/audit-logs.md) for setup on self-managed, kind, and EKS. |
 | `--audit-source` | `native` | Audit-log format: `native` (kube-apiserver JSON-lines) or `eks` (CloudWatch `filter-log-events` export). |
 | `--audit-window-days` | `30` | How many days of audit history to consider. Widen for monthly cron jobs. |
@@ -632,13 +666,13 @@ To audit what the defaults are hiding, re-run with `--exclusions-preset=none` an
 The privesc analyzer skips `system:*` subjects as *traversable intermediates* (so paths don't launder through the control plane) but it *does* report `system:*` as a sink-reach target if you can impersonate or otherwise escalate into it. If the analyzer doesn't see anyone with that capability, the rule stays silent. Three built-in groups are traversed rather than skipped: `system:authenticated`, `system:serviceaccounts`, and `system:serviceaccounts:<ns>`. Every identity of the matching type belongs to them, so a grant to one of them is reported as a path from each member.
 
 **How accurate are the privesc paths?**
-Each hop is validated against the snapshot's RBAC and pod state. The analyzer doesn't speculate. False positives come from chains that are *structurally* possible but operationally suppressed (e.g. an SA bound to a role that's never actually used). Severity is attenuated by chain length (hops ≥ 3 drop one bucket); use `--max-privesc-depth` to limit BFS aggressiveness.
+Each hop is validated against the snapshot's RBAC and pod state. The analyzer doesn't speculate. False positives come from chains that are *structurally* possible but operationally suppressed (e.g. an SA bound to a role that's never actually used). The score goes down with the difficulty of the hops, not with the length of the chain: each hop is rated `easy`, `moderate`, or `hard`, and a chain that has a `hard` hop drops one severity level. `--max-privesc-depth` sets the maximum number of hops in a path (default 5).
 
 **Can I run this against my prod cluster?**
 Yes. Read-only access is sufficient. No webhooks, CRDs, agents, or pods are installed. Forbidden listings are downgraded to warnings, not fatal, so locked-down clusters still produce useful output.
 
 **Why no admission webhook?**
-Out of scope. The intent is *assessment*, not enforcement. If you want enforcement, generate Kyverno / Gatekeeper policies from the findings and hand them off to your policy engine.
+Out of scope. The intent is *assessment*, not enforcement. If you want enforcement, generate Kyverno / Gatekeeper policies from the findings (`--remediation-patches`) and hand them off to your policy engine.
 
 **Why are findings excluded by default?**
 The `standard` preset suppresses control-plane noise (kube-system, system:*, kubeadm:*) that an operator can't change without breaking their cluster. Re-run with `--exclusions-preset=none` to see everything.
@@ -657,7 +691,7 @@ The `standard` preset suppresses control-plane noise (kube-system, system:*, kub
 
 ## Use the GitHub Action
 
-The repository ships a composite Action at `action.yml`, so you can wire kubesplaining into a workflow without authoring the `docker run` invocation yourself. The action pulls the pinned GHCR image, executes a scan against either a live cluster (via a base64-encoded kubeconfig) or a pre-collected snapshot JSON, and optionally uploads the SARIF result to GitHub code scanning.
+The repository ships a composite Action at `action.yml`, so you can wire kubesplaining into a workflow without authoring the `docker run` invocation yourself. The action pulls the GHCR image (the `latest` tag unless you set `version`), executes a scan against either a live cluster (via a base64-encoded kubeconfig) or a pre-collected snapshot JSON, and optionally uploads the SARIF result to GitHub code scanning.
 
 ```yaml
 # .github/workflows/kubesplaining.yml
