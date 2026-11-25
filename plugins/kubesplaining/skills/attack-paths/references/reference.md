@@ -14,7 +14,7 @@ uses the name in the second column.
 | `cluster-admin` | `cluster_admin_equivalent` | All permissions on all resources in the cluster. |
 | `system-masters` | `system_masters` | A credential in the `system:masters` group. The API server authorizes this group before RBAC runs, so no RBAC change can take the access away. |
 | `kube-system-secrets` | `kube_system_secrets` | Read access to the Secrets in `kube-system`, which hold control-plane and add-on credentials. |
-| `node-escape` | `node_escape` | Root on a node. From there: the kubelet credentials and every pod on that node. |
+| `node-escape` | `node_escape` | Root on a node. From there: the kubelet credentials and every pod on that node. Paths continue through `node_token_harvest` to the ServiceAccounts whose tokens sit on that node. |
 | `namespace-admin:<namespace>` | `namespace_admin` with `target_namespace` | All permissions in one namespace, which include the token of every ServiceAccount there. |
 | `token-mint` | `token_mint` | The ability to create a token for a ServiceAccount of the attacker's choice, in any namespace. |
 | `aws-iam-role:<arn>` | `aws_iam_role` with `target_role` | The ability to assume an AWS IAM role, which is access outside the cluster. |
@@ -84,6 +84,7 @@ grant, and with `--verbose` the `gains` field says what the hop gives.
 | `nodes_proxy` | Can reach the kubelet API through `nodes/proxy`. |
 | `node_drain_migrate` | Can evict pods and change node state, so that sensitive pods move to a node the attacker controls. |
 | `control_plane_pki_theft` | Has root on a control-plane node, so it can read the cluster CA key and sign a `system:masters` certificate. |
+| `node_token_harvest` | Has root on a node, so it can read the projected token of every ServiceAccount whose pod runs there. From `node_escape`, the attacker's own pod picks the node; from a pod that already runs privileged, only that pod's node counts. |
 | `csr_approve` | Can create and approve a CertificateSigningRequest for a privileged identity. |
 | `csr_sign` | Is an authorized signer for API server client certificates. |
 | `csr_nodeclient_autoapprove` | Can submit a kubelet client CSR that the controller manager approves automatically. |

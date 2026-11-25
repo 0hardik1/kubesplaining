@@ -151,6 +151,9 @@ func BuildGraph(snapshot models.Snapshot) *models.EscalationGraph {
 	}
 
 	addControlPlaneEscapeEdges(graph, snapshot)
+	// After the control-plane continuation, so its direct edges to system_masters
+	// and token_mint stay first among node_escape's outbound edges.
+	addNodeTokenHarvestEdges(graph, snapshot)
 
 	addCloudEdges(graph, snapshot)
 
@@ -1223,11 +1226,7 @@ func podServiceAccount(pod corev1.Pod) models.SubjectRef {
 // pod yields the ServiceAccount's identity. A shell in a pod without one yields the
 // pod and nothing more.
 func serviceAccountsWithAPIToken(snapshot models.Snapshot) map[string]bool {
-	saAutomount := map[string]*bool{}
-	for _, sa := range snapshot.Resources.ServiceAccounts {
-		ref := models.SubjectRef{Kind: "ServiceAccount", Name: sa.Name, Namespace: sa.Namespace}
-		saAutomount[ref.Key()] = sa.AutomountServiceAccountToken
-	}
+	saAutomount := serviceAccountAutomount(snapshot)
 	result := map[string]bool{}
 	for _, pod := range snapshot.Resources.Pods {
 		ref := podServiceAccount(pod)
@@ -1606,6 +1605,7 @@ var actionDifficulty = map[string]string{
 	"node_secret_read":           difficultyEasy,
 	"operator_reconcile":         difficultyEasy,
 	"colocated_sa_token_theft":   difficultyEasy,
+	"node_token_harvest":         difficultyEasy,
 	"implicit_group_membership":  difficultyEasy,
 
 	// Needs a workload to exist, be created, or land somewhere specific.
@@ -1666,6 +1666,12 @@ func addEdge(graph *models.EscalationGraph, from, to string, edge *models.Escala
 	edge.To = to
 	if edge.Difficulty == "" {
 		edge.Difficulty = difficultyForAction(edge.Action)
+	}
+	// Like the difficulty rating, the node-of-choice foothold is stamped here so
+	// every builder that lands an attacker-authored pod on node_escape carries it
+	// without each call site having to remember. See nodeOfChoiceEscapes.
+	if to == sinkNodeEscape && nodeOfChoiceEscapes[edge.Action] {
+		edge.Grants = edgeGrants(edge) | models.FootholdNodeOfChoice
 	}
 	graph.Edges = append(graph.Edges, edge)
 }

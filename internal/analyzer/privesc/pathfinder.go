@@ -123,7 +123,7 @@ func sortPaths(paths []models.EscalationPath) {
 // footholdAll is every foothold at once. Path search seeds each source with it: a
 // finding's source is a compromised subject, and for a ServiceAccount that means its
 // workload, token included. Namespace-admin fan-out grants it too.
-const footholdAll = models.FootholdIdentity | models.FootholdToken | models.FootholdPod | models.FootholdNewPod
+const footholdAll = models.FootholdIdentity | models.FootholdToken | models.FootholdPod | models.FootholdNewPod | models.FootholdNodeOfChoice
 
 // edgeNeeds and edgeGrants resolve an edge's foothold sets, reading zero as
 // FootholdIdentity (see models.EscalationEdge.Needs).
