@@ -32,6 +32,7 @@ func TestNewPrivescActionsHaveTechniqueCopy(t *testing.T) {
 		"impersonate_node",
 		"node_token_request",
 		"node_secret_read",
+		"node_token_harvest",
 	} {
 		explainer, ok := Techniques[action]
 		if !ok {

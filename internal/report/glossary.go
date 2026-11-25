@@ -436,6 +436,15 @@ var Techniques = map[string]TechniqueExplainer{
 			{Note: "See which ServiceAccounts a given node's pods run as", Cmd: "kubectl get pods -A --field-selector spec.nodeName=<node> -o custom-columns=NS:.metadata.namespace,POD:.metadata.name,SA:.spec.serviceAccountName"},
 		},
 	},
+	"node_token_harvest": {
+		Title: "Node token harvest: root on a node is every pod on it",
+		Plain: template.HTML(`<p>The kubelet writes the projected ServiceAccount token of every pod it runs into that pod's volume under <code>/var/lib/kubelet/pods</code> on the node. Root on the node therefore reads all of them: the node is the union of every co-scheduled pod's ServiceAccount, including any IRSA token, which also works from outside AWS. RBAC review misses this hop because it runs through the node, not through a RoleBinding.</p><p>A subject that can create a privileged pod picks the node, because a pod can name it in <code>spec.nodeName</code> (which bypasses the scheduler) and tolerate any taint. The edge out of <code>node_escape</code> therefore reaches every ServiceAccount with a token-mounting pod on a node such a pod can run on. A pod that already runs privileged reaches only the tokens on its own node. Wiz Research reported this chain in the wild in November 2026: a stolen application token created a privileged pod, harvested every token on the node, and a cert-manager token among them led to cluster-admin.</p>`),
+		Mitre: "T1528 - Steal Application Access Token",
+		AttackerSteps: []AttackerStep{
+			{Note: "See which ServiceAccounts' tokens sit on a node", Cmd: "kubectl get pods -A --field-selector spec.nodeName=<node> -o custom-columns=NS:.metadata.namespace,POD:.metadata.name,SA:.spec.serviceAccountName"},
+			{Note: "From root on the node, list the projected tokens", Cmd: "find /var/lib/kubelet/pods -path '*kubernetes.io~projected*' -name token"},
+		},
+	},
 	"node_secret_read": {
 		Title: "Node authorizer: Secrets of a node's pods",
 		Plain: template.HTML(`<p>The <strong>Node authorizer</strong> lets a kubelet read any Secret a pod bound to its node references, as a volume, an environment source, or an image pull secret, because the kubelet has to mount them. A node identity for a control-plane node therefore reads the Secrets kube-system's pods reference.</p>`),

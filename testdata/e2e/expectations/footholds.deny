@@ -9,10 +9,10 @@ KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/foothold-fixtures/foothold-minter
 KUBE-PRIVESC-PATH-SYSTEM-MASTERS:ServiceAccount/foothold-fixtures/foothold-minter
 KUBE-PRIVESC-PATH-GENERIC:ServiceAccount/foothold-fixtures/foothold-minter
 #
-# foothold-execer can exec into foothold-quiet-app, but foothold-quiet opts out of
-# token automount, so the shell carries no token and foothold-quiet's kube-system
-# secrets read is not theirs.
-KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-ops/foothold-execer
+# foothold-quiet-execer can exec into foothold-quiet-app only, but foothold-quiet opts
+# out of token automount, so the shell carries no token and foothold-quiet's
+# kube-system secrets read is not theirs.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-ops/foothold-quiet-execer
 #
 # foothold-named-execer's `create pods/exec` names only foothold-target, so it must not
 # reach cluster-admin through foothold-decoy, a pod it has no name for. cluster-admin is

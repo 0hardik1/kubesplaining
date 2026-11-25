@@ -303,19 +303,7 @@ func addIMDSPivotEdges(graph *models.EscalationGraph, snapshot models.Snapshot) 
 	// flip). When providerID is set to a non-Fargate shape, the label is
 	// ignored entirely so an attacker who can patch node labels cannot
 	// silence the IMDS-pivot rule on a real EC2 node.
-	fargateNodes := map[string]bool{}
-	for _, node := range snapshot.Resources.Nodes {
-		if strings.HasPrefix(node.Spec.ProviderID, fargateProviderIDPrefix) {
-			fargateNodes[node.Name] = true
-			continue
-		}
-		if node.Spec.ProviderID != "" {
-			continue
-		}
-		if node.Labels[fargateNodeLabel] == "fargate" {
-			fargateNodes[node.Name] = true
-		}
-	}
+	fargateNodes := fargateNodeNames(snapshot)
 
 	// SA-key + permission string dedupe so we don't emit duplicate edges when
 	// a Deployment scales to many replicas (each Pod fires the same condition).
@@ -379,4 +367,25 @@ func podLabels(pod corev1.Pod) map[string]string {
 		return nil
 	}
 	return pod.Labels
+}
+
+// fargateNodeNames returns the names of the snapshot's EKS Fargate nodes. It
+// prefers the kubelet-supplied providerID (set by the EKS control plane and not
+// user-patchable) over the compute-type label (which any nodes/patch holder can
+// flip): when providerID is set to a non-Fargate shape, the label is ignored.
+func fargateNodeNames(snapshot models.Snapshot) map[string]bool {
+	fargateNodes := map[string]bool{}
+	for _, node := range snapshot.Resources.Nodes {
+		if strings.HasPrefix(node.Spec.ProviderID, fargateProviderIDPrefix) {
+			fargateNodes[node.Name] = true
+			continue
+		}
+		if node.Spec.ProviderID != "" {
+			continue
+		}
+		if node.Labels[fargateNodeLabel] == "fargate" {
+			fargateNodes[node.Name] = true
+		}
+	}
+	return fargateNodes
 }

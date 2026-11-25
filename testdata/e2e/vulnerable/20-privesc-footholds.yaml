@@ -10,11 +10,17 @@
 #    footholds.deny.
 # 2. A shell in a pod that mounts no API token does not hand over the SA's RBAC.
 #    foothold-quiet reads kube-system secrets, but its ServiceAccount opts out of
-#    automount, so foothold-execer's exec into foothold-quiet-app yields a shell and
-#    no token. Guard: footholds.deny. foothold-minter, by contrast, mints a real
+#    automount, so foothold-quiet-execer's exec into foothold-quiet-app yields a shell
+#    and no token. Guard: footholds.deny. foothold-minter, by contrast, mints a real
 #    token for foothold-quiet, and that path must survive. Assertion: footholds.chain.
+#    foothold-quiet-execer's exec names only foothold-quiet-app. With unrestricted
+#    exec it could also enter foothold-priv-app and read real tokens off the node
+#    (scenario 3), a true route to kube-system secrets that would hide the false one.
 # 3. Exec does land inside the privileged pod, so foothold-execer still reaches node
-#    escape through foothold-priv-app. Assertion: footholds.chain.
+#    escape through foothold-priv-app. Root there also reads the projected token of
+#    every pod on the node (node_token_harvest), so on the one-node e2e cluster it
+#    reaches kube-system secrets through a co-scheduled reader. Assertions:
+#    footholds.chain.
 # 4. A `create pods/exec` grant carrying resourceNames only reaches the named pods.
 #    foothold-named-execer can exec only foothold-target, which runs as foothold-reader
 #    (reads kube-system secrets), so it reaches those secrets. It must NOT reach
@@ -23,8 +29,9 @@
 #    it is not reachable from any pod through the IMDS pivot the EKS-labeled e2e
 #    cluster gives every workload. Guard: footholds.deny. Assertion: footholds.chain.
 #
-# foothold-execer and foothold-named-execer live in foothold-ops and get their exec
-# verb in the pods' namespace through a RoleBinding. If foothold-execer lived in
+# foothold-execer, foothold-quiet-execer and foothold-named-execer live in foothold-ops
+# and get their exec verb in the pods' namespace through a RoleBinding. If
+# foothold-execer lived in
 # foothold-fixtures, foothold-minter could mint its token and exec into the privileged
 # pod as it: a real three-hop route to node escape that would hide the false two-hop
 # route this shard guards.
@@ -114,25 +121,17 @@ roleRef:
   kind: Role
   name: foothold-quiet-secrets
 ---
-apiVersion: apps/v1
-kind: Deployment
+# A bare Pod with a fixed name, so foothold-quiet-execer's exec grant can name it.
+apiVersion: v1
+kind: Pod
 metadata:
   name: foothold-quiet-app
   namespace: foothold-fixtures
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: foothold-quiet-app
-  template:
-    metadata:
-      labels:
-        app: foothold-quiet-app
-    spec:
-      serviceAccountName: foothold-quiet
-      containers:
-        - name: app
-          image: registry.k8s.io/pause:3.10
+  serviceAccountName: foothold-quiet
+  containers:
+    - name: app
+      image: registry.k8s.io/pause:3.10
 ---
 # Holds token minting in the namespace, and nothing else.
 apiVersion: v1
@@ -195,6 +194,38 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: foothold-execer
+---
+# Scenario 2's subject: exec into foothold-quiet-app only, and nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foothold-quiet-execer
+  namespace: foothold-ops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foothold-quiet-execer
+  namespace: foothold-fixtures
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    resourceNames: ["foothold-quiet-app"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foothold-quiet-execer
+  namespace: foothold-fixtures
+subjects:
+  - kind: ServiceAccount
+    name: foothold-quiet-execer
+    namespace: foothold-ops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: foothold-quiet-execer
 ---
 # Scenario 4: resourceNames-scoped exec. foothold-target is a bare Pod with a fixed
 # name (a Deployment's generated pod name could not be named in resourceNames), so

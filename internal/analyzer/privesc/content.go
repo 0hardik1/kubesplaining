@@ -193,6 +193,12 @@ func hopNarrative(hop models.EscalationHop) string {
 		}
 		return "Holding a node identity, the attacker requests tokens for the ServiceAccounts of pods bound to the node it named."
 
+	case "node_token_harvest":
+		if hasTo {
+			return fmt.Sprintf("As root on the node, the attacker reads the projected token of %s from its pod's volume under `/var/lib/kubelet/pods` and now acts as %s. The kubelet keeps every pod's token on the pod's node, so root there is every co-scheduled ServiceAccount.", to, to)
+		}
+		return "As root on the node, the attacker reads the projected ServiceAccount tokens of the pods that run there."
+
 	case "node_secret_read":
 		return "Holding a node identity for a node that runs kube-system pods, the attacker reads the Secrets those pods reference. The Node authorizer allows a node to read any Secret a pod bound to it mounts or pulls with."
 
@@ -346,7 +352,7 @@ func contentNodeEscapePath(source models.SubjectRef, hops []models.EscalationHop
 		Scope: scopeForPath(source, models.TargetNodeEscape),
 		Description: fmt.Sprintf("Subject `%s` has a privesc path that terminates in the ability to schedule a pod with host-level access (`hostPath: /`, `privileged: true`, `hostPID`, or hostNetwork), which is structurally equivalent to root on the worker node. Once an attacker has node root, all defense-in-depth at the Kubernetes layer is bypassed: pod isolation depends on the kernel and runtime, not on RBAC, and node root reads every other pod's filesystem (including projected ServiceAccount tokens) and every kubelet credential.\n\n"+
 			"The chain (%d hop(s); each step uses an explicit RBAC verb or pod primitive the engine validated):\n%s\n\n"+
-			"Node escape is qualitatively different from cluster-admin: cluster-admin gives API control; node escape gives *operational* control over a host. With node root the attacker can plant a persistent rootkit, install a kernel module, capture every container's network traffic via tcpdump on the host's `cni0/flannel.1/cali*` interface, and exfiltrate every projected ServiceAccount token by reading `/var/lib/kubelet/pods/*/volumes/.../token`. From there, those tokens cascade into more cluster-admin paths.",
+			"Node escape is qualitatively different from cluster-admin: cluster-admin gives API control; node escape gives *operational* control over a host. With node root the attacker can plant a persistent rootkit, install a kernel module, capture every container's network traffic via tcpdump on the host's `cni0/flannel.1/cali*` interface, and exfiltrate every projected ServiceAccount token by reading `/var/lib/kubelet/pods/*/volumes/.../token`. The engine follows those tokens (`node_token_harvest`), so whatever a co-scheduled ServiceAccount reaches appears as its own, longer path finding from this subject, ranked by that target's severity.",
 			source.Key(), hopCount, formatHopList(hops)),
 		Impact:         fmt.Sprintf("Compromise of `%s` yields host root on a worker node. Every co-located pod's filesystem and every projected SA token are immediately readable, and the kubelet client cert can be used to access node-level APIs.", source.Key()),
 		AttackScenario: steps,

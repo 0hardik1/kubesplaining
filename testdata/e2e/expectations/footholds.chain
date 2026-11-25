@@ -6,6 +6,11 @@
 # Exec lands inside the privileged pod, so the pod's host escape stays reachable.
 KUBE-PRIVESC-PATH-NODE-ESCAPE:ServiceAccount/foothold-ops/foothold-execer:node_escape 2 pod_exec,pod_host_escape
 #
+# Root in the privileged pod reads the token of every pod on its node, so on the
+# one-node e2e cluster foothold-execer reaches kube-system secrets through a
+# co-scheduled reader such as foothold-reader.
+KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-ops/foothold-execer:kube_system_secrets 3 pod_exec,node_token_harvest
+#
 # A minted token is a real API credential whatever the automount setting says, so
 # foothold-minter still holds foothold-quiet's kube-system secrets read.
 KUBE-PRIVESC-PATH-KUBE-SYSTEM-SECRETS:ServiceAccount/foothold-fixtures/foothold-minter:kube_system_secrets 2 token_request,read_secrets

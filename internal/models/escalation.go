@@ -92,6 +92,14 @@ const (
 	// ServiceAccount. They pick its labels and namespace, but not the privileged
 	// settings of the pods that already exist.
 	FootholdNewPod
+	// FootholdNodeOfChoice: the attacker runs code they wrote as root on a node they
+	// pick. A pod they author can name its node in spec.nodeName and tolerate any
+	// taint, so a privileged pod (or workload, or kubelet API access on every node)
+	// is root wherever the tokens they want live. Only edges into node_escape grant
+	// it, and only the node-token harvest edges out of node_escape need it. A pod
+	// that already runs privileged does not grant it: that pod's node is fixed, so
+	// it reaches only the tokens on that one node (see node_harvest.go).
+	FootholdNodeOfChoice
 )
 
 // BindingRef names a (Cluster)RoleBinding. Namespace is empty for ClusterRoleBindings,
